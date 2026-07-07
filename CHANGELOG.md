@@ -20,6 +20,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 > nothing new
 
+## [0.6.1] - 2026-07-02
+
+### Changed
+- `galapy.internal.interp`: replaced the C++/pybind11 BST-backed `lin_interp`
+  extension with a pure-Python implementation using `numpy.interp` for
+  in-range evaluation and manual edge-slope propagation for linear extrapolation
+  beyond the grid. The public API (`__call__`, `get_x`, `get_y`, `integrate`)
+  is unchanged; behaviour is identical including linear extrapolation.
+  The `galapy.internal.interp` pybind11 extension is no longer compiled.
+- `PhotoGXY.photoSED`: bandpass integration is now performed on each filter's
+  own native wavelength grid (via `log_interp`) instead of slicing the SSP
+  array; this removes resolution artefacts for narrow bands and supports
+  evaluation outside the SSP wavelength range without zero-padding.
+- `PMS.get_fluxes`: accepts an optional `interp` callable; when provided, each
+  band integral is computed over the filter's native grid rather than the SSP
+  grid.
+- SSP libraries ending in `.refined` are no longer required for accurate
+  photometric fitting; `parsec22.NTL` now gives the same photometric accuracy
+  as `parsec22.NTL.refined` in the same wall time.
+- `galapy.Galaxy.GXY`: the galaxy emission is now computed eagerly — once at
+  construction and again at the end of every `set_parameters` — and cached in
+  `self._Ltot`. `get_emission` is now a thin accessor that returns the cached
+  luminosity (recomputing only if `**kwargs` update the parameters), so a `GXY`
+  object is always in a fully self-consistent, queryable state. The average
+  linear attenuation `Aavg` (in `[0, 1]`) is now always stored after each
+  update; the `store_attenuation` argument of `get_emission` is deprecated and
+  ignored.
+- `galapy.analysis.plot.corner_derived`: new `labels` keyword argument — a
+  `{key: latex_label}` mapping that overrides the axis label of the listed
+  quantities. This is the way to give a custom quantity added via
+  `Results.add_property` a proper LaTeX symbol instead of its escaped name (it
+  also overrides the built-in label of any default quantity). Labels are raw
+  LaTeX without the surrounding `$`; the `log10` wrapping is still applied on
+  top for log-scaled keys. Purely cosmetic and per-call — nothing is persisted
+  on the `Results` object.
+
+### Added
+
+- `galapy.internal.interp`: new pure-Python `log_interp` class — piecewise
+  power-law (log-log space) interpolator with power-law extrapolation beyond
+  the grid boundary and a log-space trapezoid integration rule; used internally
+  by `PhotoGXY.photoSED` to evaluate the galaxy SED on each filter's native
+  wavelength grid.
+- `galapy.sampling.Results.Results`: selectable derived quantities. The new
+  `derived` argument chooses which of the built-in per-sample quantities
+  (`SED`, `Mstar`, `Mdust`, `Mgas`, `Zstar`, `Zgas`, `SFR`, `TMC`, `TDD`) to
+  compute and store; `None` stores all and `SED` is always stored regardless.
+  Non-finite samples are sentinelled to `-inf` via a physical-validity gate and
+  excluded by the statistics helpers. New `add_property(func, name=None)` method
+  computes and stores one or more custom quantities after the run (`func` is
+  `f(model)` or a `{name: callable}` mapping); the set of stored quantities is
+  tracked in `_derived` and serialised in `dump`/`load`.
+- `galapy-fit`: new `store_quantities` parameter-file option selecting which
+  built-in derived quantities are computed and written to the results file
+  (a subset shrinks the output and speeds up post-processing; `SED` is always
+  stored). Wired end-to-end through `_expand_hyperpar` → job → the serial and
+  parallel samplers → `store_results` → `dump_results(derived=)`;
+  `getattr`-guarded so older parameter files without the key keep working.
+  Documented in the `galapy-genparams` template.
+- `doc/notebooks/custom_derived_quantities.ipynb`: new how-to notebook showing
+  how to compute and store custom derived quantities from a `Results` object
+  with `add_property`, query them with the statistics helpers, plot them with
+  `corner_derived`, and persist them, including the same-shape-per-sample,
+  average-in-linear-space and `-inf` sentinel caveats.
+
+### Internal
+
+- `tests/Test_Results.py`: new test suite covering the `Results` derived-quantity
+  machinery — the built-in quantities are all computed, tracked in `_derived`,
+  exposed as attributes with the expected shapes (scalar vs 2-D `SED`) and
+  finite/physical values; `add_property` with a single callable (named and
+  auto-named), a `{name: callable}` mapping, and an array-valued quantity, plus
+  its error cases; and round-tripping the stored quantities through `dump`/`load`.
+
+### Fixed
+
+- `galapy.analysis.plot.corner_derived`: custom scalar derived quantities added
+  via `Results.add_property` now appear in the triangle plot. The available-keys
+  set is drawn from `res._derived` (filtered to one-value-per-sample quantities)
+  instead of the static `_derived_quantity_meta`, so it also honours the
+  `store_quantities` subset. Quantities without an entry in
+  `_derived_quantity_meta` fall back to a linear axis and an upright label
+  (their name, with underscores escaped); array-valued quantities such as the
+  `SED` are excluded.
+
 ## [0.6.0] - 2026-06-12
 
 ### Added
