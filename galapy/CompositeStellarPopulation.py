@@ -12,6 +12,7 @@ from .CSP_core import loadSSP as _loadSSP, CCSP
 from .SYN_core import CSYN
 import galapy.internal.globs as GP_GBL
 from galapy.internal.data import DataFile
+import galapy.internal.constants as CONST       #CLOUDIA
 
 def _recursive_list_ssp_libs ( root, pathline = [],
                                outlist = [], outpath = None ) :
@@ -412,5 +413,58 @@ class CSP () :
                            "has been built without CCSN support. "
                            "Build with `CCSN = True` " )
             return 0.
+
+    #====================== CLOUDIA ADDICTION - Enrico Veraldi ======================
+
+    @staticmethod
+    def write_cloudy_sed(self, wavelenght_A, L_lambda, outpath, extrapolate=False) :
+        """
+        Write the SED to a file in CLOUDY table format.
+
+        Parameters
+        ----------
+        wavelenght_A : array
+            Wavelength values in Angstroms.
+        L_lambda : array
+            Luminosity values in solar luminosity.
+        outpath : str
+            Path to the output file.
+        extrapolate : bool, optional
+            Whether to extrapolate the SED to lower energies. Default is False.
+
+        Returns
+        -------
+        outpath : str
+            Path to the output file.
+
+        Raises
+        ------
+        ValueError
+            If the input arrays have less than 2 data points.
+        """
+        if wavelenght_A.size < 2:
+            raise ValueError('converting a SED to CLOUDY table sed format require at least 2 data')
+
+        wavelenght_A = numpy.asarray(wavelenght_A, dtypee=float)
+        nuFnu = numpy.asarray(L_lambda, dtype=float) * wavelenght_A * CONST.Lsun
+
+        nuFnu = numpy.maximum(nuFnu, 1e-300)                            # cut null fluxes
+        order = numpy.argsort(wavelenght_A)                                   # monotonic sort
+        wavelenght_A, nuFnu = wavelenght_A[order], nuFnu[order]
+        order = numpy.concatenate(([True], numpy.diff(wavelenght_A > 0.0)))   # strictly monotonic sort
+        wavelenght_A, nuFnu = wavelenght_A[order], nuFnu[order]
+
+        # prefix units for table SED, in case of extrapolate, SED will be extrapolated to
+        # the low-energy limit of the code
+        prefix = "nuFnu units Angstroms" + (" extrapolate" if extrapolate else "")
+
+        with open(outpath, 'w') as f:
+            f.write('# CLOUDY table SED | col1 = lambda[Angstrom], col2 = nu*Fnu linear (erg/s per 1 Msun SSP)\n')
+            for i, (w,n) in enumerate(zip(wavelenght_A, nuFnu)):
+                f.write(f'{w:.6e} {n:.6e} {prefix if i==0 else ""}\n')
+
+        f.close()
+        return outpath
+
         
     
