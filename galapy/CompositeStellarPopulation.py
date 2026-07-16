@@ -7,6 +7,8 @@ import numpy
 import os
 import warnings
 
+import numpy as np
+
 # Internal imports
 from .CSP_core import loadSSP as _loadSSP, CCSP
 from .SYN_core import CSYN
@@ -466,5 +468,57 @@ class CSP () :
         f.close()
         return outpath
 
+    def cloudy_sed(self, outpath, age=None, sfh=None, it=None, iz=None, extrapolate=False,
+                   lambda_min_A = None):
+        """
+        Write the SED to a file in CLOUDY table format.
+
+        Parameters
+        ----------
+        outpath : str
+            Path to the output file.
+        age : float, optional
+            Age of the stellar population.
+        sfh : array, optional
+            Star formation history.
+        it : int, optional
+            Index of the time step.
+        iz : int, optional
+            Index of the metallicity bin.
+        extrapolate : bool, optional
+            Whether to extrapolate the SED to lower energies. Default is False.
+        lambda_min_A : float, optional
+            Minimum wavelength in Angstroms.
+
+        Returns
+        -------
+        outpath : str
+            Path to the output file.
+
+        Raises
+        ------
+        ValueError
+            If neither (age and sfh) nor (it and iz) are provided.
+
+        """
+        if it is not None and iz is not None:
+            wavelenght_A, spectrum = self.l, self.L[:, it, iz]
+        elif age is not None and sfh is not None:
+            # for diagnostics, for a cloudy run on a certain spectrum, for future implementations (diffuse dust...)
+            self.set_parameters(age, sfh)
+            il = numpy.arange(len(self.l), dtype=numpy.uint64) # C++ galapy core
+            ftau = numpy.ones((len(il), self.t.size))
+            wavelenght_A = self.l
+            spectrum = self.core.emission(il, np.ascontiguousarray(ftau.ravel()))
+        else
+            raise ValueError('either age and sfh or it and iz must be provided')
+
+        # in case of inserting a cut in wavelenght
+        if lambda_min_A is not None:
+            mask = wavelenght_A >= lambda_min_A
+            wavelenght_A = wavelenght_A[mask]
+            spectrum = spectrum[mask]
+
+        return self.write_cloudy_sed(wavelenght_A, spectrum, outpath, extrapolate=extrapolate)
         
     
