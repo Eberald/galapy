@@ -7,14 +7,12 @@ import numpy
 import os
 import warnings
 
-import numpy as np
-
 # Internal imports
 from .CSP_core import loadSSP as _loadSSP, CCSP
 from .SYN_core import CSYN
 import galapy.internal.globs as GP_GBL
 from galapy.internal.data import DataFile
-import galapy.internal.constants as CONST       #CLOUDIA
+import galapy.internal.constants as CONST
 
 def _recursive_list_ssp_libs ( root, pathline = [],
                                outlist = [], outpath = None ) :
@@ -419,13 +417,13 @@ class CSP () :
     #====================== CLOUDIA ADDICTION - Enrico Veraldi ======================
 
     @staticmethod
-    def write_cloudy_sed(self, wavelenght_A, L_lambda, outpath, extrapolate=False) :
+    def write_cloudy_sed(wavelength_A, L_lambda, outpath, extrapolate=False) :
         """
         Write the SED to a file in CLOUDY table format.
 
         Parameters
         ----------
-        wavelenght_A : array
+        wavelength_A : array
             Wavelength values in Angstroms.
         L_lambda : array
             Luminosity values in solar luminosity.
@@ -444,17 +442,17 @@ class CSP () :
         ValueError
             If the input arrays have less than 2 data points.
         """
-        if wavelenght_A.size < 2:
+        if wavelength_A.size < 2:
             raise ValueError('converting a SED to CLOUDY table sed format require at least 2 data')
 
-        wavelenght_A = numpy.asarray(wavelenght_A, dtypee=float)
-        nuFnu = numpy.asarray(L_lambda, dtype=float) * wavelenght_A * CONST.Lsun
+        wavelength_A = numpy.asarray(wavelength_A, dtypee=float)
+        nuFnu = numpy.asarray(L_lambda, dtype=float) * wavelength_A * CONST.Lsun
 
         nuFnu = numpy.maximum(nuFnu, 1e-300)                            # cut null fluxes
-        order = numpy.argsort(wavelenght_A)                                   # monotonic sort
-        wavelenght_A, nuFnu = wavelenght_A[order], nuFnu[order]
-        order = numpy.concatenate(([True], numpy.diff(wavelenght_A > 0.0)))   # strictly monotonic sort
-        wavelenght_A, nuFnu = wavelenght_A[order], nuFnu[order]
+        order = numpy.argsort(wavelength_A)                                   # monotonic sort
+        wavelength_A, nuFnu = wavelength_A[order], nuFnu[order]
+        order = numpy.concatenate(([True], numpy.diff(wavelength_A > 0.0)))   # strictly monotonic sort
+        wavelength_A, nuFnu = wavelength_A[order], nuFnu[order]
 
         # prefix units for table SED, in case of extrapolate, SED will be extrapolated to
         # the low-energy limit of the code
@@ -462,13 +460,13 @@ class CSP () :
 
         with open(outpath, 'w') as f:
             f.write('# CLOUDY table SED | col1 = lambda[Angstrom], col2 = nu*Fnu linear (erg/s per 1 Msun SSP)\n')
-            for i, (w,n) in enumerate(zip(wavelenght_A, nuFnu)):
+            for i, (w,n) in enumerate(zip(wavelength_A, nuFnu)):
                 f.write(f'{w:.6e} {n:.6e} {prefix if i==0 else ""}\n')
 
         f.close()
         return outpath
 
-    def cloudy_sed(self, outpath, age=None, sfh=None, it=None, iz=None, extrapolate=False,
+    def cloudy_sed_extract(self, outpath, age=None, sfh=None, it=None, iz=None, extrapolate=False,
                    lambda_min_A = None):
         """
         Write the SED to a file in CLOUDY table format.
@@ -502,23 +500,53 @@ class CSP () :
 
         """
         if it is not None and iz is not None:
-            wavelenght_A, spectrum = self.l, self.L[:, it, iz]
+            wavelength_A, spectrum = self.l, self.L[:, it, iz]
         elif age is not None and sfh is not None:
             # for diagnostics, for a cloudy run on a certain spectrum, for future implementations (diffuse dust...)
             self.set_parameters(age, sfh)
             il = numpy.arange(len(self.l), dtype=numpy.uint64) # C++ galapy core
             ftau = numpy.ones((len(il), self.t.size))
-            wavelenght_A = self.l
-            spectrum = self.core.emission(il, np.ascontiguousarray(ftau.ravel()))
-        else
+            wavelength_A = self.l
+            spectrum = self.core.emission(il, numpy.ascontiguousarray(ftau.ravel()))
+        else:
             raise ValueError('either age and sfh or it and iz must be provided')
 
-        # in case of inserting a cut in wavelenght
+        # in case of inserting a cut in wavelength
         if lambda_min_A is not None:
-            mask = wavelenght_A >= lambda_min_A
-            wavelenght_A = wavelenght_A[mask]
+            mask = wavelength_A >= lambda_min_A
+            wavelength_A = wavelength_A[mask]
             spectrum = spectrum[mask]
 
-        return self.write_cloudy_sed(wavelenght_A, spectrum, outpath, extrapolate=extrapolate)
+        return self.write_cloudy_sed(wavelength_A, spectrum, outpath, extrapolate=extrapolate)
         
-    
+    @staticmethod
+    def cloudy_sed_QH(sed_path, lyman_A = CONST.LyA):
+        """Compute the ionizing photon rate from a CLOUDY SED file.
+
+        This function reads a CLOUDY table SED file and computes the number of 
+        hydrogen-ionizing photons per second by integrating the energy distribution 
+        below the Lyman limit.
+
+        Parameters
+        ----------
+        sed_path : str
+            Path to the CLOUDY SED file containing wavelength (Angstrom) and 
+            nuFnu (erg/s) in columns 1 and 2.
+        lyman_A : float, optional
+            Lyman limit wavelength in Angstroms. Default is the Lyman-alpha 
+            wavelength from galapy.internal.constants (911.6 Angstrom).
+
+        Returns
+        -------
+        QH : float
+            The ionizing photon rate in photons per second. Returns 0.0 if no 
+            wavelengths below the Lyman limit are found in the SED.
+        """
+        wavelength_A, nuFnu = numpy.loadtxt(sed_path, comments='#', usecols=(0, 1), unpack=True)
+        euv = wavelength_A < lyman_A
+        if not numpy.any(euv):
+            return 0.0
+        wavelength_cm = wavelength_A[euv] * 1e-8
+        order = numpy.argsort(wavelength_cm)
+        return float(numpy.trapezoid(nuFnu[euv][order], wavelength_cm[order]) / 
+                     (CONST.hp["erg*s"]*CONST.clight["cm/s"]))

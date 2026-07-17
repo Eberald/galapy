@@ -21,6 +21,9 @@ hP = {
     'erg*s' : 6.6262e-27,
 }
 
+# SED emission line points [Angstrom]
+LyA=911.6
+
 # Angstrom to keV
 def Ang_to_keV ( wavelength ) :
     return 1.e-3 * hP['eV/Hz'] * clight['A/s'] / wavelength
