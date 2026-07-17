@@ -550,3 +550,5 @@ class CSP () :
         order = numpy.argsort(wavelength_cm)
         return float(numpy.trapezoid(nuFnu[euv][order], wavelength_cm[order]) / 
                      (CONST.hp["erg*s"]*CONST.clight["cm/s"]))
+
+#=================================================================================

@@ -30,3 +30,6 @@ TEST.ipynb
 
 #DATASET galapy
 DATASET/
+
+#data raw
+data/
