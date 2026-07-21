@@ -61,7 +61,7 @@ cloudia = [
     "jinja2>=3.0",
     "mkdocs-material==9.5.50"
 ]
-cloudia-agent = [#WIP
+cloudia-agent = [#WIP, placeholder
     "ollama>=0.3",
     "sentence-transformers>=2.2",
     "faiss-cpu>=1.7"
@@ -71,14 +71,14 @@ cloudia-agent = [#WIP
 galapy-fit = "galapy.sampling.Run:_run"
 galapy-genparams = "galapy.sampling.Run:_generate_parameter_file"
 galapy-download-database = "galapy.internal.data:_entrypoint_download_database"
-#========== CLOUDIA ==========# WIP tools
+#========== CLOUDIA ==========# WIP tools, placeholder
 galapy-translate-filter = "galapy.CloudIA.cli.translate_filter:main"
 galapy-agent            = "galapy.CloudIA.cli.agent:main"
 
 #========== CLOUDIA ==========#
 [tool.pytest.ini_options]
 python_files = ["Test_*.py", "test_*.py"]
-markers = [
+markers = [#WIP, idea of division tests, placeholder
     "unit: isolated one shot tests",
     "regression: check the behaviour with the reference behaviour",
     "physics: check energy balance and physics in general",

@@ -77,7 +77,9 @@ def test_pipeline_modules_are_importable(module_name):
     importlib.import_module(module_name)
 
 
-"""@pytest.mark.unit
+"""
+WIP, placeholder for check presence chemistry (N/O, grain, C/O, He/H)
+@pytest.mark.unit
 def test_shared_chemistry_is_reachable():
     from galapy.CloudIA.scripts.cloudy_common.abundances import (
         nitrogen_offset,
@@ -112,12 +114,15 @@ def test_import_cloudia_does_not_pull_heavy_deps():
 
 
 # ======================== CHECK FILES AND CONFIGURATIONS  ARE PRESENT =======================
-"""@pytest.mark.unit
+"""
+WIP, placeholder for check the templates cloudy and lines folders
+@pytest.mark.unit
 @pytest.mark.parametrize("rel_path", ["configs/lines", "configs/templates"])
 def test_config_directories_exist(rel_path):
     assert (_CLOUDIA_DIR / rel_path).is_dir()"""
 
 """
+WIP, placeholder check jinja templates cloudy
 @pytest.mark.unit
 @pytest.mark.parametrize(
     "rel_file",
