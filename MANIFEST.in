@@ -2,3 +2,4 @@ recursive-include pybind11 *.h *.tpp
 recursive-include c++ *.h *.cpp *.tpp
 recursive-include galapy/CloudIA/configs *.yaml *.in
 recursive-include galapy/CloudIA/scripts *.j2
+include galapy/CloudIA/requirements.txt
