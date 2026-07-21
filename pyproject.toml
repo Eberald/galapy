@@ -74,6 +74,16 @@ galapy-download-database = "galapy.internal.data:_entrypoint_download_database"
 galapy-translate-filter = "galapy.CloudIA.cli.translate_filter:main"
 galapy-agent            = "galapy.CloudIA.cli.agent:main"
 
+#========== CLOUDIA ==========#
+[tool.pytest.ini_options]
+python_files = ["Test_*.py", "test_*.py"]
+markers = [
+    "unit: isolated one shot tests",
+    "regression: check the behaviour with the reference behaviour",
+    "physics: check energy balance and physics in general",
+    "slow: the long test (like test on mock galaxy), run only with flag CLOUDIA_SLOW=1"
+]
+
 [bumpver]
 current_version = "v0.6.1"
 version_pattern = "vMAJOR.MINOR.PATCH"

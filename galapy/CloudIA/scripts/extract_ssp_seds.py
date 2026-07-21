@@ -6,53 +6,49 @@ import numpy as np
 from galapy.CompositeStellarPopulation import CSP
 
 taus = np.array([1e6,2e6,5e6,1e7,2e7,5e7,7e7,1e8])
+Z = np.array([0.0001,0.005,0.0010,0.0040, 0.0080, 0.0200])
 
-def extract_ssp_seds(outdir, target_taus = taus, ssp_lib = "parsec22.NT"):
+def extract_ssp_seds(outdir, target_taus = taus, target_Z  = Z, ssp_lib = "parsec22.NT"):
     """
-    Extract SSP SEDs for specified parameters and save metadata.
+    Extracts SSP (Single Stellar Population) SEDs (Spectral Energy Distributions) for given ages
+    and metallicities and saves the resulting data and metadata to the specified location.
 
-    This function generates Simple Stellar Population (SSP) Spectral Energy
-    Distribution (SED) files for specified characteristic times (target_taus)
-    and metallicity values, using a given SSP library. The output files are
-    saved in the specified directory along with a metadata file in JSON format
-    containing details about the generated SEDs.
+    The function uses an external CSP (Composite Stellar Population) library to extract the SEDs
+    corresponding to the specified parameters. It saves the extracted SED files in the provided
+    output directory and generates a metadata file summarizing the characteristics of the extracted SEDs.
 
     Parameters:
-        outdir (str): Path to the output directory where SED files and metadata
-                      will be saved.
-        target_taus (list[float], optional): List of characteristic time
-                      constants (tau) in years for which SSP SEDs will be
-                      generated. Defaults to the global variable `taus`.
-        ssp_lib (str): Name of the SSP library to be used for generating SEDs.
-                      Defaults to "parsec22.NT".
+        outdir (str): The output directory where the SED files and metadata file will be saved.
+        target_taus (list[float], optional): A list of target ages for which SEDs should be extracted.
+                                             Defaults to the global variable 'taus'.
+        target_Z (list[float], optional): A list of target metallicities for which SEDs should be
+                                          extracted. Defaults to the global variable 'Z'.
+        ssp_lib (str, optional): The name of the SSP library to use for the SED extraction.
+                                 Defaults to "parsec22.NT".
 
     Returns:
-        list[dict]: A list containing metadata dictionaries, each describing
-                    one generated SSP SED file. Each dictionary contains the
-                    following keys:
-                        - tau_SSP (float): Characteristic time constant (in years)
-                                          used to compute the SED.
-                        - Z_star (float): Metallicity value associated with the SED.
-                        - sed_file (str): Name of the generated SED file.
-                        - it (int): Index of the time constant in the SSP library.
-                        - iz (int): Index of the metallicity value in the SSP library.
-                        - Qh_unit (float): Ionizing photon flux (Q_H) computed for the
-                                          corresponding SSP.
-
-    Raises:
-        None
+        list[dict]: A list of dictionaries containing metadata for each extracted SED file. Fields in the
+                    metadata include:
+                    - 'tau_SSP' (float): The selected age for the SED.
+                    - 'Z_star' (float): The metallicity of the stellar population.
+                    - 'sed_file' (str): The name of the SED file.
+                    - 'it' (int): The index corresponding to the selected age in the grid.
+                    - 'iz' (int): The index corresponding to the selected metallicity in the grid.
+                    - 'Qh_unit' (float): The ionizing photon rate derived from the SED.
     """
     csp = CSP(ssp_lib=ssp_lib)
-    t, Z = csp.ssp_t, csp.ssp_Z
+    t, Z = csp.t, csp.Z
     selected_it = [int(np.argmin(np.abs(t-tau))) for tau in target_taus]
+    selected_iz = [int(np.argmin(np.abs(Z - Zstar))) for Zstar in target_Z]
+
 
     os.makedirs(outdir, exist_ok=True)
     metadata = []
     for it in selected_it:
-        for iz in range(Z.size):
+        for iz in selected_iz:
             file_name = f"ssp_tau{t[it]:.3e}_Z{Z[iz]:.4f}.sed"
             path = os.path.join(outdir, file_name)
-            csp.to_cloudy_sed(path, it=it, iz=iz)
+            csp.cloudy_sed_extract(path, it=it, iz=iz)
             metadata.append(
                 {
                     'tau_SSP' : float(t[it]),
@@ -60,7 +56,7 @@ def extract_ssp_seds(outdir, target_taus = taus, ssp_lib = "parsec22.NT"):
                     'sed_file' : file_name,
                     'it' : it,
                     'iz' : iz,
-                    'Qh_unit' : csp.cloudy_sed_QH(outdir),
+                    'Qh_unit' : csp.cloudy_sed_QH(path),
                 }
             )
 

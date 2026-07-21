@@ -445,13 +445,13 @@ class CSP () :
         if wavelength_A.size < 2:
             raise ValueError('converting a SED to CLOUDY table sed format require at least 2 data')
 
-        wavelength_A = numpy.asarray(wavelength_A, dtypee=float)
+        wavelength_A = numpy.asarray(wavelength_A, dtype=float)
         nuFnu = numpy.asarray(L_lambda, dtype=float) * wavelength_A * CONST.Lsun
 
         nuFnu = numpy.maximum(nuFnu, 1e-300)                            # cut null fluxes
         order = numpy.argsort(wavelength_A)                                   # monotonic sort
         wavelength_A, nuFnu = wavelength_A[order], nuFnu[order]
-        order = numpy.concatenate(([True], numpy.diff(wavelength_A > 0.0)))   # strictly monotonic sort
+        order = numpy.concatenate(([True], numpy.diff(wavelength_A) > 0.0))   # strictly monotonic sort
         wavelength_A, nuFnu = wavelength_A[order], nuFnu[order]
 
         # prefix units for table SED, in case of extrapolate, SED will be extrapolated to
@@ -549,6 +549,6 @@ class CSP () :
         wavelength_cm = wavelength_A[euv] * 1e-8
         order = numpy.argsort(wavelength_cm)
         return float(numpy.trapezoid(nuFnu[euv][order], wavelength_cm[order]) / 
-                     (CONST.hp["erg*s"]*CONST.clight["cm/s"]))
+                     (CONST.hP["erg*s"]*CONST.clight["cm/s"]))
 
 #=================================================================================
