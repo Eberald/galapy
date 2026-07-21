@@ -30,3 +30,11 @@ DATASET/
 
 #data raw
 data/
+
+#nextflow
+/galapy/CloudIA/workflows/modules/.nextflow
+/galapy/CloudIA/workflows/.nextflow
+/galapy/CloudIA/workflows/modules/work
+/galapy/CloudIA/workflows/modules/.nextflow.log*
+/galapy/CloudIA/workflows/work
+/galapy/CloudIA/workflows/.nextflow.log*
