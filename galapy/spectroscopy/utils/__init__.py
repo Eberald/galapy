@@ -123,6 +123,29 @@ def require_cloudy(check_version=True):
 
     return det
 
+def _reporthook(block_num, block_size, total_size):
+    """
+    Reports the progress of a download.
+
+    This function is a callback typically used with data downloading functions to display the progress
+    of the download to the console. It computes the percentage of the file downloaded and prints it
+    along with the downloaded size. If the total size is unknown, it only displays the downloaded size.
+
+    Args:
+        block_num (int): The current block number being processed.
+        block_size (int): The size of each block in bytes.
+        total_size (int): The total size of the file in bytes. If the total size is unknown, this
+        value may be -1.
+    """
+    downloaded = block_num * block_size
+    if total_size > 0:
+        pct = min(100, downloaded * 100 // total_size)
+        print(f"\r  downloaded {downloaded/1e6:7.1f} / {total_size/1e6:7.1f} MB "
+              , end="", flush=True)
+    else:
+        print(f"\r  downloaded {downloaded/1e6:7.1f} MB ",
+              end="", flush=True)
+
 
 def ensure_cloudy(prefix=None, interactive=None, jobs=None, url=None, sha256=None):
     """
@@ -155,6 +178,7 @@ def ensure_cloudy(prefix=None, interactive=None, jobs=None, url=None, sha256=Non
             and configuration process.
     """
     import hashlib as _hl
+    import platform
     import subprocess
     import sys
     import tarfile
@@ -171,38 +195,188 @@ def ensure_cloudy(prefix=None, interactive=None, jobs=None, url=None, sha256=Non
        raise CloudyNotFound(f'Cloudy not found and not interactive, manual installation required: '
                             f'python -m galapy.spectroscopy.utils --install-cloudy')
 
+    system = platform.system()
+    machine = platform.machine()
+
+    # --- make -------------------------------------------------------------
+    make_bin = shutil.which('make')
+    if make_bin is None:
+        if system == 'Darwin':
+            hint = (
+                "Install the Xcode Command Line Tools with:\n"
+                "    xcode-select --install\n"
+                "or via Homebrew:\n"
+                "    brew install make"
+            )
+        elif system == 'Windows':
+            hint = (
+                "Native Windows (MSVC/nmake) is not supported by this build path: Cloudy's "
+                "Makefile assumes a GCC/Clang-compatible, POSIX-style toolchain. Use one of:\n"
+                "    MSYS2  : install from https://www.msys2.org/, then from the MSYS2 shell:\n"
+                "             pacman -S make mingw-w64-x86_64-gcc\n"
+                "             and ensure that MSYS2/MinGW's bin directory is on PATH\n"
+                "    WSL    : run this installer from inside a WSL Linux distribution instead "
+                "(it will then be detected as system == 'Linux')"
+            )
+        else:
+            hint = (
+                "Install it via your system package manager, e.g.:\n"
+                "    Debian/Ubuntu : sudo apt install build-essential\n"
+                "    RHEL/CentOS   : sudo yum groupinstall 'Development Tools'\n"
+                "    conda         : conda install -c conda-forge make"
+            )
+        raise CloudyNotFound(
+            f"'make' not found in PATH. Cloudy requires GNU Make to be compiled from source.\n"
+            f"{hint}\n"
+            f"Then re-run: python -m galapy.spectroscopy.utils --install-cloudy"
+        )
+
+    # --- C++ compiler -------------------------------------------------------
+    cxx_bin = shutil.which('g++') or shutil.which('c++') or shutil.which('clang++')
+    if cxx_bin is None:
+        if system == 'Darwin':
+            hint = (
+                "Install the Xcode Command Line Tools with:\n"
+                "    xcode-select --install\n"
+                "This provides Apple Clang (clang++), used as the default C++ compiler on macOS."
+            )
+        elif system == 'Windows':
+            hint = (
+                "No GCC/Clang-compatible C++ compiler found. MSVC (cl.exe) is not supported by "
+                "this build path (incompatible flag syntax and build system). Install a "
+                "GCC toolchain via MSYS2:\n"
+                "    pacman -S mingw-w64-x86_64-gcc\n"
+                "and ensure it is on PATH, or run this installer from inside WSL instead."
+            )
+        else:
+            hint = (
+                "    Debian/Ubuntu : sudo apt install g++\n"
+                "    conda         : conda install -c conda-forge gxx_linux-64"
+            )
+        raise CloudyNotFound(
+            f"No C++ compiler (g++/c++/clang++) found in PATH. Cloudy is written in C++ and "
+            f"requires a C++11-compatible, GCC/Clang-compatible compiler to be built.\n{hint}\n"
+            f"Then re-run: python -m galapy.spectroscopy.utils --install-cloudy"
+        )
+
+    if system == 'Windows':
+        print(
+            "NOTE: building on Windows via a detected GCC/Clang-compatible toolchain "
+            "(MSYS2/MinGW or similar) found in PATH. This path has not been independently "
+            "verified against Cloudy's official build instructions for Windows -- proceed "
+            "with awareness that this is not a confirmed-supported platform for this "
+            "installer."
+        )
+    if system == 'Darwin':
+        print(
+            "NOTE: on macOS, 'c++'/'g++' typically resolve to Apple Clang rather than GCC. "
+            "The OPT flags below are GCC-style; Apple Clang generally accepts the same "
+            "syntax, but this has not been independently verified against the "
+            "Huang-CL/cloudy mirror build instructions for macOS."
+        )
+
+    # --- C++ compiler -------------------------------------------------------
+    cxx_bin = shutil.which('g++') or shutil.which('c++') or shutil.which('clang++')
+    if cxx_bin is None:
+        if system == 'Darwin':
+            hint = (
+                "Install the Xcode Command Line Tools with:\n"
+                "    xcode-select --install\n"
+                "This provides Apple Clang (clang++), used as the default C++ compiler on macOS."
+            )
+        elif system == 'Windows':
+            hint = (
+                "No GCC/Clang-compatible C++ compiler found. MSVC (cl.exe) is not supported by "
+                "this build path (incompatible flag syntax and build system). Install a "
+                "GCC toolchain via MSYS2:\n"
+                "    pacman -S mingw-w64-x86_64-gcc\n"
+                "and ensure it is on PATH, or run this installer from inside WSL instead."
+            )
+        else:
+            hint = (
+                "    Debian/Ubuntu : sudo apt install g++\n"
+                "    conda         : conda install -c conda-forge gxx_linux-64"
+            )
+        raise CloudyNotFound(
+            f"No C++ compiler (g++/c++/clang++) found in PATH. Cloudy is written in C++ and "
+            f"requires a C++11-compatible, GCC/Clang-compatible compiler to be built.\n{hint}\n"
+            f"Then re-run: python -m galapy.spectroscopy.utils --install-cloudy"
+        )
+
+    if system == 'Windows':
+        print(
+            "NOTE: building on Windows via a detected GCC/Clang-compatible toolchain "
+            "(MSYS2/MinGW or similar) found in PATH. This path has not been independently "
+            "verified against Cloudy's official build instructions for Windows -- proceed "
+            "with awareness that this is not a confirmed-supported platform for this "
+            "installer."
+        )
+    if system == 'Darwin':
+        print(
+            "NOTE: on macOS, 'c++'/'g++' typically resolve to Apple Clang rather than GCC. "
+            "The OPT flags below are GCC-style; Apple Clang generally accepts the same "
+            "syntax, but this has not been independently verified against the "
+            "Huang-CL/cloudy mirror build instructions for macOS."
+        )
+
     prefix = os.path.abspath(prefix or os.path.expanduser('~/.galapy/cloudy'))
     url = url or CLOUDY_URL_TAR
     sha256 = CLOUDY_SHA256 if sha256 is None else sha256
     jobs = jobs or (os.cpu_count() or 2)
-    print(f"Cloudy not found, starting installation from:"
-          f"source  = {url}\n"
-          f"prefix  = {prefix}\n"
-          f"compile = make -j{jobs}\n")
+    print(f"Cloudy not found, starting installation:\n"
+          f"    source   = {url}\n"
+          f"    prefix   = {prefix}\n"
+          f"    platform = {system} / {machine}\n"
+          f"    make     = {make_bin}\n"
+          f"    c++      = {cxx_bin}\n"
+          f"    compile  = make -j {jobs}\n")
     
     if input("Starting installation? [y/N] ").strip().lower() not in ('y', 'yes', 's', 'si'):
         raise CloudyNotFound("installation aborted by user")
-    
+
     os.makedirs(prefix, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmpdir:
         tar = os.path.join(tmpdir, 'cloudy.tar.gz')
-        urllib.request.urlretrieve(url, tar)
+        urllib.request.urlretrieve(url, tar,reporthook=_reporthook)
+        print()
+
         with open(tar, 'rb') as fh:
             digest = _hl.sha256(fh.read()).hexdigest()
         if sha256 and digest != sha256:
             raise CloudyNotFound(f"SHA256 mismatch: expected {sha256}, got {digest}")
         if not sha256:
             print(f"WARNING! SHA256 hash not provided, proceeding with installation")
-
         with tarfile.open(tar) as tf:
             tf.extractall(prefix)
 
+    opt_flags = (
+        'OPT=-O3 -ftrapping-math -fno-math-errno '
+        '-fasynchronous-unwind-tables -Wno-deprecated-declarations'
+    )
     root = next(os.path.join(prefix, d) for d in sorted(os.listdir(prefix))
                 if os.path.isdir(os.path.join(prefix, d, 'source')))
+    source_dir = os.path.join(root, 'source')
 
-    subprocess.check_call(['make', f'-j{jobs}','OPT=-O3 -march=x86-64-v3 -ftrapping-math -fno-math-errno',
-                           '-fasynchronous-unwind-tables -Wno-deprecated-declarations'],
-                          cwd=os.path.join(root, 'source'))
+    subprocess.check_call([make_bin, 'clean'], cwd=source_dir)
+
+    try:
+        subprocess.check_call(
+            # Explicit 'cloudy.exe' target, matching the already-ratified
+            # build recipe in the CloudIA spec (v58.md, Dockerfile Stage 2):
+            # bare 'make' would also build 'data' and 'vh128sum.exe', which
+            # are out of scope for this installer and not needed by GalaPy.
+            [make_bin, 'cloudy.exe', f'-j{jobs}', opt_flags],
+            cwd=source_dir
+        )
+    except subprocess.CalledProcessError as e:
+        raise CloudyNotFound(
+            f"Cloudy compilation failed (make exit code {e.returncode}). "
+            f"Sources extracted at: {source_dir}. "
+            f"Inspect the make output above for the specific cause."
+        ) from e
+
+    exe = os.path.join(source_dir, 'cloudy.exe')
+    data = os.path.join(root, 'data')
 
     exe = os.path.join(root, 'source', 'cloudy.exe')
     data = os.path.join(root, 'data')
