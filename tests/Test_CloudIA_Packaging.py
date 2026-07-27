@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 import pytest
-import galapy.CloudIA
+import galapy.spectroscopy
 
 # installation path
 _CLOUDIA_DIR = pathlib.Path(galapy.CloudIA.__file__).resolve().parent
@@ -39,7 +39,7 @@ def test_cloudia_cli_is_importable():
 
     @pytest.mark.unit
     """
-    import galapy.CloudIA.cli
+    import galapy.spectroscopy.cloudia
 
 
 @pytest.mark.unit

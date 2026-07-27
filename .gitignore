@@ -32,9 +32,9 @@ DATASET/
 data/
 
 #nextflow
-/galapy/CloudIA/workflows/modules/.nextflow
-/galapy/CloudIA/workflows/.nextflow
-/galapy/CloudIA/workflows/modules/work
-/galapy/CloudIA/workflows/modules/.nextflow.log*
-/galapy/CloudIA/workflows/work
-/galapy/CloudIA/workflows/.nextflow.log*
+/galapy/spectroscopy/workflows/modules/.nextflow
+/galapy/spectroscopy/workflows/.nextflow
+/galapy/spectroscopy/workflows/modules/work
+/galapy/spectroscopy/workflows/modules/.nextflow.log*
+/galapy/spectroscopy/workflows/work
+/galapy/spectroscopy/workflows/.nextflow.log*

@@ -17,16 +17,16 @@ __all__ = [
 
 # dict. public name - module define it
 _LAZY = {
-    'HIIEmulator':          'galapy.CloudIA.hii_emulator',
-    'PDREmulator':          'galapy.CloudIA.pdr_emulator',
-    'NebularCSP':           'galapy.CloudIA.nebular_csp',
-    'HIINebularProcessor':  'galapy.CloudIA.hii_processor',
-    'PDRNebularProcessor':  'galapy.CloudIA.pdr_processor',
-    'TwoSectorCombiner':    'galapy.CloudIA.two_sector_combiner',
-    'PDRMapping':           'galapy.CloudIA.pdr_mapping',
-    'LineList':             'galapy.CloudIA.line_list',
-    'JointObservation':     'galapy.CloudIA.joint_observation',
-    'NebularResults':       'galapy.CloudIA.results'
+    'HIIEmulator':          'galapy.spectroscopy.hii_emulator',
+    'PDREmulator':          'galapy.spectroscopy.pdr_emulator',
+    'NebularCSP':           'galapy.spectroscopy.nebular_csp',
+    'HIINebularProcessor':  'galapy.spectroscopy.hii_processor',
+    'PDRNebularProcessor':  'galapy.spectroscopy.pdr_processor',
+    'TwoSectorCombiner':    'galapy.spectroscopy.two_sector_combiner',
+    'PDRMapping':           'galapy.spectroscopy.pdr_mapping',
+    'LineList':             'galapy.spectroscopy.line_list',
+    'JointObservation':     'galapy.spectroscopy.joint_observation',
+    'NebularResults':       'galapy.spectroscopy.results'
 }
 
 # hint on the module

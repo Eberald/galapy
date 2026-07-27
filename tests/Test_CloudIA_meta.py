@@ -5,7 +5,7 @@ from importlib.metadata import metadata
 import pathlib
 import pytest
 
-import galapy.CloudIA
+import galapy.spectroscopy
 
 _CLOUDIA_DIR = pathlib.Path(galapy.CloudIA.__file__).resolve().parent
 
