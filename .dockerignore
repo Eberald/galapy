@@ -1,0 +1,44 @@
+# Author: Enrico Veraldi
+# .dockerignore for galapy+cloudia+cloudy dockerfile image
+
+# git
+.git
+.gitignore
+.github
+
+# build python artefacts
+build/
+dist/
+*.egg-info
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/*.so
+
+# dataset galapy-dataset
+DATASET/
+
+# local staging pipeline
+data/
+**/*.h5
+**/*.pt
+**/*.npy
+**/*.npz
+**/*.sed
+
+# documentation and others
+doc/
+site/
+logo/
+CLAUDE.md
+
+# ide
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# test runtime
+.pytest_cache/
+.coverage
+htmlcov/
