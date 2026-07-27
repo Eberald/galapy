@@ -7,7 +7,7 @@ import pytest
 
 import galapy.spectroscopy
 
-_CLOUDIA_DIR = pathlib.Path(galapy.CloudIA.__file__).resolve().parent
+_CLOUDIA_DIR = pathlib.Path(galapy.spectroscopy.__file__).resolve().parent
 
 @pytest.mark.unit
 def test_requirements_txt_matches_distributed_metadata():

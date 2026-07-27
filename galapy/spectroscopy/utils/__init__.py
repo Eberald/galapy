@@ -81,7 +81,7 @@ def cloudy_banner(exe=None, timeout=300):
     try:
         out = subprocess.run([exe], input='', capture_output=True, text=True,
                              timeout=timeout).stdout
-    except (OSError, subprocess.TimeoutExpired or subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError):
         return None
     
     for line in out.splitlines():
@@ -229,50 +229,6 @@ def ensure_cloudy(prefix=None, interactive=None, jobs=None, url=None, sha256=Non
             f"'make' not found in PATH. Cloudy requires GNU Make to be compiled from source.\n"
             f"{hint}\n"
             f"Then re-run: python -m galapy.spectroscopy.utils --install-cloudy"
-        )
-
-    # --- C++ compiler -------------------------------------------------------
-    cxx_bin = shutil.which('g++') or shutil.which('c++') or shutil.which('clang++')
-    if cxx_bin is None:
-        if system == 'Darwin':
-            hint = (
-                "Install the Xcode Command Line Tools with:\n"
-                "    xcode-select --install\n"
-                "This provides Apple Clang (clang++), used as the default C++ compiler on macOS."
-            )
-        elif system == 'Windows':
-            hint = (
-                "No GCC/Clang-compatible C++ compiler found. MSVC (cl.exe) is not supported by "
-                "this build path (incompatible flag syntax and build system). Install a "
-                "GCC toolchain via MSYS2:\n"
-                "    pacman -S mingw-w64-x86_64-gcc\n"
-                "and ensure it is on PATH, or run this installer from inside WSL instead."
-            )
-        else:
-            hint = (
-                "    Debian/Ubuntu : sudo apt install g++\n"
-                "    conda         : conda install -c conda-forge gxx_linux-64"
-            )
-        raise CloudyNotFound(
-            f"No C++ compiler (g++/c++/clang++) found in PATH. Cloudy is written in C++ and "
-            f"requires a C++11-compatible, GCC/Clang-compatible compiler to be built.\n{hint}\n"
-            f"Then re-run: python -m galapy.spectroscopy.utils --install-cloudy"
-        )
-
-    if system == 'Windows':
-        print(
-            "NOTE: building on Windows via a detected GCC/Clang-compatible toolchain "
-            "(MSYS2/MinGW or similar) found in PATH. This path has not been independently "
-            "verified against Cloudy's official build instructions for Windows -- proceed "
-            "with awareness that this is not a confirmed-supported platform for this "
-            "installer."
-        )
-    if system == 'Darwin':
-        print(
-            "NOTE: on macOS, 'c++'/'g++' typically resolve to Apple Clang rather than GCC. "
-            "The OPT flags below are GCC-style; Apple Clang generally accepts the same "
-            "syntax, but this has not been independently verified against the "
-            "Huang-CL/cloudy mirror build instructions for macOS."
         )
 
     # --- C++ compiler -------------------------------------------------------

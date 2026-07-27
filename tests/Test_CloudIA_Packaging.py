@@ -11,7 +11,7 @@ import pytest
 import galapy.spectroscopy
 
 # installation path
-_CLOUDIA_DIR = pathlib.Path(galapy.CloudIA.__file__).resolve().parent
+_CLOUDIA_DIR = pathlib.Path(galapy.spectroscopy.__file__).resolve().parent
 
 
 #================== GENERAL MODULES IMPORT TEST =====================
@@ -46,11 +46,11 @@ def test_cloudia_cli_is_importable():
 @pytest.mark.parametrize(
     "module_name",
     [
-        "galapy.CloudIA.scripts",
-        "galapy.CloudIA.scripts.cloudy_common",
-        #"galapy.CloudIA.scripts.cloudy_common.abundances",
-        "galapy.CloudIA.scripts.cloudy_hii",
-        "galapy.CloudIA.scripts.cloudy_pdr",
+        "galapy.spectroscopy.utils",
+        "galapy.spectroscopy.utils.physics",
+        #"galapy.spectroscopy.utils.physics.abundances",
+        "galapy.spectroscopy.utils.hii",
+        "galapy.spectroscopy.utils.pdr",
     ],
 )
 def test_pipeline_modules_are_importable(module_name):
@@ -81,7 +81,7 @@ def test_pipeline_modules_are_importable(module_name):
 WIP, placeholder for check presence chemistry (N/O, grain, C/O, He/H)
 @pytest.mark.unit
 def test_shared_chemistry_is_reachable():
-    from galapy.CloudIA.scripts.cloudy_common.abundances import (
+    from galapy.spectroscopy.utils.physics.abundances import (
         nitrogen_offset,
         carbon_offset,
         helium_scale_factor,
@@ -106,7 +106,7 @@ def test_import_cloudia_does_not_pull_heavy_deps():
     are loaded, the subprocess will exit with a non-zero status, causing this exception to be raised.
     """
     code = (
-        "import sys; import galapy.CloudIA; "
+        "import sys; import galapy.spectroscopy; "
         "heavy = [m for m in ('torch', 'gpytorch', 'sklearn') if m in sys.modules]; "
         "sys.exit('Heavy imports present: %s' % heavy if heavy else 0)"
     )
