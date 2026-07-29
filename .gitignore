@@ -31,6 +31,9 @@ DATASET/
 #data raw
 data/
 
+#docs
+galapy/spectroscopy/docs/site/
+
 #nextflow
 /galapy/spectroscopy/workflows/modules/.nextflow
 /galapy/spectroscopy/workflows/.nextflow

@@ -147,36 +147,68 @@ def _reporthook(block_num, block_size, total_size):
               end="", flush=True)
 
 
-def ensure_cloudy(prefix=None, interactive=None, jobs=None, url=None, sha256=None):
+def _persist_cloudy_env(exe, data, profile_path=None):
     """
-    Installs and configures the Cloudy software if it is not already detected on the system.
+    Updates or creates environment variable definitions for the CloudIA CLOUDY environment
+    in the user's shell profile file.
 
-    This function ensures that the Cloudy astrophysical simulation tool is installed and available
-    for use. If Cloudy is not detected, the function prompts the user for permission to download,
-    install, and configure it. Once the installation is complete, environment variables required for
-    using Cloudy are printed, and the Cloudy detection function is invoked again to verify the
-    installation.
+    This function modifies the user's shell profile file to include or update exports for
+    `CLOUDY_EXE` and `CLOUDY_DATA_PATH`. If an existing block of environment configuration
+    is found, it is replaced; otherwise, the new configuration block is added to the end
+    of the profile file. The block is wrapped with markers to allow easy identification
+    and management of the CloudIA environment.
 
     Parameters:
-        prefix (Optional[str]): Path to the directory where Cloudy should be installed. Defaults to
-            a subdirectory in the user's home directory.
-        interactive (Optional[bool]): Whether to prompt the user interactively during installation.
-            Defaults to True in a TTY environment unless overridden by a CI environment.
-        jobs (Optional[int]): Number of parallel jobs to use during the compilation process. Defaults
-            to the number of CPU cores or 2 if the CPU count is unavailable.
-        url (Optional[str]): URL to download the Cloudy source code tarball. If not provided, a
-            default URL is used.
-        sha256 (Optional[str]): Expected SHA256 hash of the downloaded tarball. If not provided,
-            integrity verification using SHA256 is skipped.
-
-    Raises:
-        CloudyNotFound: If Cloudy is not found, the installation is aborted by the user, or the
-            SHA256 integrity verification fails.
+        exe (str): Path to the CloudIA executable file.
+        data (str): Path to the CloudIA data directory.
+        profile_path (Optional[str]): Path to the shell profile file. Defaults to
+            `.zshrc` or `.bashrc` inferred from the `SHELL` environment variable,
+            if not explicitly provided.
 
     Returns:
-        CloudyDetection: A detection result object indicating the outcome of the Cloudy installation
-            and configuration process.
+        Tuple[str, bool]: A tuple containing the profile file's path and a boolean
+            indicating whether the file was modified.
     """
+    import re
+    if profile_path is None:
+        shell = os.environ.get('SHELL', '')
+        rc_name = '.zshrc' if 'zsh' in shell else '.bashrc'
+        profile_path = os.path.join(os.path.expanduser('~'), rc_name)
+
+    marker_begin = '# >>> CloudIA CLOUDY environment >>>'
+    marker_end = '# <<< CloudIA CLOUDY environment <<<'
+    block = (f'{marker_begin}\n'
+             f'export CLOUDY_EXE="{exe}"\n'
+             f'export CLOUDY_DATA_PATH="{data}"\n'
+             f'{marker_end}\n')
+
+    content = ''
+    if os.path.isfile(profile_path):
+        with open(profile_path, 'r') as fh:
+            content = fh.read()
+
+    pattern = re.compile(re.escape(marker_begin) + r'.*?' + re.escape(marker_end) + r'\n?',
+                          re.DOTALL)
+    if pattern.search(content):
+        new_content = pattern.sub(lambda m: block, content)
+        if new_content == content:
+            return profile_path, False
+    else:
+        sep = '' if not content or content.endswith('\n') else '\n'
+        new_content = content + sep + '\n' + block
+
+    with open(profile_path, 'w') as fh:
+        fh.write(new_content)
+    return profile_path, True
+
+
+def ensure_cloudy(prefix=None,
+                  interactive=None,
+                  jobs=None,
+                  url=None,
+                  sha256=None,
+                  persist_env=None):
+
     import hashlib as _hl
     import platform
     import subprocess
@@ -193,7 +225,7 @@ def ensure_cloudy(prefix=None, interactive=None, jobs=None, url=None, sha256=Non
         interactive = sys.stdin.isatty() and not os.environ.get('CI')
     if not interactive:
        raise CloudyNotFound(f'Cloudy not found and not interactive, manual installation required: '
-                            f'python -m galapy.spectroscopy.utils --install-cloudy')
+                            f'galapy-install-cloudy from terminal')
 
     system = platform.system()
     machine = platform.machine()
@@ -342,8 +374,28 @@ def ensure_cloudy(prefix=None, interactive=None, jobs=None, url=None, sha256=Non
 
     os.environ.setdefault('CLOUDY_EXE', exe)
     os.environ.setdefault('CLOUDY_DATA_PATH', data)
-    return detect_cloudy()
 
+    if persist_env is None:
+        persist_env = bool(interactive) and input(
+            "Make permanent the variables for your environment?"
+            "(write in ~/.bashrc or ~/.zshrc)? [y/N] "
+        ).strip().lower() in ('y', 'yes', 's', 'si')
+
+    if persist_env:
+        try:
+            path, written = _persist_cloudy_env(exe, data)
+            verb = "write in" if written else "already present in"
+            print(f"Variables {verb} {path}.\n"
+                  f"  Run 'source {path}' (or open a new terminal).\n")
+        except OSError as exc:
+            print(f"WARNING: failed to set global env ({exc}); "
+                  "CLOUDY installation is present, add manually:\n"
+                  f"  export CLOUDY_EXE={exe}\n"
+                  f"  export CLOUDY_DATA_PATH={data}")
+    else:
+        print("No env variables permanently set")
+
+    return detect_cloudy()
     
 
 

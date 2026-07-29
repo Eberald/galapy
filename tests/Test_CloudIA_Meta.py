@@ -74,3 +74,25 @@ def test_pytest_naming_convention_discovery():
     assert current_file.name.startswith("Test_"), (
         f"File {current_file.name} not named as Test_*.py "
     )
+
+
+@pytest.mark.unit
+def test_install_cloudy_entrypoint_is_declared_in_metadata():
+    """
+    Test if the entry point for installing Cloudy is declared in the metadata.
+
+    This unit test ensures that the 'galapy-install-cloudy' entry point exists in the
+    metadata of the 'galapy-fit' distribution under the 'console_scripts' group.
+    It verifies that the entry point name and value are correctly defined.
+
+    Raises:
+        AssertionError: If the 'galapy-install-cloudy' entry point is missing or its
+        associated value is incorrect.
+
+    """
+    from importlib.metadata import distribution
+    cs = {ep.name: ep.value for ep in distribution('galapy-fit').entry_points
+          if ep.group == 'console_scripts'}
+    assert 'galapy-install-cloudy' in cs, (
+        f"entry point absent in metadata (console_scripts={sorted(cs)}):")
+    assert cs['galapy-install-cloudy'] == 'galapy.spectroscopy.utils.install_cloudy:main'

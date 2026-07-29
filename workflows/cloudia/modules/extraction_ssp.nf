@@ -24,7 +24,7 @@ process EXTRACT_SSP_SEDS{
     cpus 1
     memory '2 GB'
     time '2m'
-    publishDir '../../../../data/cloudy_seds/', mode: 'move'
+    publishDir '../../../data/cloudy_seds/', mode: 'move'
 
     output:
     path 'SED/*.sed', emit: seds
@@ -33,7 +33,7 @@ process EXTRACT_SSP_SEDS{
     script:
     """
     mkdir -p SED
-    python -m galapy.CloudIA.scripts.extract_ssp_seds \\
+    python -m galapy.spectroscopy.utils.spectra \\
         --ssp-lib parsec22.NT \\
         --out SED/
     """

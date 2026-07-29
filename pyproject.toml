@@ -72,8 +72,10 @@ galapy-fit = "galapy.sampling.Run:_run"
 galapy-genparams = "galapy.sampling.Run:_generate_parameter_file"
 galapy-download-database = "galapy.internal.data:_entrypoint_download_database"
 #========== CLOUDIA ==========# WIP tools, placeholder
-galapy-translate-filter = "galapy.CloudIA.cli.translate_filter:main"
-galapy-agent            = "galapy.CloudIA.cli.agent:main"
+galapy-translate-filter   = "galapy.CloudIA.cli.translate_filter:main" #WIP
+galapy-agent              = "galapy.CloudIA.cli.agent:main" #WIP
+galapy-install-cloudy     = "galapy.spectroscopy.utils.install_cloudy:main"
+galapy-sed-cloudy-extract = "galapy.spectroscopy.utils.spectra:main"
 
 #========== CLOUDIA ==========#
 [tool.pytest.ini_options]
