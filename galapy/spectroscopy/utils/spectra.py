@@ -15,7 +15,7 @@ import galapy.internal.constants as CONST
 
 #=============== DEFAULTS TAUS AND METALLICITIES ===============
 taus = np.array([1e6,2e6,5e6,1e7,2e7,5e7,7e7,1e8])
-Z = np.array([0.0001,0.005,0.0010,0.0040, 0.0080, 0.0200])
+Z = np.array([0.0001,0.0005,0.0010,0.0040, 0.0080, 0.0200])
 
 #=============== LOADING FUNCTIONS FOR SEDS ===============
 
@@ -152,6 +152,7 @@ def write_cloudy_sed(wavelength_A,
         mask = wavelength_A >= float(lambda_min_A)
         if not np.any(mask):
             raise ValueError(f'lambda_min_A={lambda_min_A} is too big for the SED (no points left after cut)')
+        wavelength_A, nuFnu = wavelength_A[mask], nuFnu[mask]
 
     nuFnu = np.maximum(nuFnu, 1e-300)  # cut null fluxes
     order = np.argsort(wavelength_A)  # monotonic sort
@@ -226,7 +227,7 @@ def to_cloudy_sed(outpath,
 
 # =============== QH ===============
 
-def cloudy_sed_QH(sed_path, lyman_A=CONST.LyA):
+def cloudy_sed_QH(sed_path, lyman_A=CONST.LyLimit):
     """
     Calculate the hydrogen-ionizing photon rate from SED file.
 
@@ -239,7 +240,7 @@ def cloudy_sed_QH(sed_path, lyman_A=CONST.LyA):
         sed_path (str): Path to the SED file. The file must contain two columns:
                         wavelength in Angstroms and flux in units of nu*F(nu).
         lyman_A (float): The Lyman-alpha wavelength limit in Angstroms. Defaults to
-                         the constant CONST.LyA.
+                         the constant CONST.LyLimit.
 
     Returns:
         float: The hydrogen-ionizing photon rate in photons per second.
@@ -252,6 +253,38 @@ def cloudy_sed_QH(sed_path, lyman_A=CONST.LyA):
     order = np.argsort(wavelength_cm)
     return float(np.trapezoid(nuFnu[euv][order], wavelength_cm[order]) /
                  (CONST.hP["erg*s"] * CONST.clight["cm/s"]))
+
+
+def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LyLimit):
+    """Calculate Q_H (hydrogen-ionizing photon rate) from a raw SSP node in GalaPy format (1 Msun).
+
+    This function computes the hydrogen-ionizing photon rate directly from the unwritten SSP table
+    (raw data cube) for a specific age and metallicity node. It serves as a reference term
+    The calculation follows Eq. 42 from Ronconi+24 and integrates the spectral energy distribution
+    below the Lyman limit to obtain the total ionizing photon rate per solar mass of stellar population
+    formed.
+
+    Parameters:
+        cube (tuple): SSP data cube containing (wavelength, time, metallicity, luminosity arrays).
+        it (int): Time index in the SSP cube corresponding to the desired stellar age.
+        iz (int): Metallicity index in the SSP cube corresponding to the desired stellar metallicity.
+        lyman_A (float, optional): Lyman limit wavelength in Angstroms. Defaults to CONST.LyLimit.
+
+    Returns:
+        float: Hydrogen-ionizing photon rate in photons per second per solar mass.
+    """
+    l, _t, _Z, L = cube
+    wavelength_A = np.asarray(l, dtype=float)
+    L_lambda = np.asarray(L[:, it, iz], dtype=float)
+    euv = wavelength_A < lyman_A
+    if not np.any(euv):
+        return 0.0
+    wavelength_cm = wavelength_A[euv] * 1e-8
+    nuFnu = L_lambda[euv] * wavelength_A[euv] * CONST.Lsun
+    order = np.argsort(wavelength_cm)
+    return float(np.trapezoid(nuFnu[order], wavelength_cm[order]) /
+                 (CONST.hP["erg*s"] * CONST.clight["cm/s"]))
+
 
 # =============== EXTRACTION SCRIPTS ===============
 

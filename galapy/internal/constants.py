@@ -22,7 +22,7 @@ hP = {
 }
 
 # SED emission line points [Angstrom]
-LyA=911.6
+LyLimit=911.76
 
 # Angstrom to keV
 def Ang_to_keV ( wavelength ) :
