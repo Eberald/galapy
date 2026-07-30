@@ -59,7 +59,8 @@ cloudia = [
     "scikit-learn>=1.3", #PCA
     "pyyaml>=6.0",
     "jinja2>=3.0",
-    "mkdocs-material==9.5.50"
+    "mkdocs-material==9.5.50",
+    "mkdocstrings[python]"
 ]
 cloudia-agent = [#WIP, placeholder
     "ollama>=0.3",

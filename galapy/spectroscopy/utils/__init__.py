@@ -4,6 +4,7 @@
 import os
 import shutil
 from collections import namedtuple
+from typing import Tuple, Optional
 
 __all__ = ['CLOUDY', 'CloudyInstall', 'CloudyNotFound', 'detect_cloudy', 'cloudy_banner',
            'require_cloudy', 'ensure_cloudy']
@@ -21,7 +22,7 @@ class CloudyNotFound(RuntimeError) :
     CLOUDY code not found and is necessary for the execution of the code
     """
 
-def detect_cloudy():
+def detect_cloudy() -> CloudyInstall:
     """
     Detect the Cloudy executable and associated data path.
 
@@ -32,8 +33,8 @@ def detect_cloudy():
 
     Returns:
         CloudyInstall: An object that includes the executable path, data path,
-        version, and a boolean value indicating whether the Cloudy executable
-        was successfully located.
+            version, and a boolean value indicating whether the Cloudy executable
+            was successfully located.
     """
     exe = os.environ.get('CLOUDY_EXE') or shutil.which('cloudy')
     data = os.environ.get('CLOUDY_DATA_PATH')
@@ -50,7 +51,7 @@ CLOUDY = detect_cloudy()
 
 #=========================================================
 
-def cloudy_banner(exe=None, timeout=300):
+def cloudy_banner(exe: str = None, timeout: int = 300) -> Optional[str]:
     """
     Runs the Cloudy application and retrieves the banner line of its output.
 
@@ -60,18 +61,15 @@ def cloudy_banner(exe=None, timeout=300):
     it returns None.
 
     Parameters:
-    exe: str, optional
-        The path to the Cloudy executable. If not provided, the default executable
-        path specified in the CLOUDY global configuration is used.
-    timeout: int, optional
-        The maximum time in seconds to wait for the Cloudy executable to complete.
-        Defaults to 300 seconds.
+        exe (str, optional): The path to the Cloudy executable. If not provided,
+            the default executable path specified in the CLOUDY global configuration is used.
+        timeout (int, optional): The maximum time in seconds to wait for the Cloudy executable to complete.
+            Defaults to 300 seconds.
 
     Returns:
-    str or None
-        The banner line containing the word "Cloudy" from the executable's output,
-        or None if the executable was unavailable, an error occurred, or no
-        matching output was found.
+        str, optional: The banner line containing the word "Cloudy" from the executable's output,
+            or None if the executable was unavailable, an error occurred, or no
+            matching output was found.
     """
     import subprocess
     exe = exe or CLOUDY.exe
@@ -90,7 +88,7 @@ def cloudy_banner(exe=None, timeout=300):
 
     return None
 
-def require_cloudy(check_version=True):
+def require_cloudy(check_version: bool = True) -> CloudyInstall:
     """
     Checks for the presence of Cloudy software and optionally verifies its version.
 
@@ -100,16 +98,16 @@ def require_cloudy(check_version=True):
     exception will be raised.
 
     Parameters:
-        check_version (bool): Indicates whether to validate the detected version of Cloudy.
+        check_version (bool, optional): Indicates whether to validate the detected version of Cloudy.
             Defaults to True.
 
     Returns:
-        det: An object containing details about the Cloudy executable, including its path
-        and version if available.
+        CloudyInstall: An object containing details about the Cloudy executable, including its path
+            and version if available.
 
     Raises:
         CloudyNotFound: Raised if the Cloudy executable is not found or if the version
-        check fails when `check_version` is True.
+            check fails when `check_version` is True.
     """
     det = detect_cloudy()
     if not det.found:
@@ -123,7 +121,7 @@ def require_cloudy(check_version=True):
 
     return det
 
-def _reporthook(block_num, block_size, total_size):
+def _reporthook(block_num: int, block_size: int, total_size: int) -> None:
     """
     Reports the progress of a download.
 
@@ -135,7 +133,7 @@ def _reporthook(block_num, block_size, total_size):
         block_num (int): The current block number being processed.
         block_size (int): The size of each block in bytes.
         total_size (int): The total size of the file in bytes. If the total size is unknown, this
-        value may be -1.
+            value may be -1.
     """
     downloaded = block_num * block_size
     if total_size > 0:
@@ -147,7 +145,7 @@ def _reporthook(block_num, block_size, total_size):
               end="", flush=True)
 
 
-def _persist_cloudy_env(exe, data, profile_path=None):
+def _persist_cloudy_env(exe: str, data: str, profile_path: str = None) -> Tuple[str, bool]:
     """
     Updates or creates environment variable definitions for the CloudIA CLOUDY environment
     in the user's shell profile file.
@@ -161,12 +159,12 @@ def _persist_cloudy_env(exe, data, profile_path=None):
     Parameters:
         exe (str): Path to the CloudIA executable file.
         data (str): Path to the CloudIA data directory.
-        profile_path (Optional[str]): Path to the shell profile file. Defaults to
+        profile_path (str, optional): Path to the shell profile file. Defaults to
             `.zshrc` or `.bashrc` inferred from the `SHELL` environment variable,
             if not explicitly provided.
 
     Returns:
-        Tuple[str, bool]: A tuple containing the profile file's path and a boolean
+        tuple[str, bool]: A tuple containing the profile file's path and a boolean
             indicating whether the file was modified.
     """
     import re
@@ -202,13 +200,37 @@ def _persist_cloudy_env(exe, data, profile_path=None):
     return profile_path, True
 
 
-def ensure_cloudy(prefix=None,
-                  interactive=None,
-                  jobs=None,
-                  url=None,
-                  sha256=None,
-                  persist_env=None):
+def ensure_cloudy(prefix: str = None,
+                  interactive: bool = None,
+                  jobs: int = None,
+                  url: str = None,
+                  sha256: str = None,
+                  persist_env: bool = None) -> CloudyInstall:
+    """
+    Ensures that Cloudy is installed and available, downloading and compiling it from source if necessary.
 
+    This function checks for an existing Cloudy installation. If not found, and the execution is
+    interactive, it prompts the user to download and compile Cloudy from the official release tarball.
+    It compiles the `cloudy.exe` target using GNU Make and a C++ compiler found in PATH, and
+    optionally persists the environment variables `CLOUDY_EXE` and `CLOUDY_DATA_PATH` to the user's
+    shell profile.
+
+    Parameters:
+        prefix (str, optional): Installation directory path. Defaults to '~/.galapy/cloudy'.
+        interactive (bool, optional): If True, run in interactive mode prompting the user.
+            Defaults to True if stdin is a TTY and not running in CI.
+        jobs (int, optional): Number of compilation threads to run in parallel. Defaults to CPU count or 2.
+        url (str, optional): Alternative URL to download the Cloudy release tarball from.
+        sha256 (str, optional): SHA256 checksum to verify the downloaded archive.
+        persist_env (bool, optional): If True, permanently write env variables to shell profile (.bashrc/.zshrc).
+
+    Returns:
+        CloudyInstall: An object detailing the detected or newly installed Cloudy executable.
+
+    Raises:
+        CloudyNotFound: Raised if Cloudy is not found/installed, Make/compiler are missing,
+            compilation fails, SHA256 mismatch occurs, or installation is aborted.
+    """
     import hashlib as _hl
     import platform
     import subprocess
@@ -396,8 +418,3 @@ def ensure_cloudy(prefix=None,
         print("No env variables permanently set")
 
     return detect_cloudy()
-    
-
-
-
-

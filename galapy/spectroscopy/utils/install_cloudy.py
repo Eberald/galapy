@@ -5,9 +5,9 @@ import argparse
 import sys
 
 from galapy.spectroscopy.utils import (CLOUDY_REQUIRED, CloudyNotFound, detect_cloudy,
-                                       ensure_cloudy, cloudy_banner)
+                                       ensure_cloudy, cloudy_banner, CloudyInstall)
 
-def build_parser():
+def build_parser() -> argparse.ArgumentParser:
     """
     Builds and configures the argument parser for the galapy-install-cloudy utility.
 
@@ -31,7 +31,7 @@ def build_parser():
                     help='`make -jN` parallelism. DEFAULT: os.cpu_count()')
     return ap
 
-def _report(inst, banner=None):
+def _report(inst: CloudyInstall, banner: str = None) -> None:
     """
     Reports the status of the 'inst' object, primarily used for determining if a
     resource, such as the 'CLOUDY' application, is found or not. Provides details
@@ -39,14 +39,9 @@ def _report(inst, banner=None):
     version.
 
     Parameters:
-        inst: object
-            The instance to be reported, containing attributes such as 'found',
+        inst (CloudyInstall): The instance to be reported, containing attributes such as 'found',
             'exe', and 'data_path'.
-        banner: str, optional
-            An optional banner string to display in the report.
-
-    Returns:
-        None
+        banner (str, optional): An optional banner string to display in the report.
     """
     if not inst.found:
         print(f'CLOUDY: NOT FOUND')
@@ -59,7 +54,20 @@ def _report(inst, banner=None):
     print(f'  requested version : {CLOUDY_REQUIRED}')
 
 
-def main(argv=None):
+def main(argv: list = None) -> int:
+    """
+    Main entrypoint for the command line utility galapy-install-cloudy.
+
+    This function parses the provided command-line arguments, checks for an existing
+    installation of CLOUDY if requested, and otherwise proceeds to install CLOUDY.
+
+    Parameters:
+        argv (list, optional): List of command-line argument strings to parse.
+            Defaults to sys.argv[1:] if None.
+
+    Returns:
+        int: Exit status code (0 for success, 1 for failure).
+    """
     args = build_parser().parse_args(argv)
     inst = detect_cloudy()
 
@@ -84,5 +92,3 @@ def main(argv=None):
 
 if __name__ == '__main__':
     sys.exit(main())
-
-

@@ -19,7 +19,7 @@ Z = np.array([0.0001,0.0005,0.0010,0.0040, 0.0080, 0.0200])
 
 #=============== LOADING FUNCTIONS FOR SEDS ===============
 
-def load_ssp_cube(ssp_lib='parsec22.NT'):
+def load_ssp_cube(ssp_lib='parsec22.NT') -> tuple:
     """
     Loads the SSP cube from the specified spectral library.
 
@@ -27,24 +27,22 @@ def load_ssp_cube(ssp_lib='parsec22.NT'):
     and the corresponding luminosity values by loading and reshaping the SSP table.
 
     Parameters:
-    ssp_lib: str, optional
-        The name of the spectral library to load the SSP table from. Defaults to
-        'parsec22.NT'.
+        ssp_lib (str, optional): The name of the spectral library to load the SSP table from.
+            Defaults to 'parsec22.NT'.
 
     Returns:
-    tuple
-        A tuple containing:
-        - l (numpy.ndarray): Array of wavelength values.
-        - t (numpy.ndarray): Array of time step values.
-        - Z (numpy.ndarray): Array of metallicity values.
-        - L (numpy.ndarray): Reshaped 3D array of luminosity values with dimensions
-          corresponding to (wavelengths, time steps, metallicities).
+        tuple: A tuple containing:
+            - l (numpy.ndarray): Array of wavelength values.
+            - t (numpy.ndarray): Array of time step values.
+            - Z (numpy.ndarray): Array of metallicity values.
+            - L (numpy.ndarray): Reshaped 3D array of luminosity values with dimensions
+              corresponding to (wavelengths, time steps, metallicities).
     """
     l, t, Z, L_flat = load_SSP_table(ssp_lib)
     L = reshape_SSP_table(L_flat, shape=(l.size, t.size, Z.size))
     return l, t, Z, L
 
-def sed_from_ssp_cube_node(cube, it, iz):
+def sed_from_ssp_cube_node(cube, it, iz) -> tuple:
     """
     Extracts a SED from an SSP cube node (tau_SSP, Z_star), 1Msun format.
 
@@ -53,27 +51,23 @@ def sed_from_ssp_cube_node(cube, it, iz):
     and metallicity indices.
 
     Parameters:
-    cube: tuple
-        A tuple containing the wavelength array, time grid, metallicity grid, and
-        SED data cube. The expected structure is (l, _t, _Z, L), where:
-        - l: Wavelength array.
-        - _t: Time grid (ignored in this function).
-        - _Z: Metallicity grid (ignored in this function).
-        - L: Multidimensional array representing the SED cube.
-    it: int
-        The index corresponding to the time grid in the SED cube.
-    iz: int
-        The index corresponding to the metallicity grid in the SED cube.
+        cube (tuple): A tuple containing the wavelength array, time grid, metallicity grid, and
+            SED data cube. The expected structure is (l, _t, _Z, L), where:
+            - l: Wavelength array.
+            - _t: Time grid (ignored in this function).
+            - _Z: Metallicity grid (ignored in this function).
+            - L: Multidimensional array representing the SED cube.
+        it (int): The index corresponding to the time grid in the SED cube.
+        iz (int): The index corresponding to the metallicity grid in the SED cube.
 
     Returns:
-    tuple
-        A tuple containing the wavelength array and the corresponding SED
-        extracted from the input SSP cube at the specified indices.
+        tuple: A tuple containing the wavelength array and the corresponding SED
+            extracted from the input SSP cube at the specified indices.
     """
     l, _t, _Z, L = cube
     return l, L[:, it, iz]
 
-def sed_from_csp(csp, age, sfh):
+def sed_from_csp(csp, age, sfh) -> tuple:
     """
     Generate the SED from a composite stellar population (CSP) model.
 
@@ -83,29 +77,17 @@ def sed_from_csp(csp, age, sfh):
     with a specific CSP.
 
     Parameters:
-    csp : object
-        The composite stellar population model object. It is expected to have the
-        methods `set_parameters` and `core.emission`, and attributes `l` and `t`.
-
-    age : float
-        The age (in appropriate time units) to set for the CSP model.
-
-    sfh : array-like
-        The star formation history (SFH) to set for the CSP model. It should be
-        compatible with the model's requirements.
+        csp (CSP): The composite stellar population model object. It is expected to have the
+            methods `set_parameters` and `core.emission`, and attributes `l` and `t`.
+        age (float): The age (in appropriate time units) to set for the CSP model.
+        sfh (array-like): The star formation history (SFH) to set for the CSP model. It should be
+            compatible with the model's requirements.
 
     Returns:
-    tuple
-        A tuple containing:
-        - csp.l : array
-            Wavelength grid for the SED (provided by the CSP model).
-
-        - array
-            Emission spectrum computed by the CSP model, reshaped to match the
-            wavelength grid and provided SFH time structure.
-
-    Raises:
-    None
+        tuple: A tuple containing:
+            - csp.l (numpy.ndarray): Wavelength grid for the SED (provided by the CSP model).
+            - array (numpy.ndarray): Emission spectrum computed by the CSP model, reshaped to match the
+              wavelength grid and provided SFH time structure.
     """
     csp.set_parameters(age, sfh)
     il = np.arange(len(csp.l), dtype=np.uint64)
@@ -118,7 +100,7 @@ def write_cloudy_sed(wavelength_A,
                      L_lambda,
                      outpath,
                      extrapolate=False,
-                     lambda_min_A=None):
+                     lambda_min_A=None) -> str:
     """
     Converts a SED to a CLOUDY table SED format.
 
@@ -131,13 +113,13 @@ def write_cloudy_sed(wavelength_A,
         L_lambda (numpy.ndarray): Luminosity array corresponding to the wavelengths provided.
         outpath (str): File path where the CLOUDY table SED will be saved.
         extrapolate (bool, optional): If True, CLOUDY extrapolates the SED to the low-energy limit of the code.
-        Defaults to False.
+            Defaults to False.
         lambda_min_A (float, optional): Minimum wavelength cutoff value in Angstroms. If provided, wavelengths below
-        this value will be ignored. Defaults to None.
+            this value will be ignored. Defaults to None.
 
     Raises:
         ValueError: Raised if the input wavelength array contains fewer than two data points or if the
-        wavelength filtering leaves no data points.
+            wavelength filtering leaves no data points.
 
     Returns:
         str: The file path where the CLOUDY table SED was written.
@@ -182,7 +164,7 @@ def to_cloudy_sed(outpath,
                   it = None,
                   iz = None,
                   extrapolate = False,
-                  lambda_min_A = None):
+                  lambda_min_A = None) -> str:
     """
     Converts spectral data to a Cloudy-compatible SED file format.
 
@@ -191,28 +173,28 @@ def to_cloudy_sed(outpath,
     with Cloudy.
 
     Parameters:
-    - outpath (str): The file path where the resulting SED data should be saved.
-    - cube: Optional. Cube containing SSPs, typically structured spectral
-      data with temporal and metallicity dimensions.
-    - csp: Optional. Composite stellar population model representing
-      star formation and age distributions.
-    - age: Optional. Age associated with the stellar population. Typically required
-      when using a CSP model.
-    - sfh: Optional. Star formation history model. Required if using a CSP model.
-    - it: Optional. Temporal index used to select an SSP node from the cube.
-    - iz: Optional. Metallicity index to select an SSP node from the cube.
-    - extrapolate (bool): Optional. Specifies whether to extrapolate data
-      beyond the provided spectral range. Default is False.
-    - lambda_min_A: Optional. Minimum wavelength (in Angstroms) to use
-      for filtering or processing data.
+        outpath (str): The file path where the resulting SED data should be saved.
+        cube (tuple, optional): Cube containing SSPs, typically structured spectral
+            data with temporal and metallicity dimensions.
+        csp (CSP, optional): Composite stellar population model representing
+            star formation and age distributions.
+        age (float, optional): Age associated with the stellar population. Typically required
+            when using a CSP model.
+        sfh (array-like, optional): Star formation history model. Required if using a CSP model.
+        it (int, optional): Temporal index used to select an SSP node from the cube.
+        iz (int, optional): Metallicity index to select an SSP node from the cube.
+        extrapolate (bool, optional): Specifies whether to extrapolate data
+            beyond the provided spectral range. Default is False.
+        lambda_min_A (float, optional): Minimum wavelength (in Angstroms) to use
+            for filtering or processing data.
 
     Raises:
-    - ValueError: Raised when neither (cube, it, iz) nor (csp, age, sfh)
-      is provided as input.
+        ValueError: Raised when neither (cube, it, iz) nor (csp, age, sfh)
+            is provided as input.
 
     Returns:
-    - str: The output file path where the Cloudy-compatible SED file
-      has been saved.
+        str: The output file path where the Cloudy-compatible SED file
+            has been saved.
     """
 
     if cube is not None and it is not None and iz is not None:
@@ -227,7 +209,7 @@ def to_cloudy_sed(outpath,
 
 # =============== QH ===============
 
-def cloudy_sed_QH(sed_path, lyman_A=CONST.LyLimit):
+def cloudy_sed_QH(sed_path, lyman_A=CONST.LyLimit) -> float:
     """
     Calculate the hydrogen-ionizing photon rate from SED file.
 
@@ -238,9 +220,9 @@ def cloudy_sed_QH(sed_path, lyman_A=CONST.LyLimit):
 
     Parameters:
         sed_path (str): Path to the SED file. The file must contain two columns:
-                        wavelength in Angstroms and flux in units of nu*F(nu).
-        lyman_A (float): The Lyman-alpha wavelength limit in Angstroms. Defaults to
-                         the constant CONST.LyLimit.
+            wavelength in Angstroms and flux in units of nu*F(nu).
+        lyman_A (float, optional): The Lyman-alpha wavelength limit in Angstroms.
+            Defaults to the constant CONST.LyLimit.
 
     Returns:
         float: The hydrogen-ionizing photon rate in photons per second.
@@ -255,11 +237,12 @@ def cloudy_sed_QH(sed_path, lyman_A=CONST.LyLimit):
                  (CONST.hP["erg*s"] * CONST.clight["cm/s"]))
 
 
-def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LyLimit):
-    """Calculate Q_H (hydrogen-ionizing photon rate) from a raw SSP node in GalaPy format (1 Msun).
+def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LyLimit) -> float:
+    """
+    Calculate Q_H (hydrogen-ionizing photon rate) from a raw SSP node in GalaPy format (1 Msun).
 
     This function computes the hydrogen-ionizing photon rate directly from the unwritten SSP table
-    (raw data cube) for a specific age and metallicity node. It serves as a reference term
+    (raw data cube) for a specific age and metallicity node. It serves as a reference term.
     The calculation follows Eq. 42 from Ronconi+24 and integrates the spectral energy distribution
     below the Lyman limit to obtain the total ionizing photon rate per solar mass of stellar population
     formed.
@@ -290,7 +273,8 @@ def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LyLimit):
 
 def extract_ssp_seds(outdir, target_taus = taus,
                      target_Z  = Z,
-                     ssp_lib = "parsec22.NT", truncate_lyman=None):
+                     ssp_lib = "parsec22.NT", truncate_lyman=None,
+                     extrapolate=False) -> tuple:
     """
     Extracts SSP (Simple Stellar Population) SEDs (Spectral Energy Distributions) for given target
     values of stellar ages and metallicities from a specified SSP library. The extracted data is saved
@@ -299,13 +283,16 @@ def extract_ssp_seds(outdir, target_taus = taus,
 
     Parameters:
         outdir (str): Path to the output directory where the SED files and metadata will be saved.
-        target_taus (list[float]): List of target stellar age values (in years) for which SEDs should be extracted.
-                                   Default: taus.
-        target_Z (list[float]): List of target stellar metallicities for which SEDs should be extracted.
-                                Default: Z.
-        ssp_lib (str): Name of the SSP library to load the cube from. Default: "parsec22.NT".
-        truncate_lyman (float or None): Minimum wavelength (in Angstroms) to include in the SED. If None,
-                                        the SED is not truncated. Default: None.
+        target_taus (list[float], optional): List of target stellar age values (in years) for which SEDs should be extracted.
+            Default: taus.
+        target_Z (list[float], optional): List of target stellar metallicities for which SEDs should be extracted.
+            Default: Z.
+        ssp_lib (str, optional): Name of the SSP library to load the cube from.
+            Default: "parsec22.NT".
+        truncate_lyman (float, optional): Minimum wavelength (in Angstroms) to include in the SED.
+            If None, the SED is not truncated. Default: None.
+        extrapolate (bool, optional): If True, CLOUDY extrapolates the SED to the low-energy limit of the code.
+            Default: False.
 
     Returns:
         tuple: A tuple containing:
@@ -330,7 +317,7 @@ def extract_ssp_seds(outdir, target_taus = taus,
         for iz in selected_iz:
             file_name = f"ssp_tau{t[it]:.3e}_Z{Z[iz]:.4f}.sed"
             path = os.path.join(outdir, file_name)
-            to_cloudy_sed(path, cube = cube, it=it, iz=iz, lambda_min_A=truncate_lyman)
+            to_cloudy_sed(path, cube = cube, it=it, iz=iz, lambda_min_A=truncate_lyman, extrapolate = extrapolate)
             n += 1
             if truncate_lyman is None:
                 metadata.append(
@@ -383,12 +370,14 @@ def main():
                     help='SSP ages in years (e.g., --tau 1e6 2e6 5e6)')
     ap.add_argument('--Z', type=float, nargs='+', default=None,
                     help='SSP metallicities (e.g., --Z 0.0001 0.005 0.0010)')
+    ap.add_argument('--e','--extrapolate', type=bool, nargs='+', default=None,
+                    help='put extrapolate flag for make CLOUDY extrapolate low energy regime')
     args = ap.parse_args()
     
     target_taus = np.array(args.tau) if args.tau is not None else taus
     target_Z = np.array(args.Z) if args.Z is not None else Z
     n, _meta = extract_ssp_seds(args.out, target_taus=target_taus, target_Z=target_Z,
-                         ssp_lib=args.ssp_lib, truncate_lyman=args.truncate_lyman)
+                         ssp_lib=args.ssp_lib, truncate_lyman=args.truncate_lyman, extrapolate=args.extrapolate)
 
     tag = 'truncated' if args.truncate_lyman is not None else 'complete'
     print(f"[extract_ssp] {n} nodes {tag} -> {args.out}, the SED is {tag}")
