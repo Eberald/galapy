@@ -35,6 +35,13 @@ theme:
     - content.code.copy
     - content.code.annotate
 
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [../../..]
+
 markdown_extensions:
   - admonition
   - pymdownx.details
@@ -64,6 +71,9 @@ nav:
   - Home: index.md
   - Guide:
       - Quickstart: quickstart.md
+      - Command Line Interface:
+          - "SSP extraction": ssp_extraction.md
+          - "CLOUDY installation": cloudy_installation.md
       - "Integration with GalaPy": galapy_integration.md
       - "AI Agent - the AI part of CloudIA": ai_agent.md
       - "API CLOUDY": api_cloudy.md
