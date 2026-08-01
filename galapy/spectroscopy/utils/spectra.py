@@ -100,7 +100,8 @@ def write_cloudy_sed(wavelength_A,
                      L_lambda,
                      outpath,
                      extrapolate=False,
-                     lambda_min_A=None) -> str:
+                     lambda_min_A=None,
+                     lambda_max_A=None) -> str:
     """
     Converts a SED to a CLOUDY table SED format.
 
@@ -116,6 +117,8 @@ def write_cloudy_sed(wavelength_A,
             Defaults to False.
         lambda_min_A (float, optional): Minimum wavelength cutoff value in Angstroms. If provided, wavelengths below
             this value will be ignored. Defaults to None.
+        lambda_max_A (float, optional): Maximum wavlenght cutoff value in Angstroms. If provided, wavelengths above
+            this value will be ignored. Defaults to None.
 
     Raises:
         ValueError: Raised if the input wavelength array contains fewer than two data points or if the
@@ -130,8 +133,12 @@ def write_cloudy_sed(wavelength_A,
     wavelength_A = np.asarray(wavelength_A, dtype=float)
     nuFnu = np.asarray(L_lambda, dtype=float) * wavelength_A * CONST.Lsun
 
+    mask = np.ones(wavelength_A.shape, dtype=bool)
     if lambda_min_A is not None:
-        mask = wavelength_A >= float(lambda_min_A)
+        mask &= wavelength_A >= float(lambda_min_A)
+    if lambda_max_A is not None:
+        mask &= wavelength_A <= float(lambda_max_A)
+    if not np.all(mask):
         if not np.any(mask):
             raise ValueError(f'lambda_min_A={lambda_min_A} is too big for the SED (no points left after cut)')
         wavelength_A, nuFnu = wavelength_A[mask], nuFnu[mask]
@@ -164,7 +171,8 @@ def to_cloudy_sed(outpath,
                   it = None,
                   iz = None,
                   extrapolate = False,
-                  lambda_min_A = None) -> str:
+                  lambda_min_A = None,
+                  lambda_max_A = None) -> str:
     """
     Converts spectral data to a Cloudy-compatible SED file format.
 
@@ -187,6 +195,8 @@ def to_cloudy_sed(outpath,
             beyond the provided spectral range. Default is False.
         lambda_min_A (float, optional): Minimum wavelength (in Angstroms) to use
             for filtering or processing data.
+        lambda_max_A (float, optional): Maximum wavelength (in Angstroms) to use
+            for filtering or processing data.
 
     Raises:
         ValueError: Raised when neither (cube, it, iz) nor (csp, age, sfh)
@@ -204,12 +214,13 @@ def to_cloudy_sed(outpath,
     else:
         raise ValueError('you must provide either (cube,it,iz) or (csp,age,sfh)')
 
-    return write_cloudy_sed(wave, spectrum, outpath, extrapolate=extrapolate, lambda_min_A=lambda_min_A)
+    return write_cloudy_sed(wave, spectrum, outpath, extrapolate=extrapolate, lambda_min_A=lambda_min_A,
+                            lambda_max_A=lambda_max_A)
 
 
 # =============== QH ===============
 
-def cloudy_sed_QH(sed_path, lyman_A=CONST.LyLimit) -> float:
+def cloudy_sed_QH(sed_path, lyman_A=CONST.LymanA) -> float:
     """
     Calculate the hydrogen-ionizing photon rate from SED file.
 
@@ -222,7 +233,7 @@ def cloudy_sed_QH(sed_path, lyman_A=CONST.LyLimit) -> float:
         sed_path (str): Path to the SED file. The file must contain two columns:
             wavelength in Angstroms and flux in units of nu*F(nu).
         lyman_A (float, optional): The Lyman-alpha wavelength limit in Angstroms.
-            Defaults to the constant CONST.LyLimit.
+            Defaults to the constant CONST.LymanA
 
     Returns:
         float: The hydrogen-ionizing photon rate in photons per second.
@@ -237,7 +248,7 @@ def cloudy_sed_QH(sed_path, lyman_A=CONST.LyLimit) -> float:
                  (CONST.hP["erg*s"] * CONST.clight["cm/s"]))
 
 
-def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LyLimit) -> float:
+def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LymanA) -> float:
     """
     Calculate Q_H (hydrogen-ionizing photon rate) from a raw SSP node in GalaPy format (1 Msun).
 
@@ -251,7 +262,7 @@ def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LyLimit) -> float:
         cube (tuple): SSP data cube containing (wavelength, time, metallicity, luminosity arrays).
         it (int): Time index in the SSP cube corresponding to the desired stellar age.
         iz (int): Metallicity index in the SSP cube corresponding to the desired stellar metallicity.
-        lyman_A (float, optional): Lyman limit wavelength in Angstroms. Defaults to CONST.LyLimit.
+        lyman_A (float, optional): Lyman limit wavelength in Angstroms. Defaults to CONST.LymanA.
 
     Returns:
         float: Hydrogen-ionizing photon rate in photons per second per solar mass.
@@ -273,7 +284,7 @@ def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LyLimit) -> float:
 
 def extract_ssp_seds(outdir, target_taus = taus,
                      target_Z  = Z,
-                     ssp_lib = "parsec22.NT", truncate_lyman=None,
+                     ssp_lib = "parsec22.NT", truncate_lyman=None, truncate_red=CONST.SED_cut,
                      extrapolate=False) -> tuple:
     """
     Extracts SSP (Simple Stellar Population) SEDs (Spectral Energy Distributions) for given target
@@ -317,7 +328,8 @@ def extract_ssp_seds(outdir, target_taus = taus,
         for iz in selected_iz:
             file_name = f"ssp_tau{t[it]:.3e}_Z{Z[iz]:.4f}.sed"
             path = os.path.join(outdir, file_name)
-            to_cloudy_sed(path, cube = cube, it=it, iz=iz, lambda_min_A=truncate_lyman, extrapolate = extrapolate)
+            to_cloudy_sed(path, cube = cube, it=it, iz=iz, lambda_min_A=truncate_lyman,
+                          lambda_max_A=truncate_red,extrapolate = extrapolate)
             n += 1
             if truncate_lyman is None:
                 metadata.append(
@@ -353,6 +365,9 @@ def main():
         --truncate-lyman (Optional[float]): Truncates the wavelengths to lambda >= the provided 
                                             value in Angstroms. If not specified, wavelengths 
                                             are untruncated. Default is None.
+        --truncate-red (Optional[float]):  Truncates the wavelengths to lambda <= the provided
+                                            value in Angstroms. If not specified, wavelengths
+                                            are truncated at 1e6 A. Default is 1e6 A.
         --tau (Optional[float], nargs='+'): SSP ages in yr to extract (e.g., --tau 1e6 2e6 5e6).
                                             If not specified, uses default ages: [1e6, 2e6, 5e6, 1e7, 
                                             2e7, 5e7, 7e7, 1e8].
@@ -366,18 +381,21 @@ def main():
     ap.add_argument('-o','--out', required=True, help='output directory .sed')
     ap.add_argument('-l','--truncate-lyman', type=float, default=None,
                     help='cut lambda')
+    ap.add_argument('-r','--truncate-red', type=float, default=CONST.SED_cut,
+                    help=f'cut synchrotron: lambda <= value (A). Default {CONST.SED_cut:.3e}')
     ap.add_argument('-t','--tau', type=float, nargs='+', default=None,
                     help='SSP ages in years (e.g., --tau 1e6 2e6 5e6)')
     ap.add_argument('--Z', type=float, nargs='+', default=None,
                     help='SSP metallicities (e.g., --Z 0.0001 0.005 0.0010)')
-    ap.add_argument('--e','--extrapolate', type=bool, nargs='+', default=None,
+    ap.add_argument('-e','--extrapolate', type=bool, nargs='+', default=None,
                     help='put extrapolate flag for make CLOUDY extrapolate low energy regime')
     args = ap.parse_args()
     
     target_taus = np.array(args.tau) if args.tau is not None else taus
     target_Z = np.array(args.Z) if args.Z is not None else Z
     n, _meta = extract_ssp_seds(args.out, target_taus=target_taus, target_Z=target_Z,
-                         ssp_lib=args.ssp_lib, truncate_lyman=args.truncate_lyman, extrapolate=args.extrapolate)
+                                ssp_lib=args.ssp_lib, truncate_lyman=args.truncate_lyman,
+                                truncate_red=args.truncate_red,extrapolate=args.extrapolate)
 
     tag = 'truncated' if args.truncate_lyman is not None else 'complete'
     print(f"[extract_ssp] {n} nodes {tag} -> {args.out}, the SED is {tag}")

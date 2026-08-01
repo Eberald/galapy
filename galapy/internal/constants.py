@@ -21,10 +21,11 @@ hP = {
     'erg*s' : 6.6262e-27,
 }
 
-# SED emission line points [Angstrom]
-LyLimit=911.76
-
 # Angstrom to keV
 def Ang_to_keV ( wavelength ) :
     return 1.e-3 * hP['eV/Hz'] * clight['A/s'] / wavelength
 
+#CLOUDIA
+LyLimit=911.76
+LymanA=911.6
+SED_cut=1.0e6
