@@ -15,8 +15,8 @@ set of stellar ages ($\tau$) and metallicities ($Z$).
 
 ```text
 usage: galapy-sed-cloudy-extract [-h] [-s SSP_LIB] -o OUT [-l TRUNCATE_LYMAN]
-                                 [-t TAU [TAU ...]] [--Z Z [Z ...]]
-                                 [--e E [E ...]]
+                                 [-r TRUNCATE_RED] [-t TAU [TAU ...]]
+                                 [--Z Z [Z ...]] [-e E [E ...]]
 ```
 
 ### Options
@@ -26,10 +26,11 @@ usage: galapy-sed-cloudy-extract [-h] [-s SSP_LIB] -o OUT [-l TRUNCATE_LYMAN]
 | `-h`, `--help` | None | Show help message and exit.                                                                                                                                |
 | `-s`, `--ssp-lib` | `SSP_LIB` | Name of the SSP spectral library. Default: `parsec22.NT`.                                                                                                  |
 | `-o`, `--out` | `OUT` | Directory path where output files and metadata will be saved. **(Required)**                                                                               |
-| `-l`, `--truncate-lyman` | `TRUNCATE_LYMAN` | Minimum wavelength threshold in Angstroms. If provided, wavelengths below this value are truncated.                                                        |
+| `-l`, `--truncate-lyman` | `TRUNCATE_LYMAN` | Minimum wavelength threshold in Angstroms. If provided, wavelengths below this value are truncated. Default: `None` (untruncated).                         |
+| `-r`, `--truncate-red` | `TRUNCATE_RED` | Maximum wavelength (red-side) cutoff in Angstroms. Wavelengths above this value are truncated. Default: `CONST.SED_cut` (`1e6` Å).                         |
 | `-t`, `--tau` | `TAU [TAU ...]` | List of target SSP ages in years (e.g., `--tau 1e6 2e6 5e6`). <br> Default: `[1e6, 2e6, 5e6, 1e7, 2e7, 5e7, 7e7, 1e8]`.                                    |
 | `--Z` | `Z [Z ...]` | List of target SSP metallicities (e.g., `--Z 0.0001 0.0005 0.0010`). <br> Default: `[0.0001, 0.0005, 0.0010, 0.0040, 0.0080, 0.0200]`.                     |
-| `--e`, `--extrapolate` | `E [E ...]` | Flag/value to enable extrapolation.  |
+| `-e`, `--extrapolate` | `E [E ...]` | Flag/value to enable extrapolation.  |
 
 ### Example
 

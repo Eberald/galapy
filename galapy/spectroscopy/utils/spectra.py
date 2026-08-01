@@ -302,6 +302,8 @@ def extract_ssp_seds(outdir, target_taus = taus,
             Default: "parsec22.NT".
         truncate_lyman (float, optional): Minimum wavelength (in Angstroms) to include in the SED.
             If None, the SED is not truncated. Default: None.
+        truncate_red (float, optional): Maximum wavelength (in Angstroms) to include in the SED.
+            If None, the SED is not truncated on the red side. Default: CONST.SED_cut.
         extrapolate (bool, optional): If True, CLOUDY extrapolates the SED to the low-energy limit of the code.
             Default: False.
 
