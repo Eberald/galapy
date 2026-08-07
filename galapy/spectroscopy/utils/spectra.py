@@ -110,8 +110,8 @@ def write_cloudy_sed(wavelength_A,
     extrapolation and wavelength filtering.
 
     Parameters:
-        wavelength_A (numpy.ndarray): Array of wavelengths in Angstroms. Must contain at least two data points.
-        L_lambda (numpy.ndarray): Luminosity array corresponding to the wavelengths provided.
+        wavelength_A (array-like): Array of wavelengths in Angstroms. Must contain at least two data points.
+        L_lambda (array-like): Luminosity array corresponding to the wavelengths provided.
         outpath (str): File path where the CLOUDY table SED will be saved.
         extrapolate (bool, optional): If True, CLOUDY extrapolates the SED to the low-energy limit of the code.
             Defaults to False.
@@ -127,10 +127,10 @@ def write_cloudy_sed(wavelength_A,
     Returns:
         str: The file path where the CLOUDY table SED was written.
     """
+    wavelength_A = np.asarray(wavelength_A, dtype=float)
     if wavelength_A.size < 2:
         raise ValueError('converting a SED to CLOUDY table sed format require at least 2 data')
 
-    wavelength_A = np.asarray(wavelength_A, dtype=float)
     nuFnu = np.asarray(L_lambda, dtype=float) * wavelength_A * CONST.Lsun
 
     mask = np.ones(wavelength_A.shape, dtype=bool)
