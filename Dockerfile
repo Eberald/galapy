@@ -22,9 +22,9 @@ ARG CLOUDY_SHA256=12a4fac7a29f888f56b37885df0067c92eae47a53c78060743e3c92140add5
 
 WORKDIR /opt
 RUN [ "${CLOUDY_SHA256}" != "TO FIX" ] || { \
-      echo "ERRORE: Fix the source:"; \
+      echo "ERROR: Fix the source:"; \
       echo "  wget -q ${CLOUDY_URL} && sha256sum $(basename ${CLOUDY_URL})"; \
-      echo "  docker build --build-arg CLOUDY_SHA256=<valore> ..."; \
+      echo "  docker build --build-arg CLOUDY_SHA256=<value> ..."; \
       exit 1; } \
  && wget -q "${CLOUDY_URL}" -O cloudy.tar.gz \
  && echo "${CLOUDY_SHA256}  cloudy.tar.gz" | sha256sum -c - \
