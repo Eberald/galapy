@@ -1,0 +1,10 @@
+# Author: Enrico Veraldi
+# specific requirements for CloudIA
+numpy>=2.0
+torch>=2.4
+gpytorch>=1.11
+scikit-learn>=1.3
+pyyaml>=6.0
+jinja2>=3.0
+mkdocs-material==9.5.50
+mkdocstrings[python]

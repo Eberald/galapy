@@ -51,11 +51,42 @@ doc = [
     "nbsphinx",
     "graphviz"
 ]
+#========== CLOUDIA ==========#
+cloudia = [
+    "numpy>=2.0",       #np.trapezoid
+    "torch>=2.4",       #first with numpy2.0
+    "gpytorch>=1.11",
+    "scikit-learn>=1.3", #PCA
+    "pyyaml>=6.0",
+    "jinja2>=3.0",
+    "mkdocs-material==9.5.50",
+    "mkdocstrings[python]"
+]
+cloudia-agent = [#WIP, placeholder
+    "ollama>=0.3",
+    "sentence-transformers>=2.2",
+    "faiss-cpu>=1.7"
+]
 
 [project.scripts]
 galapy-fit = "galapy.sampling.Run:_run"
 galapy-genparams = "galapy.sampling.Run:_generate_parameter_file"
 galapy-download-database = "galapy.internal.data:_entrypoint_download_database"
+#========== CLOUDIA ==========# WIP tools, placeholder
+galapy-translate-filter   = "galapy.CloudIA.cli.translate_filter:main" #WIP
+galapy-agent              = "galapy.CloudIA.cli.agent:main" #WIP
+galapy-install-cloudy     = "galapy.spectroscopy.utils.install_cloudy:main"
+galapy-sed-cloudy-extract = "galapy.spectroscopy.utils.spectra:main"
+
+#========== CLOUDIA ==========#
+[tool.pytest.ini_options]
+python_files = ["Test_*.py", "test_*.py"]
+markers = [#WIP, idea of division tests, placeholder
+    "unit: isolated one shot tests",
+    "regression: check the behaviour with the reference behaviour",
+    "physics: check energy balance and physics in general",
+    "slow: the long test (like test on mock galaxy), run only with flag CLOUDIA_SLOW=1"
+]
 
 [bumpver]
 current_version = "v0.6.1"

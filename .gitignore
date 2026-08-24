@@ -30,3 +30,14 @@ DATASET/
 
 #data raw
 data/
+
+#docs
+galapy/spectroscopy/docs/site/
+
+#nextflow
+/galapy/spectroscopy/workflows/modules/.nextflow
+/galapy/spectroscopy/workflows/.nextflow
+/galapy/spectroscopy/workflows/modules/work
+/galapy/spectroscopy/workflows/modules/.nextflow.log*
+/galapy/spectroscopy/workflows/work
+/galapy/spectroscopy/workflows/.nextflow.log*

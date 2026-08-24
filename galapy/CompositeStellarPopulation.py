@@ -412,5 +412,3 @@ class CSP () :
                            "has been built without CCSN support. "
                            "Build with `CCSN = True` " )
             return 0.
-        
-    

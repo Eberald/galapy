@@ -8,9 +8,9 @@ env:
 
 on:
   push:
-    branches: [ "main", "devel" ]
+    branches: [ "main", "devel", "devel-cloudia" ]
   pull_request:
-    branches: [ "main", "devel" ]
+    branches: [ "main", "devel", "devel-cloudia" ]
 
 jobs:
   build:

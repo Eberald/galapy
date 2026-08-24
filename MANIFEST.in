@@ -1,2 +1,3 @@
 recursive-include pybind11 *.h *.tpp
 recursive-include c++ *.h *.cpp *.tpp
+include galapy/spectroscopy/requirements.txt
