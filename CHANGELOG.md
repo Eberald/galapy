@@ -8,9 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 | Release workflow: |
 | --- |
 |  **1.** Fill in the [Unreleased] section below. |
-|  **2.** Run: bumpver update --patch   (or --minor / --major). This commits the version bump in `__init__.py` and creates a local tag. |
-|  **3.** Rename [Unreleased] -> [X.Y.Z] - YYYY-MM-DD and add a fresh [Unreleased]. |
-|  **4.** Commit the changelog: git commit -m "update CHANGELOG for vX.Y.Z" |
+|  **2.** Rename [Unreleased] -> [X.Y.Z] - YYYY-MM-DD and add a fresh [Unreleased]. |
+|  **3.** Commit the changelog: git commit -m "update CHANGELOG for vX.Y.Z" |
+|  **4.** Run: bumpver update --patch   (or --minor / --major). This commits the version bump in `__init__.py` and creates a local tag. |
 |  **5.** Push: git push origin main && git push origin --tags |
 
 > **Note:** pre-release tags are marked as vX.Y.Z-lw for "light-weight" on GitHub;
@@ -18,7 +18,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-> nothing new
+### Internal
+- CI: the GitHub Actions used by both workflows are updated to the majors that
+  run natively on Node 24 — `actions/checkout` and `actions/upload-artifact`
+  and `actions/download-artifact` to v7, `actions/setup-python` to v7 and
+  `actions/cache` to v6 — clearing the Node 20 deprecation warnings raised
+  during the v0.6.2 release build. The `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24`
+  environment variable is dropped along with them: it was the workaround
+  keeping those actions running, and the runners force Node 24 by default
+  since 2 June 2026, so it no longer does anything.
+- CI: the test matrix now spans Python 3.8 to 3.14, up from 3.8 to 3.11, so
+  that the interpreters the wheels are built for are also the ones the tests
+  run on. Windows is no longer listed as a commented-out option: WSL is the
+  supported route on that platform, and it is covered by the manylinux wheels.
+
+## [0.6.2] - 2026-08-07
+
+### Added
+- `galapy-fit`: new `loglikelihood` parameter-file option replacing the
+  log-likelihood used to score the models. `None` (the default) keeps the
+  built-in Gaussian likelihood; any callable with signature
+  `(par, state, **kwargs) -> scalar` can be used instead, typically imported
+  from the user's own module. Wired end-to-end through `_expand_hyperpar` →
+  job → `PipelineState.loglikelihood` → the serial, parallel and catalogue
+  samplers; `getattr`-guarded so older parameter files keep working.
+  Documented in the `galapy-genparams` template.
+- `galapy.sampling.Run._resolve_loglikelihood`: validates the custom callable
+  once, in the main process, before any sampling starts — raises `TypeError`
+  if it is not callable or cannot be called as `loglikelihood(par, state)`,
+  and warns if it does not accept `**kwargs` or looks unpicklable (a lambda, a
+  closure, or defined in the parameter file itself, none of which can be
+  rebuilt by a spawned worker). `functools.partial` wrappers — the documented
+  way to bind per-object data, e.g. an external stellar-mass estimate, in the
+  parameter file — are seen through by the picklability checks.
+- `galapy.sampling.Run.loglikelihood_name`: returns the
+  `module.qualified_name` of a likelihood callable — the same string `pickle`
+  uses to serialise a function by reference — used as a provenance marker.
+  `functools.partial` wrappers are unwrapped, so per-object bindings of the
+  same function share its marker.
+- `galapy.sampling.Results.Results`: new `loglikelihood_name` attribute
+  recording which likelihood produced the run, serialised in `dump`/`load` and
+  in the lightweight HDF5 path. Files written before this release are read back
+  as having used the built-in likelihood.
+- `galapy.analysis.model_comparison.bayes_factor`: now accepts `Results`
+  objects in addition to raw log-evidences, and warns when the two runs used
+  different likelihoods (their ratio is not a Bayes factor about the models) or
+  when both used a custom one. Raises `ValueError` when either evidence is
+  `None` — emcee runs compute no evidence and cannot enter a Bayes factor.
+- `doc/guides/custom_likelihood.rst`: new how-to covering the likelihood
+  contract, a copy-pasteable template, the importability requirement for
+  parallel runs, the validation performed by galapy, and why the likelihood
+  must be held fixed across model variants.
+
+### Changed
+- `galapy.sampling.Run.PipelineState`: new `loglikelihood` argument, resolved
+  and stored at construction. Every sampling path reads the likelihood from
+  the state, so a custom one travels with the pickled state to the workers.
+- `galapy-fit`: a `loglikelihood` key inside an entry of the `models` list now
+  raises `ValueError`. The likelihood is the term carrying the data, so
+  evidences computed with different likelihoods do not form a Bayes factor
+  about the models — a silent scientific error, hence a hard failure rather
+  than a warning.
+- `requires-python` is now `>=3.8` (was `>=3.7`). Python 3.7 could not install
+  galapy in any case, since `matplotlib>=3.6` requires 3.8 and
+  `nautilus-sampler` requires 3.9; the declared floor merely advertised a
+  version that never resolved. Support for 3.8 will be dropped in v0.7.0.
+- Linux wheels are now built on `manylinux_2_28` (glibc >= 2.28) instead of
+  `manylinux2014` (glibc >= 2.17). This covers Debian 10+, Ubuntu 18.10+,
+  Fedora 29+ and RHEL/CentOS 8+; only distributions already out of support,
+  such as Ubuntu 18.04, lose the pre-built wheel and fall back to the sdist.
+  The manylinux2014 image is built on CentOS 7, EOL since June 2024, and its
+  toolchain is frozen at GCC 10.2.
+
+### Fixed
+- `galapy.sampling.Run.sample`: the `nautilus` branch was left behind by the
+  `PipelineState` refactor and still referenced the removed module-level
+  `global_dict`, raising `NameError` as soon as a nautilus run was started.
+  It now reads `state.handler`, like the other samplers.
+- `galapy.sampling.Run.sample`: the `nautilus` branch never forwarded the
+  `PipelineState` to the likelihood, so `loglikelihood` was called without its
+  mandatory `state` argument. The state is now pre-bound to the likelihood
+  with `functools.partial` through the module-level `_nautilus_loglikelihood`
+  adapter, so the (possibly custom) likelihood receives `(par, state,
+  **kwargs)` positionally, exactly as with dynesty and emcee.
+  `likelihood_args` cannot be used for this, since nautilus wraps the callable
+  with `functools.partial` and positional arguments would be prepended to the
+  sampled vector (the same pitfall already documented for `prior_args`).
+- `galapy.sampling.Run._sample_parallel`: `nautilus` was never wired into the
+  parallel sampling path, whose dispatch only knew `dynesty` and `emcee`, so
+  selecting it in a parameter file aborted the run with `ValueError: The
+  sampler chosen "nautilus" is not valid` unless `galapy-fit --serial` was
+  used. The same gap affected catalogue runs, which take the parallel path
+  whenever more than one CPU per job is available. nautilus now gets a pool
+  the way `emcee` does, and the error message lists all three samplers.
+- Wheel builds failed on manylinux because `numpy` was listed in
+  `[build-system] requires` while nothing in the build actually uses it: the
+  extensions include `<pybind11/numpy.h>`, which needs no numpy headers, and
+  the `import numpy` in `setup.py` was unused. pip therefore installed numpy
+  into the build container, found no wheel for that platform, and fell back to
+  compiling numpy from source with a compiler too old for it. numpy is
+  unchanged as a runtime dependency.
+- `.github/workflows/build-wheels.yml`: cibuildwheel updated from v2.22.0 to
+  v3.4.1, which supports CPython 3.14.
+
+### Internal
+- `tests/Test_CustomLikelihood.py` (new): test suite for the custom-likelihood
+  machinery — `_resolve_loglikelihood` validation and warnings,
+  `loglikelihood_name` provenance (including callable instances),
+  `PipelineState`/`logprob` dispatch and backward compatibility,
+  `_expand_hyperpar` propagation and per-variant rejection, the
+  `_nautilus_loglikelihood` adapter (argument order, equivalence with the
+  built-in, picklability), the `_sample_parallel` sampler dispatch, `Results`
+  marker serialisation, and `bayes_factor` warnings/errors.
 
 ## [0.6.1] - 2026-07-02
 
