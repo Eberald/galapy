@@ -48,7 +48,7 @@ def test_cloudia_cli_is_importable():
     [
         "galapy.spectroscopy.utils",
         "galapy.spectroscopy.utils.physics",
-        #"galapy.spectroscopy.utils.physics.abundances",
+        "galapy.spectroscopy.utils.physics.abundances",
         "galapy.spectroscopy.utils.hii",
         "galapy.spectroscopy.utils.pdr",
     ],
@@ -77,18 +77,6 @@ def test_pipeline_modules_are_importable(module_name):
     importlib.import_module(module_name)
 
 
-"""
-WIP, placeholder for check presence chemistry (N/O, grain, C/O, He/H)
-@pytest.mark.unit
-def test_shared_chemistry_is_reachable():
-    from galapy.spectroscopy.utils.physics.abundances import (
-        nitrogen_offset,
-        carbon_offset,
-        helium_scale_factor,
-        grain_scale_from_xi_d,
-    ) """
-
-
 #========================= TEST NOT IMPORT HEAVY DEPENDENCES (PYTORCH ETC) =====================
 
 @pytest.mark.unit
@@ -111,28 +99,6 @@ def test_import_cloudia_does_not_pull_heavy_deps():
         "sys.exit('Heavy imports present: %s' % heavy if heavy else 0)"
     )
     subprocess.check_call([sys.executable, "-c", code], cwd="/tmp")
-
-
-# ======================== CHECK FILES AND CONFIGURATIONS  ARE PRESENT =======================
-"""
-WIP, placeholder for check the templates cloudy and lines folders
-@pytest.mark.unit
-@pytest.mark.parametrize("rel_path", ["configs/lines", "configs/templates"])
-def test_config_directories_exist(rel_path):
-    assert (_CLOUDIA_DIR / rel_path).is_dir()"""
-
-"""
-WIP, placeholder check jinja templates cloudy
-@pytest.mark.unit
-@pytest.mark.parametrize(
-    "rel_file",
-    [
-        "scripts/cloudy_hii/templates/hii.in.j2",
-        "scripts/cloudy_pdr/templates/pdr.in.j2",
-    ],
-)
-def test_pipeline_resources_exist(rel_file):
-    assert (_CLOUDIA_DIR / rel_file).is_file()"""
 
 
 #========================== METADATA VALIDATION =========================

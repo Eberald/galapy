@@ -80,6 +80,9 @@ galapy-download-database = "galapy.internal.data:_entrypoint_download_database"
 #========== CLOUDIA ==========# WIP tools, placeholder
 galapy-translate-filter   = "galapy.CloudIA.cli.translate_filter:main" #WIP
 galapy-agent              = "galapy.CloudIA.cli.agent:main" #WIP
+galapy-run-cloudy-hii     = "galapy.spectroscopy.utils.HII.run_hii:main" #WIP
+galapy-run-cloudy-pdr     = "galapy.spectroscopy.utils.PDR.run_pdr:main" #WIP
+galapy-gen-abundances-sch = "galapy.spectroscopy.utils.physics.abundances:main" #WIP
 galapy-install-cloudy     = "galapy.spectroscopy.utils.install_cloudy:main"
 galapy-sed-cloudy-extract = "galapy.spectroscopy.utils.spectra:main"
 
