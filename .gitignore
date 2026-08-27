@@ -23,6 +23,7 @@
 
 # claude and idea
 .idea/
+.junie/
 CLAUDE.md
 
 #DATASET galapy

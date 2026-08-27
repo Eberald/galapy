@@ -5,9 +5,15 @@ import os
 # contains binary and ASCII files to be used along the library #
 ################################################################
 
-DATABASE = 'https://api.github.com/repos/TommasoRonconi/galapy_database/releases'
+#==========================================================================================
+#DATABASE = 'https://api.github.com/repos/TommasoRonconi/galapy_database/releases'
+#DATA_VERSION = '0.1.0'
+#DATA_URL = 'https://raw.githubusercontent.com/TommasoRonconi/galapy_database/main/{:s}'
+# = 'galapy_database'
+# WARNING: THIS IS TEMPORARY, POINT TOWARD FORKED DATABASE (UNOFFICIAL)
+DATABASE = 'https://api.github.com/repos/Eberald/galapy_database/releases'
 DATA_VERSION = '0.1.0'
-DATA_URL = 'https://raw.githubusercontent.com/TommasoRonconi/galapy_database/main/{:s}'
+DATA_URL = 'https://raw.githubusercontent.com/Eberald/galapy_database/main/{:s}'
 DATA_DIR = 'galapy_database'
 
 ################################################################
@@ -38,3 +44,6 @@ IGM_DIR = ( DATA_DIR, 'IGM' )
 IGM_Inoue14 = ( 'Inoue+2014.txt', IGM_DIR )
 
 ################################################################
+# Abundances GC and scaling factors (Nicholls et al., 2017)
+
+ABU_DIR = (DATA_DIR, 'Nebular/Abundances')

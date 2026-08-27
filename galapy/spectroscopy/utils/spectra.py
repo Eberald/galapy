@@ -16,8 +16,7 @@ import galapy.internal.constants as CONST
 #=============== DEFAULTS TAUS AND METALLICITIES ===============
 taus = np.array([1e6,2e6,5e6,1e7,2e7,5e7,7e7,1e8])
 Z = np.array([0.0001,0.0005,0.0010,0.0040, 0.0080, 0.0200])
-
-#=============== LOADING FUNCTIONS FOR SEDS ===============
+#================ LOADING FUNCTIONS FOR SEDS ===================
 
 def load_ssp_cube(ssp_lib='parsec22.NT') -> tuple:
     """
