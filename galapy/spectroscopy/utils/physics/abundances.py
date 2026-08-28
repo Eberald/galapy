@@ -497,7 +497,7 @@ def build_zeta_map(out_path, abn_file=None, scale_file=None, lz_min=ZMAP_DEFAULT
         np.savez(fh, **load_dict)
     tmp.replace(out)
 
-    return payload
+    return load_dict
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
@@ -505,9 +505,9 @@ def main(argv=None):
         description='Build a zeta map that correlates logarithmic ionizing '
                     'photon escape fraction values with gas metallicity.'
     )
-    ap.add_argument('-o', '--out', default=CONST.ZMAP_FILE, help=f"output file path, default {CONST.ZMAP_FILE}")
-    ap.add_argument('-a', '--abn', default=CONST.ABN_FILE, help=f"abundance file path, default {CONST.ABN_FILE}")
-    ap.add_argument('-s', '--scale', default=CONST.SCALE_FILE, help=f"scale file path, default {CONST.SCALE_FILE}")
+    ap.add_argument('-o', '--out', default=None, help=f"output file path, default {CONST.ZMAP_FILE}")
+    ap.add_argument('-a', '--abn', default=None, help=f"abundance file path, default {CONST.ABN_FILE}")
+    ap.add_argument('-s', '--scale', default=None, help=f"scale file path, default {CONST.SCALE_FILE}")
     ap.add_argument('-l', '--lz-min', default=ZMAP_DEFAULT_GRID[0], help=f"minimum log_zeta_O, default {ZMAP_DEFAULT_GRID[0]}")
     ap.add_argument('-u', '--lz-max', default=ZMAP_DEFAULT_GRID[1], help=f"maximum log_zeta_O, default {ZMAP_DEFAULT_GRID[1]}")
     ap.add_argument('-n', '--n', default=ZMAP_DEFAULT_GRID[2], help=f"number of points for the zeta grid, default {ZMAP_DEFAULT_GRID[2]}")
