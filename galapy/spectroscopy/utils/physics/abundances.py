@@ -8,10 +8,8 @@ import argparse
 import hashlib
 import pathlib
 import sys
-
 import numpy as np
 import yaml
-from IPython.core import payload
 
 import galapy.internal.constants as CONST
 from galapy.internal.data import DataFile
@@ -116,7 +114,7 @@ class Chemistry:
         """
         read zeta_Z map from .npz file
         """
-        path = zmap_file or DataFile(CONST.ZMAP_FILE, CONST.ABU_DIR).get_file()
+        path = zmap_file or DataFile(CONST.ZMAP_FILE, ABU_DIR).get_file()
         d = np.load(path)
         want = (_sha256(self._abn_path), _sha256(self._scl_path))
         got = (str(d['sha_abn']), str(d['sha_scaling']))
