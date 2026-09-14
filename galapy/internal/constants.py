@@ -26,6 +26,9 @@ def Ang_to_keV ( wavelength ) :
     return 1.e-3 * hP['eV/Hz'] * clight['A/s'] / wavelength
 
 # ================== CLOUDIA =========================
+#General
+alphaB_1e4K = 2.59e-13     # cm^3/s  case B recombination at T_e = 1e4 K
+                           # (Osterbrock & Ferland 2006, Tab. 2.1).
 ## SPECTRA
 LyLimit=911.76
 LymanA=911.6
@@ -74,3 +77,6 @@ SOLAR_REFERENCES = {
     'Caffau11': 0.015300,   # used in Ronconi+24
     'PARSEC':   0.015240,   # PARSEC ssp scales
 }
+
+## HII and PDR CONFIGS
+CONFIG_HII_FILE = 'grid_hii.yaml'

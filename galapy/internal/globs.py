@@ -47,3 +47,8 @@ IGM_Inoue14 = ( 'Inoue+2014.txt', IGM_DIR )
 # Abundances GC and scaling factors (Nicholls et al., 2017)
 
 ABU_DIR = (DATA_DIR, 'Nebular/Abundances')
+
+################################################################
+# configs spectrocopy
+
+CONFIG_NEB = (DATA_DIR, 'Nebular/Configs')
