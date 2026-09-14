@@ -160,3 +160,14 @@ def test_base_install_has_no_heavy_deps():
         assert pkg_name not in heavy_packages, (
             f"Heavy dependence '{pkg_name}' is present in galapy base installation"
         )
+
+@pytest.mark.unit
+def test_shared_chemistry_is_reachable_from_generators():
+    """
+    Test the reachability of shared Chemistry configuration from generators.
+
+    This test verifies that the shared Chemistry configuration is accessible
+    and functional when utilized from related generator modules.
+    """
+    from galapy.spectroscopy.utils.physics.abundances import (
+        Chemistry, build_zeta_map, grain_scale_from_xi_d, format_cloudy_float)

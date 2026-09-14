@@ -29,7 +29,7 @@ process GEN_LHS_HII {
     publishDir '../../../data/grids/hii/', mode: 'move'
 
     input:
-    path meta
+    path ssp_meta
 
     output:
     path 'hii_grid_spec.h5', emit: grid_spec
@@ -37,8 +37,6 @@ process GEN_LHS_HII {
 
     script:
     """
-    galapy-gen-lhs-hii \\
-        --ssp-meta ${meta} \\
-        --out .
+    galapy-gen-lhs-hii --ssp-meta ${ssp_meta} -o .
     """
 }

@@ -49,6 +49,7 @@ IGM_Inoue14 = ( 'Inoue+2014.txt', IGM_DIR )
 ABU_DIR = (DATA_DIR, 'Nebular/Abundances')
 
 ################################################################
-# configs spectrocopy
+# configs/templates spectrocopy
 
 CONFIG_NEB = (DATA_DIR, 'Nebular/Configs')
+NEB_TPL_DIR = (DATA_DIR, 'Nebular/Templates')

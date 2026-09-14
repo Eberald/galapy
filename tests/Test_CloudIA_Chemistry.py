@@ -1,16 +1,21 @@
 # Author: Enrico Veraldi
 # check the chemistry of the CloudIA code
 # - abundances.py
+# - hii regions generation files
 
 import pathlib
 import numpy as np
 import pytest
+import ast
+from jinja2 import Environment, StrictUndefined, Template, meta
 
 from galapy.internal.constants import (ATOMIC_WEIGHT, SOLAR_REFERENCES, XI_D_MW)
 from galapy.spectroscopy.utils.physics.abundances import (ZMAP_DEFAULT_GRID, Chemistry,
     ChemistryHashMismatch, build_zeta_map, format_cloudy_float,
     grain_scale_from_xi_d)
 
+
+######################## ABUNDANCES ############################
 
 class _LazyChemistry:
     """
@@ -387,3 +392,219 @@ def test_oh_conversion_is_exact_shift():
     for lz in LZ_GRID:
         assert CHEM.oh_from_zeta(lz) == pytest.approx(8.760 + lz, abs=1e-9)
         assert CHEM.zeta_from_oh(CHEM.oh_from_zeta(lz)) == pytest.approx(lz, abs=1e-12)
+
+
+######################## HII REGIONS AND PDRS ############################
+
+_DECK_CACHE = {}
+
+def _template_path(kind):
+    """
+    Determines the filesystem path to a specific template file based on the given kind.
+
+    This function retrieves a template file path residing in a predefined directory. If the file
+    exists, its path is returned; otherwise, None is returned.
+    """
+    try:
+        from galapy.internal.data import DataFile
+        from galapy.internal.globs import NEB_TPL_DIR
+        p = pathlib.Path(DataFile(f'{kind}.in.j2', NEB_TPL_DIR).get_file())
+    except Exception:
+        return None
+    return p if p.is_file() else None
+
+
+def requires_templates(fn):
+    """
+    Decorator that ensures required templates are present before executing a test function.
+
+    This decorator checks if the templates for the specified decks are
+    available in the dataset. If any templates are missing, the test is
+    skipped with an appropriate message.
+
+    Parameters:
+        fn (Callable): The test function to be wrapped.
+
+    Returns:
+        Callable: The wrapped test function.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        missing = [k for k in _DECKS if _template_path(k) is None]
+        if missing:
+            pytest.skip(f"template absent in the dataset: {missing}")
+        return fn(*a, **kw)
+    return wrapper
+
+
+def _job_hii(lz=_LZ_DECK):
+    """
+    build a random hii job
+    """
+    return {
+        'job_id': '00000_003_02',
+        'lognH_HII': 2.5, 'logU': -2.5, 'z_CMB': 3.0, 'F_star': 0.5,
+        'log_zeta_O': lz,
+        'delta_NO': CHEM.delta_O('N', lz), 'delta_CO': CHEM.delta_O('C', lz),
+        'sed_file': 'ssp_003_02.sed', 'log_N_stop': 21.5,
+        'element_scale_block': "\n".join(CHEM.element_scale_lines(lz)),
+        'grain_scale': (CHEM.metallicity_from_zeta(lz) / CHEM.Z_GC)
+                       * grain_scale_from_xi_d(XI_D_MW),
+    }
+
+
+def _gen_module(kind):
+    """
+    Generates a module function based on the specified kind (hii or pdr)
+    """
+    if kind == 'hii':
+        from galapy.spectroscopy.utils.hii import gen_input_hii as gen
+    else:
+        from galapy.spectroscopy.utils.pdr import gen_input_pdr as gen
+    return gen
+
+
+def _deck(kind, lz=_LZ_DECK):
+    """
+    Generates and caches a deck file based on the given kind and lz parameters.
+
+    This function reads a template file, validates its variables against the context
+    provided by the associated job specification, and renders the template to
+    generate the final deck file. The result is cached for subsequent calls with the
+    same parameters.
+    """
+    key = (kind, lz)
+    if key in _DECK_CACHE:
+        return _DECK_CACHE[key]
+    path = _template_path(kind)
+    if path is None:
+        pytest.skip(f"{kind}.in.j2 not available (dataset not available)")
+    text = path.read_text()
+
+    gen = _gen_module(kind)
+    ctx = _DECK_CTX[kind](lz)
+
+    missing = sorted(meta.find_undeclared_variables(Environment().parse(text))
+                     - set(ctx))
+    if missing:
+        pytest.fail(f"{kind}.in.j2 ask variables that are not given by job spec or build_job: {missing}")
+
+    tmpl = Template(text, undefined=StrictUndefined, keep_trailing_newline=True)
+    deck = gen.render_one(tmpl, ctx)
+    _DECK_CACHE[key] = deck
+    return deck
+
+
+def _commands(deck):
+    """
+    Parses that given a deck (cloudy) remove comments that are unecessary (lines comments)
+    """
+    out = []
+    for raw in deck.splitlines():
+        s = raw.strip()
+        if not s or s[0] in '#*%' or s.startswith('//'):
+            continue
+        out.append(s.split('#')[0].strip().lower())
+    return [c for c in out if c]
+
+
+################ HII REGIONS
+GENERATORS.append('galapy.spectroscopy.utils.hii.gen_input_hii')
+_DECKS.append('hii')
+_DECK_CTX['hii'] = _job_hii
+_GRAINS_EXPECTED['hii'] = 1          #only ISM, no PAH in HII
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('modname', GENERATORS)
+def test_scale_lines_argument_is_log_zeta_AST(modname):
+    """
+    Tests specific functions in various modules to ensure they have the correct scaling argument.
+
+    The test ensures that functions such as `element_scale_lines`, `delta_O`,
+    `abundance_pattern`, and `metallicity_from_zeta` correctly use 'log_zeta_O'
+    or ensure conditions on other nesting patterns for the last arguments provided.
+    """
+    import importlib
+    mod = importlib.import_module(modname)
+    tree = ast.parse(pathlib.Path(mod.__file__).read_text())
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        if node.func.attr not in ('element_scale_lines', 'delta_O',
+                                  'abundance_pattern', 'metallicity_from_zeta'):
+            continue
+        arg = node.args[-1]
+        if isinstance(arg, ast.Name):
+            assert arg.id == 'log_zeta_O', (modname, arg.id)
+        else:
+            assert isinstance(arg, ast.Call), (modname, ast.dump(arg))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('modname', GENERATORS)
+def test_grain_fac_call_site_AST(modname):
+    """
+    Tests the AST of grain_fac call sites in the specified module to ensure proper function calls.
+
+    This test verifies the correct usage of 'grain_fac' values in the module's abstract syntax tree (AST).
+    It checks that the 'metallicity_from_zeta' function is referenced and ensures that the 'Pow' operation is
+    not used in the AST representation of the 'grain_fac' assignments.
+    """
+    import importlib
+    mod = importlib.import_module(modname)
+    tree = ast.parse(pathlib.Path(mod.__file__).read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, 'id', '') == 'grain_fac' or
+                (isinstance(t, ast.Subscript) and
+                 getattr(getattr(t, 'slice', None), 'value', None) == 'grain_fac')
+                for t in node.targets):
+            dump = ast.dump(node.value)
+            assert 'metallicity_from_zeta' in dump, (modname, dump)
+            assert 'Pow' not in dump, (modname, dump)
+
+
+@pytest.mark.unit
+@requires_templates
+def test_helium_line_present_in_deck():
+    for kind in _DECKS:
+        assert 'element scale factor helium' in _deck(kind)
+
+
+@pytest.mark.unit
+@requires_templates
+def test_no_residual_jinja_placeholders():
+    import re
+    for kind in _DECKS:
+        assert not re.search(r'\{\{|\}\}|\{%|%\}', _deck(kind)), kind
+
+
+@pytest.mark.unit
+@requires_templates
+def test_metals_register_is_log_in_both_sectors():
+    """
+    This function verifies the behavior of metals registration across different
+    sectors and ensures consistency with expected parameters. It also checks
+    the correctness of grain-related commands for proper sector registration.
+    The function primarily analyzes and asserts specific command structures.
+    """
+    for kind in _DECKS:
+        cmds = _commands(_deck(kind))
+        metals = [c for c in cmds
+                  if c.startswith('metals') and not c.startswith('metals deplete')]
+        assert len(metals) == 1, (kind, metals)
+        tok = metals[0].split()
+        assert tok[-1] == 'log', (kind, metals[0])
+        assert float(tok[1]) == pytest.approx(_LZ_DECK, abs=1e-9), (kind, metals[0])
+        assert 'linear' not in metals[0], (kind, metals[0])
+
+    # grains
+    for kind in _DECKS:
+        grains = [c for c in _commands(_deck(kind)) if c.startswith('grains')]
+        assert len(grains) == _GRAINS_EXPECTED[kind], (kind, grains)
+        for g in grains:
+            assert 'linear' in g, (kind, g)
+            assert ' log' not in g, (kind, g)

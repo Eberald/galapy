@@ -27,14 +27,11 @@ process EXTRACT_SSP_SEDS{
     publishDir '../../../data/cloudy_seds/', mode: 'move'
 
     output:
-    path 'SED/*.sed', emit: seds
-    path 'SED/metadata.json', emit: meta
+    path '*.sed', emit: seds
+    path 'metadata.json', emit: meta
 
     script:
     """
-    mkdir -p SED
-    python -m galapy.spectroscopy.utils.spectra \\
-        --ssp-lib parsec22.NT \\
-        --out SED/
+    galapy-sed-cloudy-extract -o .
     """
 }

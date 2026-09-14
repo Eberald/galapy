@@ -98,9 +98,11 @@ def build_jobs(sample, names, ssp_meta):
 def main():
     default_config = DataFile(CONST.CONFIG_HII_FILE, GLOBS.CONFIG_NEB).get_file()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('-c', '--config', required=None, default=default_config, help='charter grid_hii.yaml')
-    ap.add_argument('-s', '--ssp-meta', required=True, help='metadata.json ssp' )
-    ap.add_argument('-o', '--output', required=True, help='output file')
+    ap.add_argument('-c', '--config', required=None, default=default_config, help='charter grid_hii.yaml, default galapy-dataset')
+    ap.add_argument('-s', '--ssp-meta', required=None, default="data/cloudy_seds/metadata.json",
+                    help='metadata.json ssp, default: data/cloudy_seds/metadata.json (galapy-sed-cloudy-extract)' )
+    ap.add_argument('-o', '--output', required=None, default="data/grids/hii",
+                    help='output directory, default: data/grids/hii')
     args = ap.parse_args()
 
     charter = CORE.load_charter(args.config)
@@ -117,5 +119,5 @@ def main():
     CORE.write_grid_spec(out / 'hii_grid_spec.h5', jobs)
     print(f"lhs_hii.npy and hii_grid_spec.h5 files created in {out}")
 
-    if __name__ == '__main__':
-        main()
+if __name__ == '__main__':
+    main()

@@ -80,3 +80,7 @@ SOLAR_REFERENCES = {
 
 ## HII and PDR CONFIGS
 CONFIG_HII_FILE = 'grid_hii.yaml'
+
+TEMPLATE_KEYS_HII = ('job_id', 'lognH_HII', 'logU', 'z_CMB', 'F_star', 'log_zeta_O', 'element_scale_block',
+                     'grain_scale', 'sed_file', 'log_N_stop',)
+EXP_FIELDS = ('grain_scale',)

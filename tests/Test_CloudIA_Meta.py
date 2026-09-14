@@ -97,38 +97,50 @@ def test_install_cloudy_entrypoint_is_declared_in_metadata():
         f"entry point absent in metadata (console_scripts={sorted(cs)}):")
     assert cs['galapy-install-cloudy'] == 'galapy.spectroscopy.utils.install_cloudy:main'
 
-    @pytest.mark.unit
-    def test_sed_extraction_entrypoint_is_declared_in_metadata():
-        """
-        see test_install_cloudy_entrypoint_is_declared_in_metadata
-        """
-        from importlib.metadata import distribution
-        cs = {ep.name: ep.value for ep in distribution('galapy-fit').entry_points
-              if ep.group == 'console_scripts'}
-        assert 'galapy-sed-cloudy-extract' in cs, (
-            f"entry point absent in metadata (console_scripts={sorted(cs)}):")
-        assert cs['galapy-sed-cloudy-extract'] == 'galapy.spectroscopy.utils.spectra:main'
+@pytest.mark.unit
+def test_sed_extraction_entrypoint_is_declared_in_metadata():
+    """
+    see test_install_cloudy_entrypoint_is_declared_in_metadata
+    """
+    from importlib.metadata import distribution
+    cs = {ep.name: ep.value for ep in distribution('galapy-fit').entry_points
+          if ep.group == 'console_scripts'}
+    assert 'galapy-sed-cloudy-extract' in cs, (
+        f"entry point absent in metadata (console_scripts={sorted(cs)}):")
+    assert cs['galapy-sed-cloudy-extract'] == 'galapy.spectroscopy.utils.spectra:main'
 
-    @pytest.mark.unit
-    def test_abundances_entrypoint_is_declared_in_metadata():
-        """
-        see test_install_cloudy_entrypoint_is_declared_in_metadata
-        """
-        from importlib.metadata import distribution
-        cs = {ep.name: ep.value for ep in distribution('galapy-fit').entry_points
-              if ep.group == 'console_scripts'}
-        assert 'galapy-build-zeta-map' in cs, (
-            f"entry point absent in metadata (console_scripts={sorted(cs)}):")
-        assert cs['galapy-build-zeta-map'] == 'galapy.spectroscopy.utils.physics.abundances:main'
+@pytest.mark.unit
+def test_abundances_entrypoint_is_declared_in_metadata():
+    """
+    see test_install_cloudy_entrypoint_is_declared_in_metadata
+    """
+    from importlib.metadata import distribution
+    cs = {ep.name: ep.value for ep in distribution('galapy-fit').entry_points
+          if ep.group == 'console_scripts'}
+    assert 'galapy-build-zeta-map' in cs, (
+        f"entry point absent in metadata (console_scripts={sorted(cs)}):")
+    assert cs['galapy-build-zeta-map'] == 'galapy.spectroscopy.utils.physics.abundances:main'
 
-    @pytest.mark.unit
-    def test_gen_lhs_hii_entrypoint_is_declared_in_metadata():
-        """
-        see test_install_cloudy_entrypoint_is_declared_in_metadata
-        """
-        from importlib.metadata import distribution
-        cs = {ep.name: ep.value for ep in distribution('galapy-fit').entry_points
-              if ep.group == 'console_scripts'}
-        assert 'galapy-gen-lhs-hii' in cs, (
-            f"entry point absent in metadata (console_scripts={sorted(cs)}):")
-        assert cs['galapy-gen-lhs-hii'] == 'galapy.spectroscopy.utils.hii.gen_lhs_hii:main'
+@pytest.mark.unit
+def test_gen_lhs_hii_entrypoint_is_declared_in_metadata():
+    """
+    see test_install_cloudy_entrypoint_is_declared_in_metadata
+    """
+    from importlib.metadata import distribution
+    cs = {ep.name: ep.value for ep in distribution('galapy-fit').entry_points
+          if ep.group == 'console_scripts'}
+    assert 'galapy-gen-lhs-hii' in cs, (
+        f"entry point absent in metadata (console_scripts={sorted(cs)}):")
+    assert cs['galapy-gen-lhs-hii'] == 'galapy.spectroscopy.utils.hii.gen_lhs_hii:main'
+
+@pytest.mark.unit
+def test_gen_hii_entrypoint_is_declared_in_metadata():
+    """
+    see test_install_cloudy_entrypoint_is_declared_in_metadata
+    """
+    from importlib.metadata import distribution
+    cs = {ep.name: ep.value for ep in distribution('galapy-fit').entry_points
+          if ep.group == 'console_scripts'}
+    assert 'galapy-gen-hii' in cs, (
+        f"entry point absent in metadata (console_scripts={sorted(cs)}):")
+    assert cs['galapy-gen-hii'] == 'galapy.spectroscopy.utils.hii.gen_input_hii:main'

@@ -379,7 +379,7 @@ def main():
     ap = argparse.ArgumentParser(prog = "galapy-sed-cloudy-extract",description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('-s','--ssp-lib', default='parsec22.NT', help='library SSP')
-    ap.add_argument('-o','--out', required=True, help='output directory .sed')
+    ap.add_argument('-o','--out', default='data/cloudy_seds/', help='output directory .sed (default data/cloudy_seds)')
     ap.add_argument('-l','--truncate-lyman', type=float, default=None,
                     help='cut lambda')
     ap.add_argument('-r','--truncate-red', type=float, default=CONST.SED_cut,
