@@ -72,9 +72,10 @@ nav:
   - Guide:
       - Quickstart: quickstart.md
       - Command Line Interface:
-          - "SSP extraction": ssp_extraction.md
+          - "SSP SED extraction": ssp_extraction.md
           - "CLOUDY installation": cloudy_installation.md
           - "Abundances and Zeta_Z map" : abundances.md
+          - "HII region: sampling and input files generation" : gen_hii.md
       - "Integration with GalaPy": galapy_integration.md
       - "AI Agent - the AI part of CloudIA": ai_agent.md
       - "API CLOUDY": api_cloudy.md
