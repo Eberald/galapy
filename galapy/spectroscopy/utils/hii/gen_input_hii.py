@@ -125,7 +125,7 @@ def main():
                                                           'dataset)')
     ap.add_argument('-d','--sed-dir', default='data/cloudy_seds', help='directory .sed generated via'
                                                                        ' galapy-sed-cloudy-extract')
-    ap.add_argument('-o','--out', default="data/input_hii", help='output directory of .in cloudy '
+    ap.add_argument('-o','--out', default="data/hii", help='output directory of .in cloudy '
                                                                  '(default: data/input_hii)')
     ap.add_argument('-l','--limit', type=int, default=None, help='subsample N jobs evenly spread over the grid')
     args = ap.parse_args()

@@ -10,7 +10,7 @@ import numpy as np
 import galapy.internal.constants as CONST
 import galapy.internal.globs as GLOBS
 from galapy.internal.data import DataFile
-import  galapy.spectroscopy.utils.physics.lhs_core as CORE
+import  galapy.spectroscopy.utils.lhs_core as CORE
 from galapy.spectroscopy.utils.physics.abundances import (Chemistry, grain_scale_from_xi_d)
 
 _CHEM = None # shared chemical module
@@ -99,8 +99,8 @@ def main():
     default_config = DataFile(CONST.CONFIG_HII_FILE, GLOBS.CONFIG_NEB).get_file()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('-c', '--config', required=None, default=default_config, help='charter grid_hii.yaml, default galapy-dataset')
-    ap.add_argument('-s', '--ssp-meta', required=None, default="data/cloudy_seds/metadata.json",
-                    help='metadata.json ssp, default: data/cloudy_seds/metadata.json (galapy-sed-cloudy-extract)' )
+    ap.add_argument('-s', '--ssp-meta', required=None, default="data/cloudy_seds/ssp_metadata.json",
+                    help='ssp_metadata.json ssp, default: data/cloudy_seds/ssp_metadata.json (galapy-sed-cloudy-extract)' )
     ap.add_argument('-o', '--output', required=None, default="data/grids/hii",
                     help='output directory, default: data/grids/hii')
     args = ap.parse_args()

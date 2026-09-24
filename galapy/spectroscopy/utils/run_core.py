@@ -12,12 +12,12 @@ import shutil
 import subprocess
 import sys
 import time
-# imports a tool that automatically sets up a class to store data
+# imports a tool that automatically sets up a class to store data, make possible immutable data (avoid runtime mod.)
 from dataclasses import dataclass
 
 from galapy.spectroscopy.utils import CLOUDY_REQUIRED, cloudy_banner, require_cloudy
 
-# for wildcard import
+# for wildcard import (public interface)
 __all__ = ['Sector', 'SECTORS', 'CONVERGENCE_CAUTION', 'parse_index_selector',
            'read_manifest', 'sed_referenced_by', 'is_complete', 'converged_from_out',
            'stage_job', 'run_job', 'plan_jobs', 'run_all', 'build_parser', 'main']
@@ -26,6 +26,7 @@ __all__ = ['Sector', 'SECTORS', 'CONVERGENCE_CAUTION', 'parse_index_selector',
 CONVERGENCE_CAUTION = 'CLOUDY Iteration to convergence did not converge'
 
 # freeze parameters at first initialization
+# is the sector associated to runs
 @dataclass(frozen=True)
 class Sector:
     name: str           # 'hii' - 'pdr'
@@ -51,9 +52,18 @@ _SED_RE = re.compile(r'^\s*table\s+SED\s+"([^"]+)"', re.IGNORECASE | re.MULTILIN
 
 def sed_referenced_by(deck_text):
     """
-    Return the SED name referenced by the given deck text.
+    Return the SED name referenced by the given CLOUDY deck.
     """
     m = _SED_RE.search(deck_text)
+    return None if m is None else os.path.basename(m.group(1))
+
+_ABN_RE = re.compile(r'^\s*abun\w*\s+"([^"]+)"', re.IGNORECASE | re.MULTILINE)
+
+def abn_referenced_by(deck_text):
+    """
+    Return the abundance file name referenced by the given CLOUDY deck.
+    """
+    m = _ABN_RE.search(deck_text)
     return None if m is None else os.path.basename(m.group(1))
 
 def parse_index_selector(text):
@@ -152,7 +162,7 @@ def stage_job(runs_dir, work_root, sector, job_id, linelist_dir=None):
     Stages a job by preparing necessary input files and directories for processing.
 
     This function sets up the required workspace for a job by copying key input
-    files, such as the input deck, SED files, and line list files, into
+    files, such as the input deck, SED files, ABD file, and line list files, into
     a designated working directory. It raises errors if any critical files are
     missing or cannot be accessed.
 
@@ -174,7 +184,7 @@ def stage_job(runs_dir, work_root, sector, job_id, linelist_dir=None):
             - The path to the staged input deck file within the working directory (pathlib.Path).
 
     Raises:
-        FileNotFoundError: If critical files such as the input deck, required SED,
+        FileNotFoundError: If critical files such as the input deck, required SED, required ABD,
             or line list file are not available in their expected locations.
     """
     runs = pathlib.Path(runs_dir)
@@ -195,6 +205,15 @@ def stage_job(runs_dir, work_root, sector, job_id, linelist_dir=None):
             raise FileNotFoundError(
                 f"SED missing: {sed_src}.")
         shutil.copy2(sed_src, wd / 'SED' / sed_name)
+
+    abn_name = abn_referenced_by(deck_dst.read_text())
+    if abn_name:
+        from galapy.internal.data import DataFile
+        from galapy.internal import globs as GLOBS
+        abn_src = pathlib.Path(DataFile(abn_name, GLOBS.ABU_DIR).get_file())
+        if not abn_src.is_file():
+            raise FileNotFoundError(f'abundance file absent: {abn_src}')
+        shutil.copy2(abn_src, wd / abn_name)
 
     ll_dir = linelist_dir or os.environ.get('CLOUDIA_LINELISTS')
     if ll_dir:
@@ -339,18 +358,20 @@ def run_all(jobs, runs_dir, work_root, sector_name, exe, timeout, nproc=1,
             the job id and the corresponding outcome.
     """
     results = []
+    #serial mode
     if nproc <= 1:
         for j in jobs:
             r = run_job(j, runs_dir, work_root, sector_name, exe, timeout,
                         linelist_dir, resume)
             results.append(r)
-            if on_result:
+            if on_result: #functions for manage results on real-time when finished (increase the multitask)
                 on_result(r)
         return results
 
-    with _fut.ProcessPoolExecutor(max_workers=nproc) as pool:
+    #parallel mode on CPU
+    with _fut.ProcessPoolExecutor(max_workers=nproc) as pool: # initialise pool
         futs = {pool.submit(run_job, j, runs_dir, work_root, sector_name, exe,
-                            timeout, linelist_dir, resume): j for j in jobs}
+                            timeout, linelist_dir, resume): j for j in jobs} #submit jobs
         for f in _fut.as_completed(futs):
             r = f.result()
             results.append(r)
@@ -418,7 +439,7 @@ def build_parser(sector_name):
         prog=f'galapy-run-cloudy-{s}',
         description=f'Execute the CLOUDY models for sector {s}.')
     ap.add_argument('-r','--runs', required=True,
-                    help='deck directory produced by galapy-gen-* (should have SED/ and jobs.txt) suggested: data/input_[hii/pdr]')
+                    help='deck directory produced by galapy-gen-* (should have SED/ and jobs.txt) suggested: data/[hii/pdr]')
     ap.add_argument('-w','--work', default=None,
                     help='workdir (default: <runs>/work)')
     ap.add_argument('-m','--manifest', default=None,

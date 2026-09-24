@@ -7,7 +7,7 @@ from collections import namedtuple
 from typing import Tuple, Optional
 
 __all__ = ['CLOUDY', 'CloudyInstall', 'CloudyNotFound', 'detect_cloudy', 'cloudy_banner',
-           'require_cloudy', 'ensure_cloudy']
+           'require_cloudy', 'ensure_cloudy', 'cloudy_search_path']
 
 # CLOUDY version used for production
 CLOUDY_REQUIRED = 'C25.00'
@@ -21,6 +21,26 @@ class CloudyNotFound(RuntimeError) :
     """
     CLOUDY code not found and is necessary for the execution of the code
     """
+
+def cloudy_search_path(data: str) -> str:
+    """
+    Constructs a search path from the given input string by splitting it on the
+    operating system's path separator. Adds a default '.' entry at the beginning
+    if no path part represents the current directory ('.') or a special directory ('+').
+
+    Args:
+        data (str): The input string representing the raw search path. May contain
+        multiple paths separated by the operating system's path separator.
+
+    Returns:
+        str: A valid search path string with the components joined by the operating
+        system's path separator. Ensures the presence of a default current directory
+        path '.' if necessary.
+    """
+    parts = [p for p in (data or '').split(os.pathsep) if p]
+    if not any(p.rstrip('/\\') in ('.', '+') for p in parts):
+        parts.insert(0, '.')
+    return os.pathsep.join(parts)
 
 def detect_cloudy() -> CloudyInstall:
     """
@@ -38,11 +58,13 @@ def detect_cloudy() -> CloudyInstall:
     """
     exe = os.environ.get('CLOUDY_EXE') or shutil.which('cloudy')
     data = os.environ.get('CLOUDY_DATA_PATH')
-    
+
     if exe is None and data:
-        candidate = os.path.join(os.path.dirname(data.rstrip(os.sep)), 'source', 'cloudy.exe')
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            exe = candidate
+        roots = [p for p in data.split(os.pathsep) if p and p.rstrip('/\\') not in ('.', '+')]
+        if roots:
+            candidate = os.path.join(os.path.dirname(roots[-1].rstrip(os.sep)), 'source', 'cloudy.exe')
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                exe = candidate
     
     return CloudyInstall(exe=exe, data_path=data, version=None, found=exe is not None)
 
@@ -390,12 +412,13 @@ def ensure_cloudy(prefix: str = None,
 
     exe = os.path.join(root, 'source', 'cloudy.exe')
     data = os.path.join(root, 'data')
+    data_env = cloudy_search_path(data)
     print("\n Done, add to the environment the following env variables:\n"
           f"export CLOUDY_EXE={exe}\n"
-          f"export CLOUDY_DATA_PATH={data}")
+          f"export CLOUDY_DATA_PATH={data_env}")
 
     os.environ.setdefault('CLOUDY_EXE', exe)
-    os.environ.setdefault('CLOUDY_DATA_PATH', data)
+    os.environ.setdefault('CLOUDY_DATA_PATH', data_env)
 
     if persist_env is None:
         persist_env = bool(interactive) and input(
@@ -405,7 +428,7 @@ def ensure_cloudy(prefix: str = None,
 
     if persist_env:
         try:
-            path, written = _persist_cloudy_env(exe, data)
+            path, written = _persist_cloudy_env(exe, data_env)
             verb = "write in" if written else "already present in"
             print(f"Variables {verb} {path}.\n"
                   f"  Run 'source {path}' (or open a new terminal).\n")
@@ -413,7 +436,7 @@ def ensure_cloudy(prefix: str = None,
             print(f"WARNING: failed to set global env ({exc}); "
                   "CLOUDY installation is present, add manually:\n"
                   f"  export CLOUDY_EXE={exe}\n"
-                  f"  export CLOUDY_DATA_PATH={data}")
+                  f"  export CLOUDY_DATA_PATH={data_env}")
     else:
         print("No env variables permanently set")
 

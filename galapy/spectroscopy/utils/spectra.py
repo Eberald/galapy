@@ -143,9 +143,10 @@ def write_cloudy_sed(wavelength_A,
         wavelength_A, nuFnu = wavelength_A[mask], nuFnu[mask]
 
     nuFnu = np.maximum(nuFnu, 1e-300)  # cut null fluxes
-    order = np.argsort(wavelength_A)  # monotonic sort
+    wavelength_A = np.array([float(f'{w:.6e}') for w in wavelength_A])  # written values on files
+    order = np.argsort(wavelength_A, kind='stable')  # monotonic sort
     wavelength_A, nuFnu = wavelength_A[order], nuFnu[order]
-    order = np.concatenate(([True], np.diff(wavelength_A) > 0.0))  # strictly monotonic sort
+    order = np.concatenate(([True], np.diff(wavelength_A) > 0.0))  # strictly monotonic on files
     wavelength_A, nuFnu = wavelength_A[order], nuFnu[order]
 
     # prefix units for table SED, in case of extrapolate, SED will be extrapolated to
@@ -345,7 +346,7 @@ def extract_ssp_seds(outdir, target_taus = taus,
                 )
 
     if truncate_lyman is None:
-        with open(os.path.join(outdir, "metadata.json"), "w") as f:
+        with open(os.path.join(outdir, "ssp_metadata.json"), "w") as f:
             json.dump(metadata, f, indent=2)
 
     return n, metadata
@@ -388,7 +389,7 @@ def main():
                     help='SSP ages in years (e.g., --tau 1e6 2e6 5e6)')
     ap.add_argument('--Z', type=float, nargs='+', default=None,
                     help='SSP metallicities (e.g., --Z 0.0001 0.005 0.0010)')
-    ap.add_argument('-e','--extrapolate', type=bool, nargs='+', default=None,
+    ap.add_argument('-e','--extrapolate', action='store_true',
                     help='put extrapolate flag for make CLOUDY extrapolate low energy regime')
     args = ap.parse_args()
     

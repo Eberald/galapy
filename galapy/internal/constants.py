@@ -29,10 +29,15 @@ def Ang_to_keV ( wavelength ) :
 #General
 alphaB_1e4K = 2.59e-13     # cm^3/s  case B recombination at T_e = 1e4 K
                            # (Osterbrock & Ferland 2006, Tab. 2.1).
+M_Sun_G   = 1.989e33       # g  (IAU 2015 B3)
+NH_to_AV_MW = 1.87e21      # cm^-2 mag^-1  Bohlin, Savage & Drake 1978 (R_V=3.1)
+
 ## SPECTRA
 LyLimit=911.76
 LymanA=911.6
 SED_cut=1.0e6
+FUV_Lo_A=911.76 # this two are Habing band (6-13.6 eV) on Angstroms
+FUV_Hi_A=2066.0 # //
 
 ## ABUNDANCES
 #  Standard Atomic Weight (IUPAC, https://iupac.qmul.ac.uk/AtWt/)
