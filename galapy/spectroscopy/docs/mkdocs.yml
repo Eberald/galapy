@@ -75,7 +75,11 @@ nav:
           - "SSP SED extraction": ssp_extraction.md
           - "CLOUDY installation": cloudy_installation.md
           - "Abundances and Zeta_Z map" : abundances.md
-          - "HII region: sampling and input files generation" : gen_hii.md
+          - "Line list": line_list.md
+          - HII region:
+            - "Sampling and input files generation" : gen_hii.md
+            - "Running CLOUDY": run_hii.md
+            - "Parse HII": parse_hii.md
       - "Integration with GalaPy": galapy_integration.md
       - "AI Agent - the AI part of CloudIA": ai_agent.md
       - "API CLOUDY": api_cloudy.md
