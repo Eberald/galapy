@@ -132,7 +132,7 @@ Example:
 ### Example Code
 
 ```python
-from galapy.spectroscopy.utils.spectra import extract_ssp_seds
+from galapy.spectroscopy.utils.extract_spectra import extract_ssp_seds
 
 # Batch extract SSPs with extrapolation enabled
 n_files, metadata = extract_ssp_seds(

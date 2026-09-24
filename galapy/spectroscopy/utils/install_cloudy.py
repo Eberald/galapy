@@ -44,14 +44,14 @@ def _report(inst: CloudyInstall, banner: str = None) -> None:
         banner (str, optional): An optional banner string to display in the report.
     """
     if not inst.found:
-        print(f'CLOUDY: NOT FOUND')
-        print(' search in: $CLOUDY_EXE ; `cloudy` on $PATH ; '
+        print(f'[cloudy_inst] CLOUDY: NOT FOUND')
+        print(' [cloudy_inst] search in: $CLOUDY_EXE ; `cloudy` on $PATH ; '
               '$CLOUDY_DATA_PATH/../source/cloudy.exe')
         return
-    print(f'CLOUDY: FOUND -> {inst.exe}')
-    print(f'  CLOUDY_DATA_PATH  : {inst.data_path or "(to be set)"}')
-    print(f'  banner            : {banner or "(not avaiable)"}')
-    print(f'  requested version : {CLOUDY_REQUIRED}')
+    print(f'[cloudy_inst] CLOUDY: FOUND -> {inst.exe}')
+    print(f'[cloudy_inst]   CLOUDY_DATA_PATH  : {inst.data_path or "(to be set)"}')
+    print(f'[cloudy_inst]   banner            : {banner or "(not avaiable)"}')
+    print(f'[cloudy_inst]   requested version : {CLOUDY_REQUIRED}')
 
 
 def main(argv: list = None) -> int:
@@ -78,14 +78,14 @@ def main(argv: list = None) -> int:
         return 0 if ok else 1
 
     if inst.found:
-        print("CLOUDY already present: nothing to do.")
+        print("[cloudy_inst] CLOUDY already present: nothing to do.")
         _report(inst, cloudy_banner(inst.exe))
         return 0
 
     try:
         inst = ensure_cloudy(prefix=args.prefix, jobs=args.jobs)
     except CloudyNotFound as exc:
-        print(f'ERROR: {exc}', file=sys.stderr)
+        print(f'[cloudy_inst] ERROR: {exc}', file=sys.stderr)
         return 1
     return 0 if inst.found else 1
 

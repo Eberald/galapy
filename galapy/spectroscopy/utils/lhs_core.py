@@ -58,10 +58,10 @@ def sample_lhs(charter):
     cd_opt = qmc.discrepancy(unit)
     cd_plain = qmc.discrepancy(qmc.LatinHypercube(d=d, seed=seed).random(n=n))
     assert cd_opt <= cd_plain, (
-        f"LHS optimization ineffective: CD_opt={cd_opt:.3e} >= CD_plain={cd_plain:.3e} "
+        f"[lhs] LHS optimization ineffective: CD_opt={cd_opt:.3e} >= CD_plain={cd_plain:.3e} "
         f"(d={d}, n={n})")
     if  cd_opt > 1e-3:
-        print(f"[WARNING] LHS absolute discrepancy CD_opt={cd_opt:.3e} > 1e-3 with d={d}, n={n}: "
+        print(f"[lhs] [WARNING] LHS absolute discrepancy CD_opt={cd_opt:.3e} > 1e-3 with d={d}, n={n}: "
               f"increase the n_samples for reducing the discrepancy")
 
     #rescale hypercube [0,1] to actual dimension of axes
@@ -71,7 +71,7 @@ def sample_lhs(charter):
 
 def read_ssp_meta(path):
     """
-    Reads and parses SSP metadata from a JSON file. (see physics/spectra.py)
+    Reads and parses SSP metadata from a JSON file. (see physics/extract_spectra.py)
 
     Arguments:
     path: str

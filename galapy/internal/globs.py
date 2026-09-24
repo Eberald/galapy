@@ -52,4 +52,6 @@ ABU_DIR = (DATA_DIR, 'Nebular/Abundances')
 # configs/templates spectrocopy
 
 CONFIG_NEB = (DATA_DIR, 'Nebular/Configs')
+LINES_YML = (DATA_DIR, 'Nebular/Configs/Lines')
+LINES_REF = (DATA_DIR, 'Nebular/Configs/Lines_Ref')
 NEB_TPL_DIR = (DATA_DIR, 'Nebular/Templates')

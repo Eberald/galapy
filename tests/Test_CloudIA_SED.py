@@ -1,12 +1,12 @@
 # Author: Enrico Veraldi
 # check the sed extraction in CLOUDY format
-# galapy/spectroscopy/utils/spectra.py
+# galapy/spectroscopy/utils/extract_spectra.py
 
 import numpy as np
 import pytest
 
 import galapy.internal.constants as CONST
-import galapy.spectroscopy.utils.spectra as spc
+import galapy.spectroscopy.utils.extract_spectra as spc
 
 
 @pytest.fixture

@@ -107,7 +107,7 @@ def main():
 
     charter = CORE.load_charter(args.config)
     if charter['sector'] != 'hii' :
-        raise ValueError('charter not right sector, expected hii')
+        raise ValueError('[lhs_hii] charter not right sector, expected hii')
 
     sample, names = CORE.sample_lhs(charter)
     ssp_meta = CORE.read_ssp_meta(args.ssp_meta)
@@ -117,7 +117,7 @@ def main():
 
     np.save(out / 'lhs_hii.npy', sample)
     CORE.write_grid_spec(out / 'hii_grid_spec.h5', jobs)
-    print(f"lhs_hii.npy and hii_grid_spec.h5 files created in {out}")
+    print(f"[lhs_hii] lhs_hii.npy and hii_grid_spec.h5 files created in {out}")
 
 if __name__ == '__main__':
     main()

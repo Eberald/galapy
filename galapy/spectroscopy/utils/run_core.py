@@ -215,13 +215,12 @@ def stage_job(runs_dir, work_root, sector, job_id, linelist_dir=None):
             raise FileNotFoundError(f'abundance file absent: {abn_src}')
         shutil.copy2(abn_src, wd / abn_name)
 
-    ll_dir = linelist_dir or os.environ.get('CLOUDIA_LINELISTS')
-    if ll_dir:
-        ll_src = pathlib.Path(ll_dir) / sector.linelist
-        if not ll_src.is_file():
-            raise FileNotFoundError(
-                f'line list file absent: {ll_src}.')
-        shutil.copy2(ll_src, wd / sector.linelist)
+    from galapy.spectroscopy.utils.gen_linelist import DEFAULT_OUT_DIR as _LL_DEFAULT
+    ll_dir = pathlib.Path(linelist_dir or os.environ.get('CLOUDIA_LINELISTS') or _LL_DEFAULT)
+    ll_src = ll_dir / sector.linelist
+    if not ll_src.is_file():
+        raise FileNotFoundError(f'line list file absent: {ll_src}.')
+    shutil.copy2(ll_src, wd / sector.linelist)
 
     return wd, deck_dst
 
@@ -265,9 +264,9 @@ def run_job(job_id, runs_dir, work_root, sector_name, exe, timeout,
     wd, _ = stage_job(runs_dir, work_root, sector, job_id, linelist_dir)
     prefix = f'{sector.name}_{job_id}'
 
-    # cloudy -p <prefix>
+    # cloudy -r <prefix>
     try:
-        proc = subprocess.run([exe, '-p', prefix], cwd=str(wd), capture_output=True,
+        proc = subprocess.run([exe, '-r', prefix], cwd=str(wd), capture_output=True,
                               text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         (wd / 'TIMEOUT').write_text(f'timeout dopo {timeout} s\n')
@@ -454,7 +453,7 @@ def build_parser(sector_name):
     ap.add_argument('-t','--timeout', type=int, default=7200,
                     help='timeout for model in seconds (default 7200=2h)')
     ap.add_argument('-l','--linelists', default=None,
-                    help='line list directory for `save line list` (default: $CLOUDIA_LINELISTS)')
+                    help='line list directory for `save line list` (default: $CLOUDIA_LINELISTS, then data/lines)')
     ap.add_argument('--resume', action='store_true',
                     help='skipp already completed jobs')
     ap.add_argument('-d','--dry-run', action='store_true',

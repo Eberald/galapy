@@ -88,6 +88,7 @@ galapy-gen-pdr            = "galapy.spectroscopy.utils.hii.gen_input_pdr:main" #
 galapy-gen-hii            = "galapy.spectroscopy.utils.hii.gen_input_hii:main"
 galapy-gen-lhs-pdr        = "galapy.spectroscopy.utils.hii.gen_lhs_pdr:main" #WIP
 galapy-gen-lhs-hii        = "galapy.spectroscopy.utils.hii.gen_lhs_hii:main"
+galapy-gen-linelist       = "galapy.spectroscopy.utils.gen_linelist:main"
 galapy-build-zeta-map     = "galapy.spectroscopy.utils.physics.abundances:main"
 galapy-install-cloudy     = "galapy.spectroscopy.utils.install_cloudy:main"
 galapy-sed-cloudy-extract = "galapy.spectroscopy.utils.spectra:main"

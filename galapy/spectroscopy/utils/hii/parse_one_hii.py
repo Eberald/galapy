@@ -215,7 +215,7 @@ def integrate_grain_abundance(path):
     return float(np.trapezoid(rho_d, depth))    # dust surface density [g cm^-2]
 
 
-def fesc_from_recipe_C(wave_A, col2_incident, col3_transmitted):
+def fesc(wave_A, col2_incident, col3_transmitted):
     """
     Calculate the escape fraction f_esc by determining the ratio of
     ionizing photon rates (E > 1 Ryd, λ < 911.6 Å) between the transmitted and
@@ -427,7 +427,7 @@ def main():
         I3 = np.trapezoid(col3[::-1], wave[::-1])
         I4 = np.trapezoid(col4[::-1], wave[::-1])
         g.attrs['energy_balance_rel'] = float(abs(I2 - (I3 + I4)) / I2)
-        f_esc_meas = fesc_from_recipe_C(wave, col2, col3)
+        f_esc_meas = fesc(wave, col2, col3)
         g.attrs['f_esc_meas'] = float(f_esc_meas)
         g.create_dataset('f_esc_meas', data=f_esc_meas)
         g.create_dataset('continuum/nebular_emission_per_Msun', data=(nebular * s_k).astype('f4'))
