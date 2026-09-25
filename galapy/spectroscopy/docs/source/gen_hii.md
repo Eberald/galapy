@@ -248,22 +248,22 @@ abundance and the grain temperature, all prefixed with `hii_{job_id}`.
 
 # Python API
 
-::: galapy.spectroscopy.utils.physics.lhs_core.load_charter
+::: galapy.spectroscopy.utils.lhs_core.load_charter
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.physics.lhs_core.sample_lhs
+::: galapy.spectroscopy.utils.lhs_core.sample_lhs
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.physics.lhs_core.read_ssp_meta
+::: galapy.spectroscopy.utils.lhs_core.read_ssp_meta
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.physics.lhs_core.write_grid_spec
+::: galapy.spectroscopy.utils.lhs_core.write_grid_spec
     options:
       show_root_heading: true
       show_source: false

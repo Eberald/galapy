@@ -89,42 +89,42 @@ Example:
 
 # Python API
 
-::: galapy.spectroscopy.utils.spectra.load_ssp_cube
+::: galapy.spectroscopy.utils.extract_spectra.load_ssp_cube
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.spectra.sed_from_ssp_cube_node
+::: galapy.spectroscopy.utils.extract_spectra.sed_from_ssp_cube_node
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.spectra.sed_from_csp
+::: galapy.spectroscopy.utils.extract_spectra.sed_from_csp
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.spectra.write_cloudy_sed
+::: galapy.spectroscopy.utils.extract_spectra.write_cloudy_sed
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.spectra.to_cloudy_sed
+::: galapy.spectroscopy.utils.extract_spectra.to_cloudy_sed
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.spectra.cloudy_sed_QH
+::: galapy.spectroscopy.utils.extract_spectra.cloudy_sed_QH
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.spectra.cloudy_sed_QH_reference
+::: galapy.spectroscopy.utils.extract_spectra.cloudy_sed_QH_reference
     options:
       show_root_heading: true
       show_source: false
 
-::: galapy.spectroscopy.utils.spectra.extract_ssp_seds
+::: galapy.spectroscopy.utils.extract_spectra.extract_ssp_seds
     options:
       show_root_heading: true
       show_source: false

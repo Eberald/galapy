@@ -38,6 +38,7 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
             ensuring the intermediate output file is deleted in such cases.
     """
     out_path = pathlib.Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     frags = sorted(p for p in pathlib.Path(frag_dir).glob('*.h5')
                    if p.resolve() != out_path.resolve())
     if not frags:
@@ -75,13 +76,34 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--frags', required=True, help='directory fragments <job_id>.h5 '
-                                                   '(es: data/hii/parsed or data/pdr/parsed')
-    ap.add_argument('--out', required=True,
-                    help='output name and directory es. data/products/[hii/pdr]_grid.h5')
-    ap.add_argument('--cloudy-version', default='C25.00')
+
+    sec = ap.add_mutually_exclusive_group()
+    sec.add_argument('--hii', action='store_true',
+                     help='settore HII: default frags=data/hii/parsed, out=data/products/hii_grid.h5')
+    sec.add_argument('--pdr', action='store_true',
+                     help='settore PDR: default frags=data/pdr/parsed, out=data/products/pdr_grid.h5')
+
+    ap.add_argument('--frags', default=None,
+                    help='directory frammenti <job_id>.h5 (override del default del settore)')
+    ap.add_argument('--out', default=None,
+                    help='path del file .h5 unito (override del default del settore)')
+    ap.add_argument('--cloudy-version', default='C25.00',
+                    help='versione di CLOUDY da salvare nei metadati (default: C25.00)')
+    ap.add_argument('--ssp-lib', default='parsec22.NT',
+                    help='libreria SSP da salvare nei metadati (default: parsec22.NT)')
+
     args = ap.parse_args(argv)
-    merge(args.frags, args.out, cloudy_version=args.cloudy_version)
+    sector = 'hii' if args.hii else ('pdr' if args.pdr else None)
+
+    frags = args.frags or (f'data/{sector}/parsed' if sector else None)
+    out = args.out or (f'data/products/{sector}_grid.h5' if sector else None)
+
+    if not frags:
+        ap.error("Devi specificare un settore (--hii o --pdr) oppure indicare esplicitamente --frags.")
+    if not out:
+        ap.error("Devi specificare un settore (--hii o --pdr) oppure indicare esplicitamente --out.")
+
+    merge(frags, out, cloudy_version=args.cloudy_version, ssp_lib=args.ssp_lib)
     return 0
 
 

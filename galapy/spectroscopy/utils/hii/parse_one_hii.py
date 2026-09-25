@@ -1,9 +1,12 @@
 # Author: Enrico Veraldi
 # Parser sector HII to hdf5 files. create <job_id>.h5 (one per model)
 
-import re
+import contextlib
 import functools
+import os
 import pathlib
+import re
+import sys
 import numpy as np
 
 from galapy.internal.constants import M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight
@@ -31,12 +34,12 @@ def _load_columns(path, ncol_expected):
     """
     p = pathlib.Path(path)
     if not p.exists():
-        raise FileNotFoundError(f"missing CLOUDY output: {p}")
+        raise FileNotFoundError(f"[parse_one/hii] missing CLOUDY output: {p}")
     arr = np.loadtxt(p, comments='#')
     if arr.ndim != 2:
-        raise ValueError(f"{p}: expected 2D table, instead dimensions {arr.shape} (check .out)")
+        raise ValueError(f"[parse_one/hii] {p}: expected 2D table, instead dimensions {arr.shape} (check .out)")
     if arr.shape[1] != ncol_expected:
-        raise ValueError(f"{p}: {arr.shape[1]} columns, expected columns: {ncol_expected}. ")
+        raise ValueError(f"[parse_one/hii] {p}: {arr.shape[1]} columns, expected columns: {ncol_expected}. ")
     return arr
 
 
@@ -71,14 +74,22 @@ def parse_cloudy_con(path, cols=(1, 2, 3, 4, 9)):
         tuple of numpy.ndarray: A tuple of NumPy arrays representing the
         extracted data columns in the order specified by cols.
     """
-    arr = _load_columns(path, 9)
-    out = [arr[:, c - 1] for c in cols]
-    wave = out[0]
-    # striclty monotonic check on wavelengths
+    p = pathlib.Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"[parse_one/hii] missing CLOUDY output: {p}")
+
+    use_idx = [c - 1 for c in cols]
+    arr = np.loadtxt(p, comments='#', usecols=use_idx)
+
+    if arr.ndim != 2:
+        raise ValueError(f"[parse_one/hii] {p}: expected 2D table, instead dimensions {arr.shape} (check .out)")
+
+    wave = arr[:, 0]
     d = np.diff(wave)
     if not (np.all(d < 0) or np.all(d > 0)):
-        raise ValueError(f"{path}: wavelength column (1) not strictly monotonic ")
-    return tuple(out)
+        raise ValueError(f"[parse_one/hii] {p}: wavelength column (1) not strictly monotonic")
+
+    return tuple(arr[:, i] for i in range(len(cols)))
 
 
 # diagnostic file extraction
@@ -121,28 +132,42 @@ def parse_cloudy_linelist(path):
                     or lacks any valid data entries.
     """
     names, waves, fluxes = [], [], []
-    unit_re = re.compile(r'^([0-9.eE+-]+)\s*([AaMmCc]?)$')   # es. 6562.80A, 157.6m, 3727
-    scale = {'': 1.0, 'A': 1.0, 'M': 1e4, 'C': 1e8}           # conersion of Angstroms, Micron and Cm to Angstroms
+    unit_re = re.compile(r'^([0-9.eE+-]+)\s*([AaMmCc]?)$')  # es. 6562.80A, 157.6m, 3727
+    scale = {'': 1.0, 'A': 1.0, 'M': 1e4, 'C': 1e8}  # conversion to Angstroms
+
     for raw in pathlib.Path(path).read_text().splitlines():
         line = raw.rstrip()
         if not line.strip() or line.lstrip().startswith('#'):
             continue
+
+        if line.lower().startswith('iteration'):
+            names, waves, fluxes = [], [], []
+            continue
+
         parts = line.split()
         if len(parts) < 3:
-            raise ValueError(f"{path}: parse not possible for line: {raw!r}")
+            raise ValueError(f"[parse_one/hii] {path}: parse not possible for line: {raw!r}")
+
         flux = float(parts[-1])
-        m = unit_re.match(parts[-2]) #wavelength part
+        m = unit_re.match(parts[-2])  # wavelength part
         if not m:
-            raise ValueError(f"{path}: lambda with not recognize unit in: {raw!r} ")
-        wl = float(m.group(1)) * scale[m.group(2).upper()]   # put unit in Maiusc, scale wl
-        label = ' '.join(parts[:-2]) # re-compose token before the -2 in a single one ("H" "1" become "H 1")
+            raise ValueError(f"[parse_one/hii] {path}: lambda with not recognized unit in: {raw!r}")
+
+        wl = float(m.group(1)) * scale[m.group(2).upper()]
+        label = ' '.join(parts[:-2])  # reconstruct label
+
         names.append(label)
         waves.append(wl)
         fluxes.append(flux)
+
     if not names:
-        raise ValueError(f"{path}: no lines extracted")
-    return {'names': np.array(names), 'wavelengths': np.array(waves),
-            'fluxes': np.array(fluxes)}
+        raise ValueError(f"[parse_one/hii] {path}: no lines extracted")
+
+    return {
+        'names': np.array(names),
+        'wavelengths': np.array(waves),
+        'fluxes': np.array(fluxes)
+    }
 
 
 def integrate_grain_abundance(path):
@@ -197,20 +222,21 @@ def integrate_grain_abundance(path):
         if raw.strip():
             rows.append([float(x) for x in raw.split('\t') if x.strip()])
     if header is None or not header.lower().startswith('#depth'):
-        raise ValueError(f"{p}: expected header '#Depth<TAB>...<TAB>total', find {header!r} (format changed?)")
+        raise ValueError(f"[parse_one/hii] {p}: expected header '#Depth<TAB>...<TAB>total', find {header!r} (format changed?)")
     if not header.rstrip().lower().endswith('total'):
-        raise ValueError(f"{p}: last column is not'total': {header!r}")
+        raise ValueError(f"[parse_one/hii] {p}: last column is not'total': {header!r}")
     if not rows:
-        raise ValueError(f"{p}: no zone found, aborted ")
+        raise ValueError(f"[parse_one/hii] {p}: no zone found, aborted ")
 
     a = np.array(rows)
     depth, rho_d = a[:, 0], a[:, -1]      # depth [cm] , dust density [g cm^-3]
 
     # with 'last' the depth is striclty increasing, if not error (more iterations saved not the last)
     if np.any(np.diff(depth) <= 0):
-        raise ValueError(f"{p}: depth not strictly increasing — concatenation of more then one iteration.")
+        raise ValueError(f"[parse_one/hii] {p}: depth not strictly increasing — "
+                         f"concatenation of more then one iteration.")
     if len(depth) < 2:
-        raise ValueError(f"{p}: only one zone in the file, column integral undefined.")
+        raise ValueError(f"[parse_one/hii] {p}: only one zone in the file, column integral undefined.")
 
     return float(np.trapezoid(rho_d, depth))    # dust surface density [g cm^-2]
 
@@ -374,39 +400,97 @@ def spec_index(spec_path):
         ids = [b.decode() if isinstance(b, bytes) else b for b in s['job_id'][:]]
     index = {j: i for i, j in enumerate(ids)}
     if len(index) != len(ids):
-        raise ValueError(f"{spec_path}: duplicated job_id in hii_grid_spec.h5")
+        raise ValueError(f"[parse_one/hii] {spec_path}: duplicated job_id in hii_grid_spec.h5")
     return index
 
-def main():
+
+@contextlib.contextmanager
+def atomic_h5(path):
     """
-    workdir of job produce one .h5
+    Writes an HDF5 file atomically
+    """
+    import h5py
+    path = pathlib.Path(path)
+    part = path.with_name(path.name + '.part')
+    try:
+        with h5py.File(str(part), 'w') as f:
+            yield f
+        os.replace(part, path)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+
+
+def require_successful_run(wd):
+    """
+    Only a succesfull run of run_core is parsed. Returns not_converged (bool).
+    """
+    flag = wd / 'converged.flag'
+    if not flag.is_file():
+        raise FileNotFoundError(f"[parse_one/hii] {flag}: absent -- convergence unknown (DD-4). "
+                                f"Run the job with run_core first.")
+    failed = wd / 'RUN_FAILED'
+    if failed.is_file():
+        raise RuntimeError(f"[parse_one/hii] {wd}: RUN_FAILED ({failed.read_text().strip()}) -- "
+                           f"the run did not succeed, it is not parsed")
+    return flag.read_text().strip() == '0'
+
+
+def resolve_out(out, job_id):
+    """
+    --out is a DIRECTORY (an existing one, or a path without extension, like the default
+    data/hii/parsed) -> <dir>/<job_id>.h5; otherwise it is the FILE to write (<id>.h5, or
+    <id>.h5.part as the Slurm script of v70 passes before its own `mv`). Parents are created.
+    """
+    out = pathlib.Path(out)
+    if out.is_dir() or out.suffix == '':
+        out = out / f'{job_id}.h5'
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def build_parser():
+    """
+    parser
     """
     import argparse
+    ap = argparse.ArgumentParser(prog='python -m galapy.spectroscopy.utils.hii.parse_one',
+                                 description="PARSE_ONE_HII: workdir of one job -> one <job_id>.h5")
+    ap.add_argument('workdir', help="work directory of single job (es: data/hii/work/<job_id>)")
+    ap.add_argument('--spec', default="data/grids/hii/hii_grid_spec.h5",
+                    help='path to hii_grid_spec.h5 (default: data/grids/hii/hii_grid_spec.h5)')
+    ap.add_argument('--ssp-meta', default="data/cloudy_seds/ssp_metadata.json",
+                    help='path to ssp_metadata.json (default: data/cloudy_seds/ssp_metadata.json)')
+    ap.add_argument('--out', default="data/hii/parsed",
+                    help="output: a file (e.g. <job_id>.h5), or a directory (existing, or a path "
+                         "without extension) -> <dir>/<job_id>.h5 (default: data/hii/parsed)")
+    return ap
+
+
+def main(argv=None):
+    """
+    workdir of one job -> one fragment <job_id>.h5.
+    """
     import json
     import h5py
 
-    ap = argparse.ArgumentParser(description="PARSE_ONE_HII: workdir to single .h5")
-    ap.add_argument('workdir', help="work directory of single job (es: data/hii/work/<job_id>")
-    ap.add_argument('--spec', default="data/grids/hii/hii_grid_spec.h5",
-                    help='path to hii_grid_spec.h5 (should be data/grids/hii/hii_grid_spec.h5')
-    ap.add_argument('--ssp-meta', default="data/cloudy_seds/ssp_metadata.json",
-                    help='path to metadata.json of spectra (should be data/cloudy_seds/metadata.json)')
-    ap.add_argument('--out', default="data/hii/parsed",
-                    help="path to output directory (should be data/hii/parsed)")
-
-    args = ap.parse_args()
+    args = build_parser().parse_args(argv)
 
     wd = pathlib.Path(args.workdir)
     job_id = wd.name
     pre = wd / f"hii_{job_id}"
+    # BEFORE reading a single number: only a successful run is parsed
+    not_converged = require_successful_run(wd)
+    out = resolve_out(args.out, job_id)
 
     i = spec_index(args.spec).get(job_id)
     if i is None:
         raise KeyError(f"[parse_one/hii] {job_id}: absent in {args.spec} (job not part of grid)")
     with h5py.File(args.spec, 'r') as s:
         p = {k: s[k][i] for k in ('logU', 'lognH_HII', 'z_CMB', 'log_zeta_O',
-                                  'xi_d', 'f_esc', 'F_star', 'tau_SSP', 'Z_star')}
-    meta = json.load(open(args.ssp_meta))
+                                  'xi_d', 'f_esc_target', 'F_star', 'tau_SSP', 'Z_star')}
+    with open(args.ssp_meta) as fh:
+        meta = json.load(fh)
     Qh = {(m['tau_SSP'], m['Z_star']): m['Qh_unit'] for m in meta}
     s_k = s_k_factor(Qh[(float(p['tau_SSP']), float(p['Z_star']))],
                      float(p['logU']), float(p['lognH_HII']))
@@ -424,7 +508,7 @@ def main():
     line_data = parse_cloudy_linelist(f"{pre}.lines")
     Sigma_d = integrate_grain_abundance(f"{pre}.dusa")
 
-    with h5py.File(args.out, 'w') as f:
+    with atomic_h5(out) as f:
         f.create_dataset('continuum/wave_grid', data=wave.astype('f4'))
         f.create_dataset('line_names', data=line_data['names'].astype('S'))  # DD-3
         f.create_dataset('lines_emergent/wavelengths_rest',
@@ -432,14 +516,13 @@ def main():
         g = f.create_group(f"grid_point_{job_id}")
         g.attrs.update({k: float(p[k]) for k in
                         ('logU', 'lognH_HII', 'z_CMB', 'log_zeta_O',
-                         'xi_d', 'f_esc', 'F_star', 'tau_SSP', 'Z_star')})
-        flag = wd / 'converged.flag'  # DD-4
-        g.attrs['not_converged'] = bool(flag.exists() and flag.read_text().strip() == '0')
+                         'xi_d', 'f_esc_target', 'F_star', 'tau_SSP', 'Z_star')})
+        g.attrs['not_converged'] = bool(not_converged)  # DD-4
         I2 = np.trapezoid(col2[::-1], wave[::-1])
         I3 = np.trapezoid(col3[::-1], wave[::-1])
         I4 = np.trapezoid(col4[::-1], wave[::-1])
         g.attrs['energy_balance_rel'] = float(abs(I2 - (I3 + I4)) / I2)
-        f_esc_meas = fesc_from_recipe_C(wave, col2, col3)
+        f_esc_meas = fesc(wave, col2, col3)
         g.attrs['f_esc_meas'] = float(f_esc_meas)
         g.create_dataset('f_esc_meas', data=f_esc_meas)
         T_fuv, N_fuv = fuv_transmittance_hii(wave, col2, col3, col4)
@@ -450,9 +533,11 @@ def main():
         g.create_dataset('continuum/transmission', data=transmission.astype('f4'))
         g.attrs['sed_support_A'] = sed_support
         g.create_dataset('lines_emergent/fluxes', data=(line_data['fluxes'] * s_k).astype('f4'))  # DD-3
-        g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / M_SUN_G)
+        g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / M_Sun_G)
         g.attrs['dust_mass_units'] = 'Msun per Msun SSP formed'
-    print(f"[parse_one/hii] {job_id} -> {args.out}")
+    print(f"[parse_one/hii] {job_id} -> {out}")
+    return 0
+
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

@@ -4,6 +4,9 @@
 # Python standard library module that provides a high-level interface for asynchronously executing callables
 # using pools of threads or processes
 import concurrent.futures as _fut
+import contextlib
+import importlib
+import io
 import json
 import os
 import pathlib
@@ -12,18 +15,22 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 # imports a tool that automatically sets up a class to store data, make possible immutable data (avoid runtime mod.)
 from dataclasses import dataclass
 
 from galapy.spectroscopy.utils import CLOUDY_REQUIRED, cloudy_banner, require_cloudy
 
 # for wildcard import (public interface)
-__all__ = ['Sector', 'SECTORS', 'CONVERGENCE_CAUTION', 'parse_index_selector',
-           'read_manifest', 'sed_referenced_by', 'is_complete', 'converged_from_out',
-           'stage_job', 'run_job', 'plan_jobs', 'run_all', 'build_parser', 'main']
+__all__ = ['Sector', 'SECTORS', 'CONVERGENCE_CAUTION', 'MARKERS', 'parse_index_selector',
+           'read_manifest', 'sed_referenced_by', 'abn_referenced_by', 'is_complete', 'converged_from_out',
+           'stage_job', 'call_parse_one', 'already_parse', 'parse_job', 'run_job', 'plan_jobs', 'run_all', 'write_run_manifest', 'build_parser', 'main']
 
 # message for not reaching convergence in CLOUDY runs
-CONVERGENCE_CAUTION = 'CLOUDY Iteration to convergence did not converge'
+CONVERGENCE_CAUTION = 'C-Iterate to convergence did not converge'
+
+# outcome markers of a run
+MARKERS = ('converged.flag', 'NOT_CONVERGED', 'TIMEOUT', 'RUN_FAILED')
 
 # freeze parameters at first initialization
 # is the sector associated to runs
@@ -40,12 +47,12 @@ SECTORS = {
         name='hii',
         saves=('.con', '.con_grain', '.lines', '.dusa', '.grain_temp'),
         linelist='hii_lines.dat',
-        parse_module='galapy.spectroscopy.utils.hii.parse_one'),
+        parse_module='galapy.spectroscopy.utils.hii.parse_one_hii'),
     'pdr': Sector(
         name='pdr',
         saves=('.con', '.con_grain', '.lines', '.dusa', '.pdr', '.heat', '.cool'),
         linelist='pdr_lines.dat',
-        parse_module='galapy.spectroscopy.utils.pdr.parse_one'),
+        parse_module='galapy.spectroscopy.utils.pdr.parse_one_pdr'),
 }
 
 _SED_RE = re.compile(r'^\s*table\s+SED\s+"([^"]+)"', re.IGNORECASE | re.MULTILINE) #reg expression for SED name in cloudy deck
@@ -224,44 +231,150 @@ def stage_job(runs_dir, work_root, sector, job_id, linelist_dir=None):
 
     return wd, deck_dst
 
-def run_job(job_id, runs_dir, work_root, sector_name, exe, timeout,
-            linelist_dir=None, resume=False, parse=False):
+def call_parse_one(module_name, argv):
     """
-    Runs a CLOUDY job based on the provided parameters and captures the results, including status,
-    execution time, and convergence information.
+    Runs the `main` function of the specified module in the current process.
 
     Parameters:
-        job_id (str): Unique identifier for the job.
-        runs_dir (str): Directory containing previously executed runs.
-        work_root (str): Root directory where jobs will be executed.
-        sector_name (str): Name of the sector related to the job, used for job configuration.
-        exe (str): Path to the external executable to be run (CLOUDY executable)
-        timeout (float): Maximum time, in seconds, allowed for the job to execute.
-        linelist_dir (Optional[str]): Directory containing line lists for the job. Defaults to None.
-        resume (bool): Flag indicating whether execution should resume from an existing incomplete job. Defaults to False.
-        parse (bool): Option to enable parsing features for the job. Defaults to False.
+    module_name: str
+        The name of the module whose main function is to be executed.
+    argv: list
+        A list of command-line arguments to be passed to the module's main function.
+    """
+    mod = importlib.import_module(module_name)
+    with contextlib.redirect_stdout(io.StringIO()):
+        mod.main(list(argv))
+
+def already_parsed(frag, workdir):
+    """
+    Determines whether the specified fragment file exists and was generated during
+    the last execution of the provided working directory.
+
+    Args:
+        frag (str | pathlib.Path): The path to the fragment file to check.
+        workdir (str | pathlib.Path): The path to the working directory where the
+        `converged.flag` file is expected.
 
     Returns:
-        dict: A dictionary containing the keys:
-            - job_id (str): The unique identifier for the job.
-            - status (str): Status of the job ('ok', 'failed', 'skipped', or 'timeout').
-            - converged (bool or None): Whether the job converged or None if skipped.
-            - returncode (int or None): The return code from the external executable, or None if skipped.
-            - missing (list): List of missing files based on sector requirements.
-            - seconds (float): Total time taken for the job to execute.
-            - workdir (str): Path to the working directory where the job was executed.
+        bool: True if the fragment exists and is current relative to the
+        `converged.flag` file in the working directory, or if the marker file
+        is absent. False otherwise.
+    """
+    frag = pathlib.Path(frag)
+    if not frag.is_file():
+        return False
+    flag = pathlib.Path(workdir) / 'converged.flag'
+    return (not flag.is_file()) or frag.stat().st_mtime >= flag.stat().st_mtime
+
+
+def parse_job(job_id, work_root, sector_name, parse):
+    """
+    Parses a single job directory and generates a corresponding fragment file.
+
+    Args:
+        job_id (str): Identifier of the job to be processed.
+        work_root (str): Root directory containing the job directories.
+        sector_name (str): Name of the sector to determine the parsing module.
+        parse (dict): Dictionary containing parsing configurations, including:
+            - frags (str): Path to the directory where fragment files will be saved.
+            - argv (list): List of arguments to forward to the parsing function.
+
+    Returns:
+        dict: A dictionary containing the following keys:
+            - status (str): "ok" if successful, "failed" otherwise.
+            - seconds (float): The duration (in seconds) taken to process the job.
+            - error (str, optional): Error message in case of failure.
+            - traceback (str, optional): Full error traceback in case of failure.
+    """
+    t0 = time.time()
+    sector = SECTORS[sector_name]
+    wd = pathlib.Path(work_root) / job_id
+    frag = pathlib.Path(parse['frags']) / f'{job_id}.h5'
+    res = {'status': 'ok', 'seconds': 0.0}
+    try:
+        frag.parent.mkdir(parents=True, exist_ok=True)
+        call_parse_one(sector.parse_module, [str(wd), *parse['argv'], '--out', str(frag)])
+    except (Exception, SystemExit) as exc:
+        tb = traceback.extract_tb(exc.__traceback__)
+        where = tb[-1].name if tb else '?'
+        line = tb[-1].line if tb else ''
+        res.update(status='failed',
+                   error=f'{type(exc).__name__} in {where}: {str(exc) or line}',
+                   traceback=traceback.format_exc())
+    res['seconds'] = time.time() - t0
+    return res
+
+def run_job(job_id, runs_dir, work_root, sector_name, exe, timeout,
+            linelist_dir=None, resume=False, parse=None, run=True):
+    """
+    Executes a CLOUDY job specified by the provided parameters, manages job
+    staging, execution, and parsing processes, and returns the results in a
+    dictionary.
+
+    Args:
+        job_id (str): Unique identifier for the job.
+        runs_dir (str): Directory to store runs for intermediate files and job
+            execution.
+        work_root (str): Root directory for the working directory of this job.
+        sector_name (str): Name of the sector for which the job is executed.
+        exe (str): Path to the executable for executing the job.
+        timeout (float): Timeout value in seconds for job execution.
+        linelist_dir (Optional[str]): Directory for the line lists used in the
+            simulation. Defaults to None.
+        resume (bool): If True, attempts to resume a previously unfinished job.
+            Defaults to False.
+        parse (Optional[dict]): Parsing configuration for the job, containing
+            parsing-specific options. Defaults to None.
+        run (bool): Flag indicating whether to run the job, or just parse (if
+            applicable). Defaults to True.
+
+    Returns:
+        dict: A dictionary containing job execution metadata. Keys include:
+            - 'job_id': The job identifier.
+            - 'status': Status of the operation (e.g., 'skipped', 'ok', or
+              'failed').
+            - 'converged': Boolean indicating whether the computation converged.
+            - 'seconds': Total time taken for the operation in seconds.
+            - 'workdir': Directory where the job was executed.
+            - 'parse': Dictionary containing parsing results or status of the
+              parsing operation.
 
     Raises:
-        subprocess.TimeoutExpired: Raised when the execution takes longer than the specified timeout.
+        None: Exceptions are handled internally and appropriate status and error
+        messages are returned in the result dictionary.
     """
     sector = SECTORS[sector_name]
     t0 = time.time()
     wd = pathlib.Path(work_root) / job_id
-    if resume and is_complete(wd, sector, job_id):
-        return {'job_id': job_id, 'status': 'skipped', 'converged': None,
-                'seconds': 0.0, 'workdir': str(wd)}
+    frag = pathlib.Path(parse['frags']) / f'{job_id}.h5' if parse else None
+    res = {'job_id': job_id, 'status': 'skipped', 'converged': None,
+           'seconds': 0.0, 'workdir': str(wd), 'parse': None}
 
-    wd, _ = stage_job(runs_dir, work_root, sector, job_id, linelist_dir)
+    # nothing to do: the fragment is the child of the last run
+    if resume and parse is not None and already_parsed(frag, wd):
+        res['parse'] = {'status': 'skipped', 'seconds': 0.0}
+        return res
+    # the last run succeeded: parse only (or, without parsing, skip)
+    if (resume or not run) and is_complete(wd, sector, job_id):
+        if parse is not None:
+            res['converged'] = (wd / 'converged.flag').read_text().strip() != '0'
+            res['parse'] = parse_job(job_id, work_root, sector_name, parse)
+        return res
+    if not run:
+        res['status'] = 'incomplete'  # --parse-only on a workdir that did not succeed
+        return res
+
+    # run CLOUDY. A staging error is a failure of ongoing job, not of all the jobs
+    try:
+        wd, _ = stage_job(runs_dir, work_root, sector, job_id, linelist_dir)
+    except Exception as exc:
+        res.update(status='failed', error=f'{type(exc).__name__} in stage_job: {exc}',
+                   seconds=time.time() - t0)
+        return res
+    for m in MARKERS:  # a new run inherits no old outcome...
+        (wd / m).unlink(missing_ok=True)
+    if frag is not None:
+        frag.unlink(missing_ok=True)  # ...and no fragment of a previous run
     prefix = f'{sector.name}_{job_id}'
 
     # cloudy -r <prefix>
@@ -269,9 +382,14 @@ def run_job(job_id, runs_dir, work_root, sector_name, exe, timeout,
         proc = subprocess.run([exe, '-r', prefix], cwd=str(wd), capture_output=True,
                               text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        (wd / 'TIMEOUT').write_text(f'timeout dopo {timeout} s\n')
-        return {'job_id': job_id, 'status': 'timeout', 'converged': False,
-                'seconds': time.time() - t0, 'workdir': str(wd)}
+        (wd / 'TIMEOUT').write_text(f'timeout after {timeout} s\n')
+        res.update(status='timeout', converged=False, seconds=time.time() - t0)
+        return res
+    except OSError as exc:  # binary not executable, not found, ...
+        (wd / 'RUN_FAILED').write_text(f'{type(exc).__name__}: {exc}\n')
+        res.update(status='failed', error=f'{type(exc).__name__}: {exc}',
+                   seconds=time.time() - t0)
+        return res
 
     out_path = wd / f'{prefix}.out'
     out_text = out_path.read_text(errors='replace') if out_path.is_file() else proc.stdout
@@ -283,12 +401,19 @@ def run_job(job_id, runs_dir, work_root, sector_name, exe, timeout,
 
     missing = [ext for ext in sector.saves if not (wd / f'{prefix}{ext}').is_file()]
     status = 'ok' if (proc.returncode == 0 and not missing) else 'failed'
+    if status == 'failed':
+        (wd / 'RUN_FAILED').write_text(f'returncode={proc.returncode} missing={missing}\n')
 
+    # the flag last file written in work directory
     (wd / 'converged.flag').write_text('1\n' if converged else '0\n')
 
-    return {'job_id': job_id, 'status': status, 'converged': converged,
-            'returncode': proc.returncode, 'missing': missing,
-            'seconds': time.time() - t0, 'workdir': str(wd)}
+    res.update(status=status, converged=converged, returncode=proc.returncode,
+               missing=missing, seconds=time.time() - t0)
+
+    # the parse comes after the flag
+    if parse is not None and status == 'ok':
+        res['parse'] = parse_job(job_id, work_root, sector_name, parse)
+    return res
 
 def plan_jobs(manifest_ids, index_sel=None, job_ids=None):
     """
@@ -327,50 +452,48 @@ def plan_jobs(manifest_ids, index_sel=None, job_ids=None):
         raise IndexError(f'index out of deck range: ({len(manifest_ids)} job): {over[:5]}')
     return [manifest_ids[i] for i in idx]
 
+
 def run_all(jobs, runs_dir, work_root, sector_name, exe, timeout, nproc=1,
-            linelist_dir=None, resume=False, on_result=None):
+            linelist_dir=None, resume=False, parse=None, run=True, on_result=None):
     """
     Executes jobs in either single process or pool mode and returns the list of outcomes.
 
     The function can run in single-process mode for debugging purposes or use
-    a process pool for parallel execution when `nproc > 1`. In single-process
-    mode, tracebacks are preserved for easier debugging.
+    a process pool for parallel execution when `nproc > 1`. Each worker runs CLOUDY
+    and then, in the same process, parses the model (see run_job).
 
     Parameters:
-        jobs (list): A list of job configurations. Each job is a dictionary
-            containing the necessary parameters for execution.
-        runs_dir (str): Directory path where the job runtime results should be stored.
+        jobs (list): The job_ids to execute.
+        runs_dir (str): Directory with the decks produced by galapy-gen-*.
         work_root (str): Root directory for job execution.
         sector_name (str): Name of the sector the jobs are associated with.
-        exe (str): Path to the executable to be used for job execution.
+        exe (str): Path to the CLOUDY executable (None with run=False).
         timeout (int | float): Maximum allowed execution time for each job, in seconds.
         nproc (int, optional): Number of processes to use for execution. Defaults to 1.
-        linelist_dir (str, optional): Directory containing additional data for specific job
-            execution, if required.
-        resume (bool, optional): Whether to resume execution if it was interrupted.
-            Defaults to False.
+        linelist_dir (str, optional): Directory containing the line lists.
+        resume (bool, optional): see run_job. Defaults to False.
+        parse (dict | None, optional): see run_job. Defaults to None (no parsing).
+        run (bool, optional): False -> --parse-only. Defaults to True.
         on_result (callable, optional): A callback function that will be invoked with the
             result of each completed job.
 
     Returns:
-        list: A list of job execution results. Each result is a dictionary containing
-            the job id and the corresponding outcome.
+        list: A list of job execution results, in the order of `jobs`.
     """
+    args = (runs_dir, work_root, sector_name, exe, timeout, linelist_dir, resume, parse, run)
     results = []
-    #serial mode
+    # serial mode
     if nproc <= 1:
         for j in jobs:
-            r = run_job(j, runs_dir, work_root, sector_name, exe, timeout,
-                        linelist_dir, resume)
+            r = run_job(j, *args)
             results.append(r)
-            if on_result: #functions for manage results on real-time when finished (increase the multitask)
+            if on_result:  # functions for manage results on real-time when finished (increase the multitask)
                 on_result(r)
         return results
 
-    #parallel mode on CPU
-    with _fut.ProcessPoolExecutor(max_workers=nproc) as pool: # initialise pool
-        futs = {pool.submit(run_job, j, runs_dir, work_root, sector_name, exe,
-                            timeout, linelist_dir, resume): j for j in jobs} #submit jobs
+    # parallel mode on CPU
+    with _fut.ProcessPoolExecutor(max_workers=nproc) as pool:  # initialise pool
+        futs = {pool.submit(run_job, j, *args): j for j in jobs}  # submit jobs
         for f in _fut.as_completed(futs):
             r = f.result()
             results.append(r)
@@ -380,49 +503,60 @@ def run_all(jobs, runs_dir, work_root, sector_name, exe, timeout, nproc=1,
     results.sort(key=lambda r: order[r['job_id']])
     return results
 
+def _parse_status(r):
+    return None if r.get('parse') is None else r['parse']['status']
+
 def write_run_manifest(path, sector_name, inst, results, extra=None):
     """
-    Writes a run manifest summarizing execution provenance and job outcomes.
+    Writes a detailed manifest summarizing execution provenance and job results.
 
-    This function creates a manifest file that contains metadata about the
-    execution.
+    This function records metadata and statistics about the run, including the sector
+    name, executable information, job statuses, and various counters such as the number
+    of skipped, failed, and successfully parsed jobs. The manifest is written to
+    the specified path in JSON format.
 
     Parameters:
-    path: str
-        The file path where the manifest will be saved.
-    sector_name: str
-        The name of the sector being processed.
-    inst: object
-        An instance containing attributes such as the executable path, version,
-        and data path used during execution.
-    results: list[dict]
-        A list of job result dictionaries, each containing details such as
-        status and convergence information for a specific job.
-    extra: dict, optional
-        Additional key-value pairs to include in the manifest, if any.
+    path : str
+        The file path where the manifest will be written.
+    sector_name : str
+        The name of the sector associated with this run.
+    inst : CloudyInstance or None
+        An instance containing details of the Cloudy executable, version, and
+        data path. If None, related fields in the manifest will be set to None.
+    results : list of dict
+        A list of dictionaries representing job outcomes. Each dictionary contains
+        keys such as 'status', 'converged', and other relevant information for
+        individual jobs.
+    extra : dict or None, optional
+        Additional information to merge into the manifest. This parameter is
+        optional and the default is None.
 
     Returns:
     dict
-        The manifest data written to the specified file.
-    """
-    """Provenance del LANCIO, non del singolo job: un file, non 432000.
+        A dictionary representing the complete manifest. This includes metadata,
+        job summary statistics, and the array of job results.
 
-    Contiene il banner della versione EFFETTIVAMENTE eseguita — la sola prova
-    di quale binario ha prodotto quei numeri (Decisione 8).
+    Raises:
+    OSError
+        If writing the manifest to the specified path fails.
     """
     doc = {
         'sector': sector_name,
-        'cloudy_exe': inst.exe,
-        'cloudy_banner': inst.version,
+        'cloudy_exe': inst.exe if inst else None,
+        'cloudy_banner': inst.version if inst else None,
         'cloudy_required': CLOUDY_REQUIRED,
-        'cloudy_data_path': inst.data_path,
+        'cloudy_data_path': inst.data_path if inst else None,
         'host': os.uname().nodename if hasattr(os, 'uname') else None,
         'timestamp_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'n_jobs': len(results),
         'n_ok': sum(r['status'] == 'ok' for r in results),
         'n_skipped': sum(r['status'] == 'skipped' for r in results),
         'n_failed': sum(r['status'] in ('failed', 'timeout') for r in results),
+        'n_incomplete': sum(r['status'] == 'incomplete' for r in results),
         'n_not_converged': sum(r['converged'] is False for r in results),
+        'n_parse_ok': sum(_parse_status(r) == 'ok' for r in results),
+        'n_parse_skipped': sum(_parse_status(r) == 'skipped' for r in results),
+        'n_parse_failed': sum(_parse_status(r) == 'failed' for r in results),
         'jobs': results,
     }
     if extra:
@@ -430,95 +564,178 @@ def write_run_manifest(path, sector_name, inst, results, extra=None):
     pathlib.Path(path).write_text(json.dumps(doc, indent=2))
     return doc
 
-def build_parser(sector_name):
-    """Il parser vive in una funzione, non al top level (T-0.8)."""
+
+def build_parser(sector_name, runs_default=None, parse_inputs=()):
+    """
+    Builds and returns an argument parser for executing and managing the CLOUDY models for a specific
+    sector. The parser supports multiple configuration options for defining input directories, worker
+    settings, manifest files, parsing options, and error handling behavior. It also provides mutually
+    exclusive operational modes such as running the models, parsing results only, or skipping specific
+    jobs.
+
+    Args:
+        sector_name (str): The name of the sector for which the parser will configure its functionality.
+        runs_default (str, optional): The default directory for the run deck. If not provided, this argument
+        becomes required.
+        parse_inputs (tuple, optional): A tuple containing additional parsing flags, their default
+        values, and descriptions. Each tuple entry must have the structure (flag, default, help).
+
+    Returns:
+        argparse.ArgumentParser: An ArgumentParser instance preconfigured with options necessary to
+        execute and parse the CLOUDY models for the specified sector.
+    """
     import argparse
     s = sector_name
     ap = argparse.ArgumentParser(
         prog=f'galapy-run-cloudy-{s}',
-        description=f'Execute the CLOUDY models for sector {s}.')
-    ap.add_argument('-r','--runs', required=True,
-                    help='deck directory produced by galapy-gen-* (should have SED/ and jobs.txt) suggested: data/[hii/pdr]')
-    ap.add_argument('-w','--work', default=None,
+        description=f'Execute the CLOUDY models for sector {s} and parse each successful '
+                    f'run, in the same worker, into <frags>/<job_id>.h5.')
+    ap.add_argument('-r', '--runs', default=runs_default, required=runs_default is None,
+                    help=f'deck directory produced by galapy-gen-* (should have SED/ and jobs_{s}.txt)'
+                         + (f' (default: {runs_default})' if runs_default else ''))
+    ap.add_argument('-w', '--work', default=None,
                     help='workdir (default: <runs>/work)')
-    ap.add_argument('-m','--manifest', default=None,
-                    help='manifest  (default: <runs>/jobs.txt)')
+    ap.add_argument('-m', '--manifest', default=None,
+                    help=f'manifest (default: <runs>/jobs_{s}.txt)')
     sel = ap.add_mutually_exclusive_group()
-    sel.add_argument('-i','--index', default=None,
+    sel.add_argument('-i', '--index', default=None,
                      help="INDEX selection from the manifest, es. '0-49' o '0,7,12-15'. ")
     sel.add_argument('--job-id', nargs='+', default=None,
                      help='job_id explicit (mainly debug single model)')
-    ap.add_argument('-j','--jobs', type=int, default=1,
+    ap.add_argument('-j', '--jobs', type=int, default=1,
                     help='parallel processes (default 1: with full traceback)')
-    ap.add_argument('-t','--timeout', type=int, default=7200,
+    ap.add_argument('-t', '--timeout', type=int, default=7200,
                     help='timeout for model in seconds (default 7200=2h)')
-    ap.add_argument('-l','--linelists', default=None,
+    ap.add_argument('-l', '--linelists', default=None,
                     help='line list directory for `save line list` (default: $CLOUDIA_LINELISTS, then data/lines)')
     ap.add_argument('--resume', action='store_true',
-                    help='skipp already completed jobs')
-    ap.add_argument('-d','--dry-run', action='store_true',
+                    help='skip the jobs whose fragment is up to date; only parse the successful '
+                         'runs without fragment; rerun all the others')
+    ap.add_argument('-d', '--dry-run', action='store_true',
                     help='print only run plan without running it')
     ap.add_argument('--report', default=None,
-                    help='where writing the run plan (default: <work>/run_manifest.json)')
+                    help='manifest of the launch (default: <work>/run_manifest.json; '
+                         'with --parse-only: <frags>/parse_manifest.json)')
     ap.add_argument('--no-version-check', action='store_true',
                     help='do not check version banner. Only for development: a grid produced this way is not '
                          'commensurable with others.')
+
+    par = ap.add_argument_group('parsing (one fragment <job_id>.h5 per successful run)')
+    par.add_argument('--frags', default=None,
+                     help='fragment directory (default: <runs>/parsed); it is the --frags of merge_grid')
+    for flag, default, help_ in parse_inputs:
+        par.add_argument(flag, default=default, help=f'{help_} (default: {default})')
+    mode = par.add_mutually_exclusive_group()
+    mode.add_argument('--no-parse', action='store_true',
+                      help='run CLOUDY only (e.g. the Nextflow process RUN_CLOUDY_*, where '
+                           'PARSE_ONE_* is a separate process)')
+    mode.add_argument('--parse-only', action='store_true',
+                      help='do NOT run CLOUDY: parse the successful workdirs (e.g. after a '
+                           'parser change). CLOUDY is not required')
     return ap
 
-def main(argv=None, sector_name='hii'):
-    #SETTING (PARSER, DRY RUN...)
-    ap = build_parser(sector_name)
+
+def main(argv=None, sector_name='hii', runs_default=None, parse_inputs=()):
+    # SETTING (PARSER, DRY RUN...)
+    ap = build_parser(sector_name, runs_default, parse_inputs)
     args = ap.parse_args(argv)
 
     runs = pathlib.Path(args.runs)
     work = pathlib.Path(args.work) if args.work else runs / 'work'
     manifest = pathlib.Path(args.manifest) if args.manifest else runs / f'jobs_{sector_name}.txt'
+    frags = pathlib.Path(args.frags) if args.frags else runs / 'parsed'
+    do_parse = bool(parse_inputs) and not args.no_parse
+
+    if args.parse_only and not parse_inputs:
+        print(f'[ERROR]: sector {sector_name} declares no parser inputs: --parse-only '
+              f'is not available', file=sys.stderr)
+        return 2
 
     try:
         ids = read_manifest(manifest)
         jobs = plan_jobs(ids, args.index, args.job_id)
+        parse = None
+        if do_parse:
+            # the files forwarded to parse_one are checked HERE, once: not N times
+            # inside the pool, where they would give N identical failures
+            files = {flag: getattr(args, flag.lstrip('-').replace('-', '_'))
+                     for flag, _, _ in parse_inputs}
+            absent = [f'{k} {v}' for k, v in files.items() if not pathlib.Path(v).is_file()]
+            if absent:
+                raise FileNotFoundError(f'parser inputs absent: {absent}')
+            parse = {'frags': str(frags.resolve()),
+                     'argv': [x for k, v in files.items()
+                              for x in (k, str(pathlib.Path(v).resolve()))]}
     except (OSError, ValueError, KeyError, IndexError) as exc:
         print(f'[ERROR]: {exc}', file=sys.stderr)
         return 2
 
+    mode = 'parse-only' if args.parse_only else ('run+parse' if parse else 'run')
     if args.dry_run:
-        print(f'[{sector_name}] {len(jobs)} job to execute; work={work}')
+        print(f'[{sector_name}] {len(jobs)} job, mode={mode}; work={work}'
+              + (f'; frags={frags}' if parse else ''))
         for j in jobs[:20]:
             print(f'  {j}')
         if len(jobs) > 20:
             print(f'  ... and others {len(jobs) - 20}')
         return 0
 
-    #CHECK
-    from galapy.spectroscopy.utils import CloudyNotFound
-    try:
-        inst = require_cloudy(check_version=not args.no_version_check)
-    except CloudyNotFound as exc:
-        print(f'[ERROR]: {exc}', file=sys.stderr)
-        return 1
-    if inst.version is None:
-        inst = inst._replace(version=cloudy_banner(inst.exe))
+    # CHECK (not needed with --parse-only: CLOUDY is never called)
+    inst = None
+    if not args.parse_only:
+        from galapy.spectroscopy.utils import CloudyNotFound
+        try:
+            inst = require_cloudy(check_version=not args.no_version_check)
+        except CloudyNotFound as exc:
+            print(f'[ERROR]: {exc}', file=sys.stderr)
+            return 1
+        if inst.version is None:
+            inst = inst._replace(version=cloudy_banner(inst.exe))
+        print(f'[{sector_name}] CLOUDY: {inst.version or "(banner not read)"} — {inst.exe}',
+              file=sys.stderr)
 
     work.mkdir(parents=True, exist_ok=True)
-    print(f'[{sector_name}] CLOUDY: {inst.version or "(banner not read)"} — {inst.exe}',
-          file=sys.stderr)
-    print(f'[{sector_name}] {len(jobs)} job, {args.jobs} processes, work={work}',
-          file=sys.stderr)
+    if parse:
+        frags.mkdir(parents=True, exist_ok=True)
+    print(f'[{sector_name}] {len(jobs)} job, {args.jobs} processes, mode={mode}, work={work}'
+          + (f', frags={frags}' if parse else ''), file=sys.stderr)
 
     def _echo(r):
-        mark = {'ok': ' ', 'skipped': '-', 'failed': '!', 'timeout': 'T'}[r['status']]
+        mark = {'ok': ' ', 'skipped': '-', 'failed': '!', 'timeout': 'T',
+                'incomplete': '?'}[r['status']]
         conv = '' if r['converged'] is not False else '  [NOT CONVERGED]'
-        print(f"  [{mark}] {r['job_id']}  {r['seconds']:6.1f}s{conv}", file=sys.stderr)
+        p = r.get('parse')
+        ptxt = '' if p is None else f"  parse:{p['status']}"
+        if p is not None and p['status'] == 'failed':
+            ptxt += f" ({p['error']})"
+        elif r['status'] == 'failed' and r.get('error'):
+            ptxt += f"  ({r['error']})"
+        print(f"  [{mark}] {r['job_id']}  {r['seconds']:6.1f}s{conv}{ptxt}", file=sys.stderr)
 
-    results = run_all(jobs, runs, work, sector_name, inst.exe, args.timeout,
-                      nproc=args.jobs, linelist_dir=args.linelists,
-                      resume=args.resume, on_result=_echo)
+    results = run_all(jobs, runs, work, sector_name, inst.exe if inst else None, args.timeout,
+                      nproc=args.jobs, linelist_dir=args.linelists, resume=args.resume,
+                      parse=parse, run=not args.parse_only, on_result=_echo)
 
-    doc = write_run_manifest(args.report or (work / 'run_manifest.json'),
-                             sector_name, inst, results)
+    extra = None
+    if parse:
+        extra = {'mode': mode, 'parse_module': SECTORS[sector_name].parse_module,
+                 'parse_argv': parse['argv'], 'frags': parse['frags']}
+    report = args.report or ((frags / 'parse_manifest.json') if args.parse_only
+                             else (work / 'run_manifest.json'))
+    doc = write_run_manifest(report, sector_name, inst, results, extra)
     print(f"[{sector_name}] ok={doc['n_ok']} skipped={doc['n_skipped']} "
-          f"failed={doc['n_failed']} not-converged={doc['n_not_converged']}",
+          f"failed={doc['n_failed']} incomplete={doc['n_incomplete']} "
+          f"not-converged={doc['n_not_converged']} | parse: ok={doc['n_parse_ok']} "
+          f"skipped={doc['n_parse_skipped']} failed={doc['n_parse_failed']}  -> {report}",
           file=sys.stderr)
 
-    #EXITING (1 fail, 0 ok)
-    return 1 if doc['n_failed'] else 0
+    first = next((r for r in results
+                  if r.get('parse') and r['parse']['status'] == 'failed'), None)
+    if first is not None:
+        print(f"\n[{sector_name}] traceback of the first parse failure ({first['job_id']}); "
+              f"all the others in {report}:\n{first['parse']['traceback']}", file=sys.stderr)
+
+    # EXITING (1 fail, 0 ok): 0 only if every selected job ended with its fragment
+    # (or was skipped because already up to date); non convergence is NOT a failure
+    bad = doc['n_failed'] + doc['n_incomplete'] + doc['n_parse_failed']
+    return 1 if bad else 0
