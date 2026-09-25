@@ -6,7 +6,7 @@ import functools
 import pathlib
 import numpy as np
 
-from galapy.internal.constants import M_Sun_G, LyLimit, LymanA, FUV_Lo_A, FUV_Hi_A, NH_to_AV_MW, clight
+from galapy.internal.constants import M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight
 
 def _load_columns(path, ncol_expected):
     """
