@@ -12,12 +12,12 @@ process GEN_INPUT_HII {
      *   - Time: 10 minutes
      *
      * Inputs:
-     *   - spec_file: Path to HDF5 file containing job specifications (e.g., hii_grid_spec.h5)
-     *   - sed_dir: Directory containing the extracted .sed files
+     *   - spec_file: Path to HDF5 file containing job specifications (hii_grid_spec.h5)
+     *   - seds: The extracted .sed files (EXTRACT_SSP_SEDS.out.seds), staged in seds/
      *
      * Outputs:
      *   - decks: Generated Cloudy input files (hii_*.in)
-     *   - manifest: Manifest file (jobs.txt) listing job IDs
+     *   - manifest: Manifest file (jobs_hii.txt) listing job IDs
      *   - seds_staging: Staged SED files directory (SED) required for the runs
      *
      * Published to: ../../../data/input_hii/
@@ -26,11 +26,11 @@ process GEN_INPUT_HII {
     cpus 2
     memory '2 GB'
     time '10 min'
-    publishDir '../../../data/input_hii/', mode: 'move'
+    publishDir '../../../data/input_hii/', mode: 'copy'
 
     input:
-    path spec_file     // file HDF5 generated (es. hii_grid_spec.h5)
-    path sed_dir       // directory for .sed
+    path spec_file                  // file HDF5 generated (es. hii_grid_spec.h5)
+    path seds, stageAs: 'seds/*'    // .sed files, staged in seds/
 
     output:
     path 'hii_*.in', emit: decks
@@ -41,7 +41,7 @@ process GEN_INPUT_HII {
     """
     galapy-gen-hii \\
         --spec ${spec_file} \\
-        --sed-dir ${sed_dir} \\
+        --sed-dir seds \\
         --limit 100 \\
         --out .
     """

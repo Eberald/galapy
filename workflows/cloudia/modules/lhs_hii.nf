@@ -5,7 +5,7 @@ process GEN_LHS_HII {
     /**
      * Generates Latin Hypercube Sampling (LHS) parameter grid and Cloudy job
      * specifications for HII region photoionization modeling.
-     *
+     * The grid charter (grid_hii.yaml) is resolved from the GalaPy database.
      *
      * Resource Requirements:
      *   - CPUs: 1
@@ -13,20 +13,18 @@ process GEN_LHS_HII {
      *   - Time: 10 minutes
      *
      * Inputs:
-     *   - ssp_meta: Path to the SSP metadata file (JSON format)
-     *   - abn: Path to chemical abundances file
-     *   - scaling: Path to element scaling file
+     *   - ssp_meta: Path to the SSP metadata file (ssp_metadata.json, EXTRACT_SSP_SEDS.out.meta)
      *
      * Outputs:
      *   - grid_spec: HDF5 file (hii_grid_spec.h5) containing Cloudy job specifications
-     *   - lhs_sample: NumPy array file (lhs_hii_7d.npy) containing the LHS parameter samples
+     *   - lhs_sample: NumPy array file (lhs_hii.npy) containing the LHS parameter samples
      *
      * Published to: ../../../data/grids/hii/
      */
     cpus 1
     memory '2 GB'
     time '10m'
-    publishDir '../../../data/grids/hii/', mode: 'move'
+    publishDir '../../../data/grids/hii/', mode: 'copy'
 
     input:
     path ssp_meta
