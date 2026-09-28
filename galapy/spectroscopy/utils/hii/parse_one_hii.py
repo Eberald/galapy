@@ -546,7 +546,7 @@ def main(argv=None):
 
     with atomic_h5(out) as f:
         f.create_dataset('continuum/wave_grid', data=wave.astype('f4'))
-        f.create_dataset('line_names', data=line_data['names'].astype('S'))  # DD-3
+        f.create_dataset('line_names', data=line_data['names'].astype('S'))
         f.create_dataset('lines_emergent/wavelengths_rest',
                          data=line_data['wavelengths'].astype('f4'))
         g = f.create_group(f"grid_point_{job_id}")
@@ -566,7 +566,7 @@ def main(argv=None):
         g.create_dataset('continuum/grain_diag_per_Msun', data=(cong * s_k).astype('f4'))
         g.create_dataset('continuum/transmission', data=transmission.astype('f4'))
         g.attrs['sed_support_A'] = sed_support
-        g.create_dataset('lines_emergent/fluxes', data=(line_data['fluxes'] * s_k).astype('f4'))  # DD-3
+        g.create_dataset('lines_emergent/fluxes', data=(line_data['fluxes'] * s_k).astype('f4'))
         g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / M_Sun_G)
         g.attrs['dust_mass_units'] = 'Msun per Msun SSP formed'
     print(f"[parse_one/hii] {job_id} -> {out}")

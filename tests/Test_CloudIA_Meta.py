@@ -107,7 +107,7 @@ def test_sed_extraction_entrypoint_is_declared_in_metadata():
           if ep.group == 'console_scripts'}
     assert 'galapy-sed-cloudy-extract' in cs, (
         f"entry point absent in metadata (console_scripts={sorted(cs)}):")
-    assert cs['galapy-sed-cloudy-extract'] == 'galapy.spectroscopy.utils.spectra:main'
+    assert cs['galapy-sed-cloudy-extract'] == 'galapy.spectroscopy.utils.extract_spectra:main'
 
 @pytest.mark.unit
 def test_abundances_entrypoint_is_declared_in_metadata():
