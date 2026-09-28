@@ -39,7 +39,7 @@ BANNER = os.environ.get('TEST_CLOUDY_BANNER', 'Cloudy 25.00')           #banner 
 if len(sys.argv) == 1:
     sys.stdout.write("                       %s\n" % BANNER)
     sys.exit(0)
-prefix = sys.argv[sys.argv.index('-p') + 1] #take element after -p
+prefix = sys.argv[sys.argv.index('-r') + 1] #take element after -r
 time.sleep(float(os.environ.get('TEST_CLOUDY_SLEEP', '0')))             #fake time of execution cloudy
 drop = os.environ.get('TEST_CLOUDY_DROP', '')
 for ext in ('.con', '.con_grain', '.lines', '.dusa', '.grain_temp'):
@@ -49,6 +49,9 @@ for ext in ('.con', '.con_grain', '.lines', '.dusa', '.grain_temp'):
 out = ["                       %s\n" % BANNER]
 if os.environ.get('TEST_CLOUDY_CAUTION'):
     out.append(" @@CAUTION@@\n")                                        #generation list out with also possible no conv test
+if os.environ.get('TEST_CLOUDY_WARN'):
+    out.append(" W-fake warning\n")                                     #CLOUDY warning, printed twice as in the .out
+    out.append(" W-fake warning\n")
 open(prefix + '.out', 'w').writelines(out)
 sys.exit(int(os.environ.get('TEST_CLOUDY_RC', '0')))                    #test exit code
 '''
@@ -312,6 +315,9 @@ def test_is_complete_requires_flag_and_all_saves(tmp_path):
     assert not is_complete(wd, HII, 'j000')
     (wd / 'converged.flag').write_text('1\n')
     assert is_complete(wd, HII, 'j000')
+    (wd / 'RUN_FAILED').write_text('returncode=1 missing=[]\n')  # flag + saves, but failed
+    assert not is_complete(wd, HII, 'j000')
+    (wd / 'RUN_FAILED').unlink()
     (wd / f'{HII.name}_j000.dusa').unlink()
     assert not is_complete(wd, HII, 'j000')
 
@@ -386,6 +392,43 @@ def test_missing_save_is_a_failure(tmp_path, runs, test_cloudy, monkeypatch):
 
 
 @pytest.mark.unit
+def test_warnings_are_marked_not_failed(tmp_path, runs, test_cloudy, monkeypatch):
+    """
+    CLOUDY exits with ES_WARNINGS (2) when the model ran to the end with warnings: the saves
+    are complete, so the run is MARKED 'warning' (marker WARNINGS with the W- lines), not
+    failed, it counts as complete and --resume does not rerun it.
+    """
+    monkeypatch.setenv('TEST_CLOUDY_RC', str(rc.ES_WARNINGS))
+    monkeypatch.setenv('TEST_CLOUDY_WARN', '1')
+    d, ids, ll = runs
+    work = tmp_path / 'work'
+    r = run_job(ids[0], d, work, 'hii', str(test_cloudy), 60, linelist_dir=ll)
+    wd = pathlib.Path(r['workdir'])
+    assert r['status'] == 'warning' and r['warnings'] == ['W-fake warning']
+    assert (wd / 'WARNINGS').read_text() == 'W-fake warning\n'
+    assert not (wd / 'RUN_FAILED').exists()
+    assert is_complete(wd, HII, ids[0])
+    again = run_job(ids[0], d, work, 'hii', str(test_cloudy), 60,
+                    linelist_dir=ll, resume=True)
+    assert again['status'] == 'skipped'
+
+
+@pytest.mark.unit
+def test_warnings_with_missing_save_are_a_failure(tmp_path, runs, test_cloudy, monkeypatch):
+    """
+    Exit code 2 does not excuse a missing save: the run is failed, not 'warning'.
+    """
+    monkeypatch.setenv('TEST_CLOUDY_RC', str(rc.ES_WARNINGS))
+    monkeypatch.setenv('TEST_CLOUDY_DROP', '.dusa')
+    d, ids, ll = runs
+    r = run_job(ids[0], d, tmp_path / 'work', 'hii', str(test_cloudy), 60,
+                linelist_dir=ll)
+    wd = pathlib.Path(r['workdir'])
+    assert r['status'] == 'failed' and r['missing'] == ['.dusa']
+    assert (wd / 'RUN_FAILED').is_file() and not (wd / 'WARNINGS').exists()
+
+
+@pytest.mark.unit
 def test_resume_skips_completed_jobs(tmp_path, runs, test_cloudy):
     """
     This function is a unit test designed to ensure that completed jobs are skipped when the resume flag
@@ -405,6 +448,24 @@ def test_resume_skips_completed_jobs(tmp_path, runs, test_cloudy):
     again = run_job(ids[0], d, work, 'hii', str(test_cloudy), 60,
                     linelist_dir=ll, resume=True)
     assert again['status'] == 'skipped' and again['seconds'] == 0.0
+
+
+@pytest.mark.unit
+def test_resume_reruns_failed_runs(tmp_path, runs, test_cloudy, monkeypatch):
+    """
+    A run with a non-zero return code writes converged.flag and all the saves, next to
+    RUN_FAILED: --resume must rerun it, not treat it as complete.
+    """
+    d, ids, ll = runs
+    work = tmp_path / 'work'
+    monkeypatch.setenv('TEST_CLOUDY_RC', '1')
+    first = run_job(ids[0], d, work, 'hii', str(test_cloudy), 60, linelist_dir=ll)
+    assert first['status'] == 'failed' and first['missing'] == []
+    monkeypatch.setenv('TEST_CLOUDY_RC', '0')
+    again = run_job(ids[0], d, work, 'hii', str(test_cloudy), 60,
+                    linelist_dir=ll, resume=True)
+    assert again['status'] == 'ok'
+    assert not (pathlib.Path(again['workdir']) / 'RUN_FAILED').exists()
 
 
 @pytest.mark.unit

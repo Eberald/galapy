@@ -8,7 +8,7 @@ _Format: one row per decision — number, subject, substance._
 | 1 | CLOUDY = MC reprocessor | The molecular cloud is CLOUDY; GalaPy's native `ism.mc` radiative channel is switched off. |
 | 2 | Recipes C & D | Continua from `save continuum` (col2/3/4/9); dust from `save grain abundance`. |
 | 3 | GalaPy freezing | \(R_{\rm MC}\) is a module-level parameter, not read from `ism.mc`. |
-| 4 | \(\xi_{d,\rm MW} = 0.45\) | Dust-to-metal gauge, not a measurement: fixes the origin of the \(\xi_d\) axis. |
+| 4 | \(\xi_{d,\rm MW} = 0.43\) | Dust-to-metal gauge, not a measurement: fixes the origin of the \(\xi_d\) axis. |
 | 5 | Dynamic \(\eta(\tau)\) routing | Which SSPs are still inside the cloud is decided by \(\eta(\tau)\), not a hard age cut. |
 | 6 | \(f_{\rm cov} = 0.5\) (default) | Geometric covering fraction (Theulé+24 definition); liberatable via opt-in. |
 | 7 | SSP library: PARSEC22.NT | **NT**, not NTL — NTL already embeds nebular emission (double-counting risk). |

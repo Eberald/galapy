@@ -5,8 +5,9 @@ command `save line list`. The module reads the **master line list** of a sector 
 galapy-dataset — validates every entry against the **official CLOUDY LineLists**, and produces the fixed-format
 `.dat` file that each deck references at run time.
 
-!!! Warning, the master lists (`hii_full.yaml`, `pdr_full.yaml`) and the reference LineLists live in the
-galapy-dataset, not in the code
+!!! warning
+    The master lists (`hii_full.yaml`, `pdr_full.yaml`) and the reference LineLists live in the galapy-dataset,
+    not in the code.
 
 ---
 
@@ -34,7 +35,7 @@ lines:
 | `label` | The CLOUDY species tag, **at most 4 characters, spaces included and significant** (`'H  1'`, `'he 2'`, `'Blnd'`). Matching is case-insensitive and blind to internal spaces, but the string is emitted verbatim. |
 | `wl` | The wavelength, kept as a **string**: it must reproduce the official entry character by character, so `6562.80` and `6562.8` are *not* interchangeable. |
 | `unit` | `A` (Angstrom), `m` (micron), `c`/`M` for the longer bands, or the empty string when the official list carries no unit. |
-| `name` | CloudIA alias of the line, the column name used downstream by the parsing stage. Must be unique. |
+| `name` | CloudIA alias of the line. Must be unique. It is not written into the `.dat`: the parsed fragments identify the lines by CLOUDY label and wavelength, in the order of the master list (see [Parse HII](parse_hii.md)). |
 | `group` | Free-form tag (`HI`, `UV`, `OIII`, `dual_origin`, ...), used only to organise the list and the diagnostics; it is **not** written into the `.dat`. |
 
 The `dual_origin` group marks the transitions that appear in both master lists (`[CII] 158 μm`,
@@ -158,8 +159,8 @@ its source directory in this order:
 2. the environment variable `CLOUDIA_LINELISTS`;
 3. `DEFAULT_OUT_DIR`, i.e. `data/lines`.
 
-A missing file raises `FileNotFoundError` at staging time, before CLOUDY is started — see
-[Running CLOUDY](run_hii.md).
+A missing file makes the job fail at staging time with `FileNotFoundError`, before CLOUDY is started — see
+[Running CLOUDY](run_hii.md#2-staging).
 
 ---
 

@@ -326,6 +326,40 @@ def fuv_transmittance_hii(wave_A, col2_incident, col3_transmitted, col4_own):
     return T_fuv, N_fuv
 
 
+def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own):
+    """
+    Relative energy balance of the cloud: incident = transmitted + diffuse outward emission.
+
+    The columns are nuFnu = lambda F_lambda, so the energy flux is the integral in d(ln lambda):
+        I_n = int nuFnu d(ln lambda) = int F_lambda d(lambda)     [erg cm^-2 s^-1].
+    The integral in d(lambda) would instead be proportional to the PHOTON flux (as in fesc),
+    which is not conserved: the dust re-emits each absorbed UV photon as many IR photons.
+
+    Parameters:
+    wave_A: ndarray
+        Array of wavelengths in Ångströms, strictly monotonic (either order).
+    col2_incident: ndarray
+        Incident flux (nuFnu) corresponding to wave_A.
+    col3_transmitted: ndarray
+        Transmitted flux (nuFnu) corresponding to wave_A.
+    col4_own: ndarray
+        Diffuse outward emission (nuFnu, lines included) corresponding to wave_A.
+
+    Returns:
+    float
+        |I2 - (I3 + I4)| / I2, independent of the order of wave_A. NaN if the incident
+        energy is zero.
+    """
+    lnl = np.log(wave_A)
+    I2 = np.trapezoid(col2_incident, lnl)
+    I3 = np.trapezoid(col3_transmitted, lnl)
+    I4 = np.trapezoid(col4_own, lnl)
+    if I2 == 0:
+        return float('nan')
+    # the abs() at the denominator makes the ratio independent of the wavelength order
+    return float(abs(I2 - (I3 + I4)) / abs(I2))
+
+
 def support_safe_ratio(col2, col3):
     """
     Calculate the safe ratio of col3 to col2 with specific handling for zero-division cases.
@@ -454,7 +488,7 @@ def build_parser():
     parser
     """
     import argparse
-    ap = argparse.ArgumentParser(prog='python -m galapy.spectroscopy.utils.hii.parse_one',
+    ap = argparse.ArgumentParser(prog='python -m galapy.spectroscopy.utils.hii.parse_one_hii',
                                  description="PARSE_ONE_HII: workdir of one job -> one <job_id>.h5")
     ap.add_argument('workdir', help="work directory of single job (es: data/hii/work/<job_id>)")
     ap.add_argument('--spec', default="data/grids/hii/hii_grid_spec.h5",
@@ -481,6 +515,8 @@ def main(argv=None):
     pre = wd / f"hii_{job_id}"
     # BEFORE reading a single number: only a successful run is parsed
     not_converged = require_successful_run(wd)
+    # a run with CLOUDY warnings (exit code 2, marker of run_core) is parsed and flagged
+    cloudy_warnings = (wd / 'WARNINGS').is_file()
     out = resolve_out(args.out, job_id)
 
     i = spec_index(args.spec).get(job_id)
@@ -518,10 +554,8 @@ def main(argv=None):
                         ('logU', 'lognH_HII', 'z_CMB', 'log_zeta_O',
                          'xi_d', 'f_esc_target', 'F_star', 'tau_SSP', 'Z_star')})
         g.attrs['not_converged'] = bool(not_converged)  # DD-4
-        I2 = np.trapezoid(col2[::-1], wave[::-1])
-        I3 = np.trapezoid(col3[::-1], wave[::-1])
-        I4 = np.trapezoid(col4[::-1], wave[::-1])
-        g.attrs['energy_balance_rel'] = float(abs(I2 - (I3 + I4)) / I2)
+        g.attrs['cloudy_warnings'] = bool(cloudy_warnings)
+        g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4)
         f_esc_meas = fesc(wave, col2, col3)
         g.attrs['f_esc_meas'] = float(f_esc_meas)
         g.create_dataset('f_esc_meas', data=f_esc_meas)

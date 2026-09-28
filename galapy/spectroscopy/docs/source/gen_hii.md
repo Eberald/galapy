@@ -11,11 +11,12 @@ grid of the HII regions. The two modules cover the two consecutive stages of the
    by filling the Jinja2 template shipped with the dataset, and stages next to the decks the `.sed` files they
    reference.
 
-The sampling core shared with the PDR sector lives in `utils/physics/lhs_core.py`, so that both sectors
+The sampling core shared with the PDR sector lives in `utils/lhs_core.py`, so that both sectors
 consume the same charter format and produce the same grid-spec layout.
 
-!!! Warning, the charter (`grid_hii.yaml`) and the deck template (`hii.in.j2`) live in the galapy-dataset, not
-in the code
+!!! warning
+    The charter (`grid_hii.yaml`) and the deck template (`hii.in.j2`) live in the galapy-dataset, not in the
+    code.
 
 ---
 
@@ -71,8 +72,9 @@ such by their name (`logU`, `lognH_HII`, `log_zeta_O`).
 
 `lhs_core.sample_lhs` draws the hypercube with `scipy.stats.qmc.LatinHypercube` and compares the *centered
 $L_2$-discrepancy* (Hickernell 1998) of the optimized sample against a plain LHS drawn with the same seed.
-The absolute discrepancy is also checked against a $10^{-3}$ threshold, and a warning invites to raise `n_samples` 
-when the sample is not uniform enough.
+An optimization that does not lower the discrepancy aborts the run (`AssertionError`). The absolute discrepancy is
+also checked against a $10^{-3}$ threshold, and a warning invites to raise `n_samples` when the sample is not
+uniform enough.
 
 ### Derived quantities
 
@@ -122,7 +124,7 @@ usage: galapy-gen-lhs-hii [-h] [-c CONFIG] [-s SSP_META] [-o OUTPUT]
 | :--- | :--- |:-----------------------------------------------------------------------------------------------------------------------|
 | `-h`, `--help` | None | Show help message and exit.                                                                                            |
 | `-c`, `--config` | `CONFIG` | Path to the grid charter. <br> Default: `grid_hii.yaml` resolved from the GalaPy database (`Nebular/Configs`).          |
-| `-s`, `--ssp-meta` | `SSP_META` | Path to the `metadata.json` written by `galapy-sed-cloudy-extract`. <br> Default: `data/cloudy_seds/metadata.json`.     |
+| `-s`, `--ssp-meta` | `SSP_META` | Path to the `ssp_metadata.json` written by `galapy-sed-cloudy-extract`. <br> Default: `data/cloudy_seds/ssp_metadata.json`. |
 | `-o`, `--output` | `OUTPUT` | Output directory of the grid. Created if missing. <br> Default: `data/grids/hii`.                                       |
 
 ### Example
@@ -130,7 +132,7 @@ usage: galapy-gen-lhs-hii [-h] [-c CONFIG] [-s SSP_META] [-o OUTPUT]
 Generate the grid from the dataset charter, using SEDs extracted in a custom directory:
 
 ```bash
-galapy-gen-lhs-hii -s ./ssp_seds/metadata.json -o ./data/grids/hii
+galapy-gen-lhs-hii -s ./ssp_seds/ssp_metadata.json -o ./data/grids/hii
 ```
 
 ---
@@ -155,7 +157,7 @@ usage: galapy-gen-hii [-h] [-s SPEC] [-t TEMPLATE] [-d SED_DIR] [-o OUT]
 | `-s`, `--spec` | `SPEC` | Job specification produced by `galapy-gen-lhs-hii`. <br> Default: `data/grids/hii/hii_grid_spec.h5`.               |
 | `-t`, `--template` | `TEMPLATE` | Jinja2 deck template. <br> Default: `None`, i.e. `hii.in.j2` resolved from the GalaPy database (`Nebular/Templates`). |
 | `-d`, `--sed-dir` | `SED_DIR` | Directory of the `.sed` files written by `galapy-sed-cloudy-extract`. <br> Default: `data/cloudy_seds`.            |
-| `-o`, `--out` | `OUT` | Output directory of the `.in` decks. Created if missing. <br> Default: `data/input_hii`.                           |
+| `-o`, `--out` | `OUT` | Output directory of the `.in` decks. Created if missing. It is the `--runs` of `galapy-run-cloudy-hii`. <br> Default: `data/hii`. |
 | `-l`, `--limit` | `LIMIT` | Render only `N` jobs, picked evenly spread over the grid (`np.linspace`), instead of the whole spec. <br> Default: `None`, i.e. all jobs. |
 
 `--limit` is meant for smoke tests and pipeline dry-runs: since the subsample is taken on a regular stride
@@ -166,7 +168,7 @@ rather than from the head of the file, it still spans the full extent of every a
 Render a 100-deck subsample of the grid, for a quick validation run:
 
 ```bash
-galapy-gen-hii -s ./data/grids/hii/hii_grid_spec.h5 -d ./ssp_seds -o ./data/input_hii -l 100
+galapy-gen-hii -s ./data/grids/hii/hii_grid_spec.h5 -d ./ssp_seds -o ./data/hii -l 100
 ```
 
 ---
@@ -203,12 +205,12 @@ along for provenance, so that the spec alone is enough to reconstruct how each d
 `galapy-gen-hii` populates its output directory with:
 
 ```text
-data/input_hii/
+data/hii/
 ├── hii_00000_003_02.in        # one deck per job
 ├── hii_00042_003_02.in
 ├── ...
 ├── jobs_hii.txt               # manifest, one job_id per line
-└── SED/                       # staged SEDs, duplicated
+└── SED/                       # staged SEDs, deduplicated
     ├── ssp_tau1.000e+06_Z0.0001.sed
     └── ...
 ```
@@ -217,8 +219,9 @@ SEDs are accumulated in a set while the decks are rendered, so each file is copi
 jobs reference it.
 
 Staging keeps the decks relocatable: since the template references the SED by bare filename
-(`table SED "{{ sed_file }}"`), the output directory is self-contained and can be shipped to the compute node
-as a single unit.
+(`table SED "{{ sed_file }}"`), the output directory can be shipped to the compute node as a single unit. The two
+other files the deck references, the abundance file `GC.abn` and the line list `hii_lines.dat`, are shared by all
+the jobs, and are staged by the runner at run time (see [Running CLOUDY](run_hii.md#2-staging)).
 
 ### 3. The rendered deck
 
@@ -239,7 +242,10 @@ The `hii.in.j2` template maps the job fields onto the CLOUDY commands as follows
 
 The physical configuration fixed by the template — identical for every job of the grid — is a closed spherical
 geometry (`sphere` plus `double optical depths`), stopping either at the column density set by $f_{\rm esc}$ or
-at $T = 4000$ K, with `iterate to convergence`. PAHs are absent by construction in the HII sector.
+at $T = 4000$ K, with `iterate to convergence`. The fiducial chemistry is read from `abundances "GC.abn"`, and
+then rescaled by the `metals` and `element scale factor` commands. The template also sets `turbulence 5 km/s`
+and the `cosmic rays background`. PAHs are absent by construction in the HII sector, which also allows
+`no grain qheat` to save run time.
 
 Each deck saves the emergent continuum, the grain continuum, the line list (against `hii_lines.dat`), the grain
 abundance and the grain temperature, all prefixed with `hii_{job_id}`.

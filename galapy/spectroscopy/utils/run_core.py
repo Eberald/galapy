@@ -22,15 +22,20 @@ from dataclasses import dataclass
 from galapy.spectroscopy.utils import CLOUDY_REQUIRED, cloudy_banner, require_cloudy
 
 # for wildcard import (public interface)
-__all__ = ['Sector', 'SECTORS', 'CONVERGENCE_CAUTION', 'MARKERS', 'parse_index_selector',
+__all__ = ['Sector', 'SECTORS', 'CONVERGENCE_CAUTION', 'ES_WARNINGS', 'MARKERS', 'parse_index_selector',
            'read_manifest', 'sed_referenced_by', 'abn_referenced_by', 'is_complete', 'converged_from_out',
-           'stage_job', 'call_parse_one', 'already_parse', 'parse_job', 'run_job', 'plan_jobs', 'run_all', 'write_run_manifest', 'build_parser', 'main']
+           'warnings_from_out',
+           'stage_job', 'call_parse_one', 'already_parsed', 'parse_job', 'run_job', 'plan_jobs', 'run_all', 'write_run_manifest', 'build_parser', 'main']
 
 # message for not reaching convergence in CLOUDY runs
 CONVERGENCE_CAUTION = 'C-Iterate to convergence did not converge'
 
+# CLOUDY exit code of a model that ran to the end with warnings (exit_type in cddefines.h,
+# set in maincl.cpp only without early exit and with the monitors OK): the saves are complete
+ES_WARNINGS = 2
+
 # outcome markers of a run
-MARKERS = ('converged.flag', 'NOT_CONVERGED', 'TIMEOUT', 'RUN_FAILED')
+MARKERS = ('converged.flag', 'NOT_CONVERGED', 'WARNINGS', 'TIMEOUT', 'RUN_FAILED')
 
 # freeze parameters at first initialization
 # is the sector associated to runs
@@ -138,7 +143,9 @@ def is_complete(workdir, sector, job_id):
     1. All necessary save files for the specified sector are present in the
        working directory.
     2. The `converged.flag` file is present, indicating that the run has
-       successfully reached its end.
+       reached its end.
+    3. The `RUN_FAILED` marker is absent: `converged.flag` is written also for a
+       failed run (non-zero return code), which must be rerun, not parsed.
 
     Parameters:
     workdir: str
@@ -154,7 +161,7 @@ def is_complete(workdir, sector, job_id):
         True if the job is complete, False otherwise.
     """
     wd = pathlib.Path(workdir)
-    if not (wd / 'converged.flag').is_file():
+    if not (wd / 'converged.flag').is_file() or (wd / 'RUN_FAILED').is_file():
         return False
     return all((wd / f'{sector.name}_{job_id}{ext}').is_file() for ext in sector.saves)
 
@@ -163,6 +170,14 @@ def converged_from_out(out_text):
     True if the model is converged
     """
     return CONVERGENCE_CAUTION not in out_text
+
+def warnings_from_out(out_text):
+    """
+    Return the warnings (lines 'W-...') printed by CLOUDY in the .out, without duplicates,
+    in order of appearance.
+    """
+    lines = [ln.strip() for ln in out_text.splitlines() if ln.strip().startswith('W-')]
+    return list(dict.fromkeys(lines))
 
 def stage_job(runs_dir, work_root, sector, job_id, linelist_dir=None):
     """
@@ -331,8 +346,9 @@ def run_job(job_id, runs_dir, work_root, sector_name, exe, timeout,
     Returns:
         dict: A dictionary containing job execution metadata. Keys include:
             - 'job_id': The job identifier.
-            - 'status': Status of the operation (e.g., 'skipped', 'ok', or
-              'failed').
+            - 'status': Status of the operation (e.g., 'skipped', 'ok', 'warning'
+              or 'failed').
+            - 'warnings': The CLOUDY warnings, only with status 'warning'.
             - 'converged': Boolean indicating whether the computation converged.
             - 'seconds': Total time taken for the operation in seconds.
             - 'workdir': Directory where the job was executed.
@@ -400,9 +416,16 @@ def run_job(job_id, runs_dir, work_root, sector_name, exe, timeout,
         (wd / 'NOT_CONVERGED').write_text('')
 
     missing = [ext for ext in sector.saves if not (wd / f'{prefix}{ext}').is_file()]
-    status = 'ok' if (proc.returncode == 0 and not missing) else 'failed'
-    if status == 'failed':
+    if missing or proc.returncode not in (0, ES_WARNINGS):
+        status = 'failed'
         (wd / 'RUN_FAILED').write_text(f'returncode={proc.returncode} missing={missing}\n')
+    elif proc.returncode == ES_WARNINGS:
+        # the model ran to the end with warnings: flagged, not discarded (as non convergence)
+        status = 'warning'
+        res['warnings'] = warnings_from_out(out_text)
+        (wd / 'WARNINGS').write_text(''.join(f'{w}\n' for w in res['warnings']))
+    else:
+        status = 'ok'
 
     # the flag last file written in work directory
     (wd / 'converged.flag').write_text('1\n' if converged else '0\n')
@@ -411,7 +434,7 @@ def run_job(job_id, runs_dir, work_root, sector_name, exe, timeout,
                missing=missing, seconds=time.time() - t0)
 
     # the parse comes after the flag
-    if parse is not None and status == 'ok':
+    if parse is not None and status in ('ok', 'warning'):
         res['parse'] = parse_job(job_id, work_root, sector_name, parse)
     return res
 
@@ -550,6 +573,7 @@ def write_run_manifest(path, sector_name, inst, results, extra=None):
         'timestamp_utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
         'n_jobs': len(results),
         'n_ok': sum(r['status'] == 'ok' for r in results),
+        'n_warning': sum(r['status'] == 'warning' for r in results),
         'n_skipped': sum(r['status'] == 'skipped' for r in results),
         'n_failed': sum(r['status'] in ('failed', 'timeout') for r in results),
         'n_incomplete': sum(r['status'] == 'incomplete' for r in results),
@@ -701,7 +725,7 @@ def main(argv=None, sector_name='hii', runs_default=None, parse_inputs=()):
           + (f', frags={frags}' if parse else ''), file=sys.stderr)
 
     def _echo(r):
-        mark = {'ok': ' ', 'skipped': '-', 'failed': '!', 'timeout': 'T',
+        mark = {'ok': ' ', 'warning': 'W', 'skipped': '-', 'failed': '!', 'timeout': 'T',
                 'incomplete': '?'}[r['status']]
         conv = '' if r['converged'] is not False else '  [NOT CONVERGED]'
         p = r.get('parse')
@@ -723,7 +747,7 @@ def main(argv=None, sector_name='hii', runs_default=None, parse_inputs=()):
     report = args.report or ((frags / 'parse_manifest.json') if args.parse_only
                              else (work / 'run_manifest.json'))
     doc = write_run_manifest(report, sector_name, inst, results, extra)
-    print(f"[{sector_name}] ok={doc['n_ok']} skipped={doc['n_skipped']} "
+    print(f"[{sector_name}] ok={doc['n_ok']} warning={doc['n_warning']} skipped={doc['n_skipped']} "
           f"failed={doc['n_failed']} incomplete={doc['n_incomplete']} "
           f"not-converged={doc['n_not_converged']} | parse: ok={doc['n_parse_ok']} "
           f"skipped={doc['n_parse_skipped']} failed={doc['n_parse_failed']}  -> {report}",
@@ -736,6 +760,6 @@ def main(argv=None, sector_name='hii', runs_default=None, parse_inputs=()):
               f"all the others in {report}:\n{first['parse']['traceback']}", file=sys.stderr)
 
     # EXITING (1 fail, 0 ok): 0 only if every selected job ended with its fragment
-    # (or was skipped because already up to date); non convergence is NOT a failure
+    # (or was skipped because already up to date); non convergence and warnings are NOT failures
     bad = doc['n_failed'] + doc['n_incomplete'] + doc['n_parse_failed']
     return 1 if bad else 0

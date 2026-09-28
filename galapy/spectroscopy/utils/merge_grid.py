@@ -79,18 +79,18 @@ def main(argv=None):
 
     sec = ap.add_mutually_exclusive_group()
     sec.add_argument('--hii', action='store_true',
-                     help='settore HII: default frags=data/hii/parsed, out=data/products/hii_grid.h5')
+                     help='sector HII: default frags=data/hii/parsed, out=data/products/hii_grid.h5')
     sec.add_argument('--pdr', action='store_true',
-                     help='settore PDR: default frags=data/pdr/parsed, out=data/products/pdr_grid.h5')
+                     help='sector PDR: default frags=data/pdr/parsed, out=data/products/pdr_grid.h5')
 
     ap.add_argument('--frags', default=None,
-                    help='directory frammenti <job_id>.h5 (override del default del settore)')
+                    help='directory fragments for the sector, <job_id>.h5')
     ap.add_argument('--out', default=None,
-                    help='path del file .h5 unito (override del default del settore)')
+                    help='path .h5 merged')
     ap.add_argument('--cloudy-version', default='C25.00',
-                    help='versione di CLOUDY da salvare nei metadati (default: C25.00)')
+                    help='CLOUDY version written in metadata (default: C25.00)')
     ap.add_argument('--ssp-lib', default='parsec22.NT',
-                    help='libreria SSP da salvare nei metadati (default: parsec22.NT)')
+                    help='library SSPs saved in metadata (default: parsec22.NT)')
 
     args = ap.parse_args(argv)
     sector = 'hii' if args.hii else ('pdr' if args.pdr else None)
@@ -99,9 +99,9 @@ def main(argv=None):
     out = args.out or (f'data/products/{sector}_grid.h5' if sector else None)
 
     if not frags:
-        ap.error("Devi specificare un settore (--hii o --pdr) oppure indicare esplicitamente --frags.")
+        ap.error("Sector to be specified (--hii or --pdr) or list of --frags.")
     if not out:
-        ap.error("Devi specificare un settore (--hii o --pdr) oppure indicare esplicitamente --out.")
+        ap.error("Sector to be specified (--hii o --pdr) put a --out.")
 
     merge(frags, out, cloudy_version=args.cloudy_version, ssp_lib=args.ssp_lib)
     return 0

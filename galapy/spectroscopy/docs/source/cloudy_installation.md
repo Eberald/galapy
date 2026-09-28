@@ -20,7 +20,7 @@ usage: galapy-install-cloudy [-h] [--check] [--prefix DIR] [--jobs N]
 | Flag | Argument | Description                                                                       |
 | :--- | :--- |:----------------------------------------------------------------------------------|
 | `-h`, `--help` | None | Show help message and exit.                                                       |
-| `--check`, `-c` | None | Search for an existing CLOUDY installation.                                       |
+| `--check`, `-c` | None | Search for an existing CLOUDY installation and report it. Exit status `0` if CLOUDY is found and its banner reports `C25.00`, `1` otherwise. |
 | `--prefix`, `-p` | `DIR` | Directory prefix where CLOUDY will be compiled. <br> Default: `~/.galapy/cloudy`. |
 | `--jobs`, `-j` | `N` | Parallel compilation threads (`make -jN`). <br> Default: `os.cpu_count()`.        |
 
@@ -38,7 +38,21 @@ To compile CLOUDY from source, your system must have the following tools availab
 GalaPy/CloudIA communicates with CLOUDY via two environment variables:
 
 1. **`CLOUDY_EXE`**: The absolute path to the compiled `cloudy.exe` binary.
-2. **`CLOUDY_DATA_PATH`**: The path to the CLOUDY `data` directory containing atomic data and opacities.
+2. **`CLOUDY_DATA_PATH`**: The search path of CLOUDY: the current directory `.` followed by the CLOUDY `data`
+   directory containing atomic data and opacities.
+
+The executable is located by `detect_cloudy`, which tries in order:
+
+1. `$CLOUDY_EXE`;
+2. a `cloudy` executable on `$PATH`;
+3. `$CLOUDY_DATA_PATH/../source/cloudy.exe`, i.e. the binary next to the last `data` directory of the search path.
+
+When set, `CLOUDY_DATA_PATH` **replaces** the default search path of CLOUDY (`+`, i.e. `.` followed by the
+`data` directory of the build), so the current directory is searched only if it is listed explicitly. The
+installer therefore writes the variable through `cloudy_search_path`, which puts `.` in front of the `data`
+directory unless `.` or `+` is already there. The runner stages each job's SED and abundance file in its own
+working directory, and CLOUDY finds them only through this entry (see [Running CLOUDY](run_hii.md#2-staging)).
+If you set the variable by hand, keep it.
 
 ### Shell Persistence
 
@@ -48,11 +62,16 @@ If approved, it appends a configuration block to your shell profile (`~/.bashrc`
 ```bash
 # >>> CloudIA CLOUDY environment >>>
 export CLOUDY_EXE="/home/user/.galapy/cloudy/c25.00/source/cloudy.exe"
-export CLOUDY_DATA_PATH="/home/user/.galapy/cloudy/c25.00/data"
+export CLOUDY_DATA_PATH=".:/home/user/.galapy/cloudy/c25.00/data"
 # <<< CloudIA CLOUDY environment <<<
 ```
 
 ## Python API
+
+::: galapy.spectroscopy.utils.cloudy_search_path
+    options:
+      show_root_heading: true
+      show_source: false
 
 ::: galapy.spectroscopy.utils.detect_cloudy
     options:

@@ -447,7 +447,8 @@ def format_cloudy_float(x, sig=6):
 def build_zeta_map(out_path, abn_file=None, scale_file=None, lz_min=ZMAP_DEFAULT_GRID[0],
                    lz_max=ZMAP_DEFAULT_GRID[1], n=ZMAP_DEFAULT_GRID[2]):
     """
-    Build a zeta map that correlates logarithmic ionizing photon escape fraction values with gas metallicity.
+    Build the zeta map, i.e. the gas metallicity Z_gas tabulated on a grid of log10(zeta_O), used to
+    invert Z_gas -> log_zeta_O.
 
     This function generates a mapping between log_zeta_O and Z_gas values using the given abundance
     and scale files.
@@ -456,8 +457,8 @@ def build_zeta_map(out_path, abn_file=None, scale_file=None, lz_min=ZMAP_DEFAULT
         out_path (str): Path where the output file containing zeta map data will be saved.
         abn_file (Optional[str]): Path to the file containing abundance data. Default is None.
         scale_file (Optional[str]): Path to the file containing scale data. Default is None.
-        lz_min (float): Minimum value of logarithmic ionizing photon escape fraction log_zeta_O.
-        lz_max (float): Maximum value of logarithmic ionizing photon escape fraction log_zeta_O.
+        lz_min (float): Minimum value of the oxygen abundance scaling log_zeta_O.
+        lz_max (float): Maximum value of the oxygen abundance scaling log_zeta_O.
         n (int): Number of points for the zeta grid. Must be at least 2.
 
     Returns:
@@ -500,10 +501,12 @@ def build_zeta_map(out_path, abn_file=None, scale_file=None, lz_min=ZMAP_DEFAULT
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog='galapy-build-zeta-map',
-        description='Build a zeta map that correlates logarithmic ionizing '
-                    'photon escape fraction values with gas metallicity.'
+        description='Build the zeta map: the gas metallicity Z_gas tabulated on a grid of '
+                    'log_zeta_O, used to invert Z_gas -> log_zeta_O.'
     )
-    ap.add_argument('-o', '--out', default=None, help=f"output file path, default {CONST.ZMAP_FILE}")
+    # no default: a default pointing to the database map would silently overwrite it
+    ap.add_argument('-o', '--out', required=True,
+                    help=f"output file path, e.g. the {CONST.ZMAP_FILE} of the dataset (required)")
     ap.add_argument('-a', '--abn', default=None, help=f"abundance file path, default {CONST.ABN_FILE}")
     ap.add_argument('-s', '--scale', default=None, help=f"scale file path, default {CONST.SCALE_FILE}")
     ap.add_argument('-l', '--lz-min', default=ZMAP_DEFAULT_GRID[0], help=f"minimum log_zeta_O, default {ZMAP_DEFAULT_GRID[0]}")

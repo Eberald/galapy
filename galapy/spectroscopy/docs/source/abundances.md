@@ -9,7 +9,8 @@ factor, and the `element scale factor ...` directives injected into the CLOUDY i
 The module is accessible both as a Command Line Interface (CLI), to (re)build the $\zeta_O \leftrightarrow Z_{\rm gas}$
 lookup table, and programmatically through the `Chemistry` Python API.
 
-!!! Warning, the chemistry files live in the galapy-dataset, not in the code
+!!! warning
+    The chemistry files live in the galapy-dataset, not in the code.
 
 ---
 
@@ -70,7 +71,7 @@ the CLI entrypoint `galapy-build-zeta-map` to generate that table.
 ### Usage
 
 ```text
-usage: galapy-build-zeta-map [-h] [-o OUT] [-a ABN] [-s SCALE]
+usage: galapy-build-zeta-map [-h] -o OUT [-a ABN] [-s SCALE]
                              [-l LZ_MIN] [-u LZ_MAX] [-n N]
 ```
 
@@ -79,7 +80,7 @@ usage: galapy-build-zeta-map [-h] [-o OUT] [-a ABN] [-s SCALE]
 | Flag | Argument | Description                                                                                                   |
 | :--- | :--- |:--------------------------------------------------------------------------------------------------------------|
 | `-h`, `--help` | None | Show help message and exit.                                                                                   |
-| `-o`, `--out` | `OUT` | Output path of the `.npz` map. Should point to `zeta_Z.npz` inside the dataset directory.                     |
+| `-o`, `--out` | `OUT` | Output path of the `.npz` map. Should point to `zeta_Z.npz` inside the dataset directory. **(Required)**: there is no default, so that the database map is never overwritten by accident. |
 | `-a`, `--abn` | `ABN` | Path to the fiducial abundance file. <br> Default: `None`, i.e. `GC.abn` resolved from the GalaPy database.    |
 | `-s`, `--scale` | `SCALE` | Path to the scaling YAML file. <br> Default: `None`, i.e. `scaling_abd_Z.yaml` from the GalaPy database.      |
 | `-l`, `--lz-min` | `LZ_MIN` | Lower edge of the $\log\zeta_O$ grid. <br> Default: `-3.0`.                                                   |
