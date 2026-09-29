@@ -272,14 +272,18 @@ def already_parsed(frag, workdir):
 
     Returns:
         bool: True if the fragment exists and is current relative to the
-        `converged.flag` file in the working directory, or if the marker file
-        is absent. False otherwise.
+        `converged.flag` file in the working directory, or if the working
+        directory is absent (raw files deleted after parsing). False otherwise:
+        a working directory without `converged.flag` holds an interrupted run
+        (timeout, crash), which the fragment cannot come from.
     """
-    frag = pathlib.Path(frag)
+    frag, wd = pathlib.Path(frag), pathlib.Path(workdir)
     if not frag.is_file():
         return False
-    flag = pathlib.Path(workdir) / 'converged.flag'
-    return (not flag.is_file()) or frag.stat().st_mtime >= flag.stat().st_mtime
+    if not wd.is_dir():
+        return True
+    flag = wd / 'converged.flag'
+    return flag.is_file() and frag.stat().st_mtime >= flag.stat().st_mtime
 
 
 def parse_job(job_id, work_root, sector_name, parse):
@@ -740,10 +744,10 @@ def main(argv=None, sector_name='hii', runs_default=None, parse_inputs=()):
                       nproc=args.jobs, linelist_dir=args.linelists, resume=args.resume,
                       parse=parse, run=not args.parse_only, on_result=_echo)
 
-    extra = None
+    extra = {'mode': mode}
     if parse:
-        extra = {'mode': mode, 'parse_module': SECTORS[sector_name].parse_module,
-                 'parse_argv': parse['argv'], 'frags': parse['frags']}
+        extra.update(parse_module=SECTORS[sector_name].parse_module,
+                     parse_argv=parse['argv'], frags=parse['frags'])
     report = args.report or ((frags / 'parse_manifest.json') if args.parse_only
                              else (work / 'run_manifest.json'))
     doc = write_run_manifest(report, sector_name, inst, results, extra)

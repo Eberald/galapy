@@ -282,7 +282,8 @@ report lists them in manifest order.
 ## Resuming a launch
 
 A fragment is **up to date** when it exists and is not older than the `converged.flag` of its working directory,
-i.e. it was produced from the last run. A working directory is **complete** when it contains `converged.flag` and
+i.e. it was produced from the last run, or when its working directory was deleted after parsing (the fragment is
+then all that is left of the run). A working directory is **complete** when it contains `converged.flag` and
 all the five saves, and no `RUN_FAILED` marker. Each job is then handled according to the mode:
 
 | State of the job | default | `--resume` | `--parse-only` |
@@ -348,7 +349,8 @@ are in the report.
 | `n_failed` | Failed **plus** timed-out jobs. |
 | `n_not_converged` | Jobs with `converged = false`, timeouts included. |
 | `n_parse_ok`, `n_parse_skipped`, `n_parse_failed` | Counters of the parse statuses. |
-| `mode`, `parse_module`, `parse_argv`, `frags` | Only when parsing is enabled: the exact parser call. |
+| `mode` | The execution mode: `run`, `run+parse` or `parse-only`. |
+| `parse_module`, `parse_argv`, `frags` | Only when parsing is enabled: the exact parser call. |
 | `jobs` | One record per job, in manifest order. |
 
 Each job record holds `job_id`, `status`, `converged` (`true`/`false`, or `null` when unknown), `seconds`,
