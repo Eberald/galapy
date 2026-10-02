@@ -25,7 +25,7 @@ The parser combines three sources, all resolved from the `job_id`, i.e. the **na
 
 | Source | Path | What is read |
 | :--- | :--- | :--- |
-| Working directory | `data/hii/work/<job_id>/` | Outcome markers and the CLOUDY saves `hii_<job_id>.*`. |
+| Working directory | `data/hii/work/<job_id>/` | Outcome markers, the CLOUDY saves `hii_<job_id>.*`, the deck `hii_<job_id>.in` and the table SED it reads, `SED/<sed_file>`. |
 | Job specification | `--spec`, i.e. `hii_grid_spec.h5` | The row of the job: the 7 sampled axes plus `tau_SSP`, `Z_star`. |
 | SSP metadata | `--ssp-meta`, i.e. `ssp_metadata.json` | $Q_H$ per $M_\odot$ (`Qh_unit`) of the SSP node `(tau_SSP, Z_star)`. |
 
@@ -37,7 +37,12 @@ raises `KeyError`.
 The SSP node is matched on the exact `(tau_SSP, Z_star)` pair. The spec and the metadata must therefore come from
 the same `galapy-sed-cloudy-extract` run.
 
-Of the saves written by the deck, four are parsed:
+The table SED is the file the run actually read: its name comes from the `table SED "..."` command of the deck
+(`staged_sed`, with `run_core.sed_referenced_by`), and the runner stages it into `<workdir>/SED/` before the run.
+When the node of `--ssp-meta` carries `sed_file`, it must be the same name: $Q_H$ (hence $s_k$) and the stored
+incident SED then come from the same file.
+
+Of the saves written by the deck, four are parsed, plus the table SED:
 
 | File | Content | Parsed by |
 | :--- | :--- | :--- |
@@ -45,6 +50,7 @@ Of the saves written by the deck, four are parsed:
 | `hii_<job_id>.con_grain` | Grain emission: $\lambda$, graphite, silicates, total | `parse_cloudy_cong` |
 | `hii_<job_id>.lines` | Emergent absolute line intensities [${\rm erg\,cm^{-2}\,s^{-1}}$] | `parse_cloudy_linelist` |
 | `hii_<job_id>.dusa` | Dust mass density per zone | `integrate_grain_abundance` |
+| `SED/<sed_file>` | Incident stellar SED: $\lambda$ [Å], $\nu L_\nu$ [${\rm erg\,s^{-1}}$] per $1\,M_\odot$ of SSP | `parse_table_sed` |
 
 `hii_<job_id>.grain_temp` is saved for diagnostics only, and is not read.
 
@@ -240,8 +246,9 @@ the grid validation grades the energy budget only below a threshold of this rati
 
 !!! warning "The CMB in the per-$M_\odot$ outputs"
     The CMB is a field per unit area that does not scale with the stellar mass, while $s_k$ scales everything per
-    $M_\odot$. The incident column is neither stored nor emulated: through it the CMB only reaches the
-    diagnostics (`energy_balance_rel`, `cmb_incident_ratio`, `sed_support_A`). It cancels in
+    $M_\odot$. The incident column ${\rm col}_2$ is neither stored nor emulated (the stored incident SED is the
+    table SED file, with no CMB): through it the CMB only reaches the diagnostics (`energy_balance_rel`,
+    `cmb_incident_ratio`, `sed_support_A`). It cancels in
     `continuum/transmission` (the same transmission of the medium for SED and CMB, pure absorption), and it is
     negligible in $f_{\rm esc}^{\rm meas}$, $T_{\rm FUV}$ and $N_{\rm FUV}$ (below 2066 Å).
 
@@ -278,6 +285,19 @@ line (Decision 15), and `air_to_vacuum_A` converts them to vacuum with the same 
 (`t_wavl::p_wlAirVac`, Peck & Reeder 1972): H$\alpha$ $6562.80 \to 6564.61$ Å. The vacuum values are the ones to
 place the lines on the continuum mesh, or to compare with an observed wavelength.
 
+**Incident SED.** `parse_table_sed` reads the table SED file of the run, as written by
+[`galapy-sed-cloudy-extract`](ssp_extraction.md): $\lambda$ in Å, strictly increasing, and $\nu L_\nu$ in
+${\rm erg\,s^{-1}}$ per $1\,M_\odot$ of SSP formed. It is stored **as it is, on its own wavelength grid**
+(`incident/wave_grid`): no CMB, no $s_k$ (the file is already per $M_\odot$), no rebinning on the CLOUDY mesh.
+The columns are read as `extract_spectra.cloudy_sed_QH` reads them to compute `Qh_unit`. The file is validated:
+the keywords `nuFnu units Angstroms` must be on its first data row and its header must declare the normalization
+`per 1 Msun`, otherwise the stored units would be false.
+
+CLOUDY reads these wavelengths in vacuum (`Energy::set`, $\lambda \to$ `RYDLAM`$/\lambda$) and samples the SED at
+the centre of each cell of its mesh, interpolating linearly in log-log, with $0$ outside the file
+(`cont_ffun.cpp`, `cont_setintensity.cpp`). With the keyword `extrapolate`, CLOUDY instead extends the reddest
+segment as a power law to the low-energy limit of the code: that extension is not part of the stored SED.
+
 **Grain emission.** The `total` column of `save continuum grain`, multiplied by $s_k$, is kept as a diagnostic
 of the dust emission. Its wavelength column must coincide with that of the continuum (`parse_cloudy_cong(...,
 wave_ref=wave)`), so the stored array is on `continuum/wave_grid`.
@@ -290,13 +310,14 @@ wave_ref=wave)`), so the stored array is on `continuum/wave_grid`.
 
 ```text
 00042_003_02.h5
-├── attrs: units_schema                    # 'cloudia.hii.v1'
+├── attrs: units_schema                    # 'cloudia.hii.v2'
 ├── units/                                 # attrs: unit of every member of grid_point_*
 ├── descriptions/                          # attrs: description of every member of grid_point_*
 ├── continuum/wave_grid                    # shared
 ├── line_names                             # shared
 ├── lines_emergent/wavelengths_rest        # shared
 ├── lines_emergent/wavelengths_rest_vacuum # shared
+├── incident/wave_grid                     # shared
 └── grid_point_00042_003_02/
     ├── f_esc_meas
     ├── T_fuv_hii
@@ -307,6 +328,8 @@ wave_ref=wave)`), so the stored array is on `continuum/wave_grid`.
     │   ├── nebular_emission_per_Msun
     │   ├── grain_diag_per_Msun
     │   └── transmission
+    ├── incident/
+    │   └── sed_per_Msun
     └── lines_emergent/
         └── fluxes
 ```
@@ -324,8 +347,9 @@ the log10 of a quantity in X):
 - the root attribute `units_schema` versions the tables. `check_point_units` refuses to write a fragment with a
   member missing from them, and `galapy-merge-h5` refuses to merge fragments with different units.
 
-The four **root** datasets depend only on the CLOUDY version, the deck template and `hii_lines.dat`, so they are
-identical in every fragment of a grid. `galapy-merge-h5` verifies this, and keeps a single copy of them in the corpus file:
+The five **root** datasets depend only on the CLOUDY version, the deck template, `hii_lines.dat` and the
+`galapy-sed-cloudy-extract` run (SSP library and wavelength cuts, the same for every node), so they are identical
+in every fragment of a grid. `galapy-merge-h5` verifies this, and keeps a single copy of them in the corpus file:
 
 | Dataset | Type | Units | Description |
 | :--- | :--- | :--- | :--- |
@@ -333,6 +357,7 @@ identical in every fragment of a grid. `galapy-merge-h5` verifies this, and keep
 | `line_names` | `bytes[n_lines]` | — | CLOUDY labels of the lines, e.g. `b'H 1'`. |
 | `lines_emergent/wavelengths_rest` | `float32[n_lines]` | Å, air above 2000 Å | Rest wavelengths of the lines, as printed by CLOUDY. |
 | `lines_emergent/wavelengths_rest_vacuum` | `float32[n_lines]` | Å, vacuum | The same, in vacuum (`air_to_vacuum_A`). |
+| `incident/wave_grid` | `float32[n_sed]` | Å, vacuum | Wavelength grid of the table SED file, increasing. |
 
 The group `grid_point_<job_id>` holds the model itself. It is named after the job, so the fragments of a grid
 can be merged without collisions. Its datasets are:
@@ -342,6 +367,7 @@ can be merged without collisions. Its datasets are:
 | `continuum/nebular_emission_per_Msun` | `float32[n_λ]` | `erg s-1 Msun-1` ($\nu L_\nu$) | $({\rm col}_4 - {\rm col}_9)\, s_k$ |
 | `continuum/grain_diag_per_Msun` | `float32[n_λ]` | `erg s-1 Msun-1` ($\nu L_\nu$) | Grain emission $\times\, s_k$ (diagnostic) |
 | `continuum/transmission` | `float32[n_λ]` | `''` | $T(\lambda) = {\rm col}_3 / {\rm col}_2$ |
+| `incident/sed_per_Msun` | `float32[n_sed]` | `erg s-1 Msun-1` ($\nu L_\nu$) | Incident stellar SED of the table SED file, on `incident/wave_grid` |
 | `lines_emergent/fluxes` | `float32[n_lines]` | `erg s-1 Msun-1` | Emergent line **luminosities** |
 | `f_esc_meas` | scalar | `''` | Measured ionizing escape fraction (photons) |
 | `T_fuv_hii` | scalar | `''` | FUV energy transmittance of the ionized layer |
@@ -385,6 +411,11 @@ The messages of the parser checks are prefixed with `[parse_one/hii]`. No error 
 | `RuntimeError: ... RUN_FAILED (...)` | CLOUDY returned a non-zero code or missed a save: the run is not parsed. |
 | `KeyError: ... absent in <spec>` | The working directory does not belong to the grid of `--spec`. |
 | `KeyError: (tau_SSP, Z_star)` | The SSP node of the job is missing from `--ssp-meta`. |
+| `FileNotFoundError: ... missing CLOUDY deck` | The deck `hii_<job_id>.in` is not in the working directory. |
+| `ValueError: ... no 'table SED' command in the deck` | The deck does not read a table SED. |
+| `FileNotFoundError: ... missing table SED` | The table SED was not staged into `<workdir>/SED/`. |
+| `ValueError: ... the deck reads <a>, <ssp_meta> gives <b>` | The deck and `--ssp-meta` disagree on the SED file of the node. |
+| `ValueError: ... table SED not in 'nuFnu units Angstroms'` / `not normalized per 1 Msun` | The table SED was not written by `galapy-sed-cloudy-extract` for an SSP node. |
 | `FileNotFoundError` | A save is missing. The runner would have marked such a run `RUN_FAILED`. |
 | `ValueError: ... not strictly monotonic` | Corrupted continuum. |
 | `ValueError: ... columns, expected columns: 4` | The grain continuum does not have the expected layout. |
@@ -429,6 +460,16 @@ The messages of the parser checks are prefixed with `[parse_one/hii]`. No error 
       show_source: false
 
 ::: galapy.spectroscopy.utils.hii.parse_one_hii.parse_cloudy_linelist
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.hii.parse_one_hii.staged_sed
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.hii.parse_one_hii.parse_table_sed
     options:
       show_root_heading: true
       show_source: false
@@ -506,6 +547,8 @@ with h5py.File('data/hii/parsed/00042_003_02.h5', 'r') as f:
     print(dict(g.attrs))
     L_neb = g['continuum/nebular_emission_per_Msun'][:]
     L_lines = g['lines_emergent/fluxes'][:]
+    wave_sed = f['incident/wave_grid'][:]             # its own grid, not continuum/wave_grid
+    L_inc = g['incident/sed_per_Msun'][:]
     print(f"f_esc: target {g.attrs['f_esc_target']:.3f}, measured {g.attrs['f_esc_meas']:.3f}")
 
     # units: of the root datasets on the datasets, of the grid_point members in the root legend

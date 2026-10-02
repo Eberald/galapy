@@ -9,12 +9,12 @@ import re
 import sys
 import numpy as np
 
-from galapy.internal.constants import M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight, Stellar_Max_A
+from galapy.internal.constants import M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight, Stellar_Max_A as STELLAR_MAX_A
 
 
 #============================== UNITS
 # Units of everything the parser writes, stored in the fragment itself
-UNITS_SCHEMA = 'cloudia.hii.v1'
+UNITS_SCHEMA = 'cloudia.hii.v2'
 
 # root units datasets
 ROOT_UNITS = {
@@ -29,6 +29,10 @@ ROOT_UNITS = {
         {'wavelength_medium': 'air above 2000 A, vacuum below (CLOUDY print convention)'}),
     'lines_emergent/wavelengths_rest_vacuum': (
         'Angstrom', 'rest wavelengths of the lines in vacuum (air_to_vacuum_A)',
+        {'wavelength_medium': 'vacuum'}),
+    'incident/wave_grid': (
+        'Angstrom', 'wavelength of the incident stellar SED, the table SED file read by CLOUDY '
+                    '(galapy-sed-cloudy-extract), increasing',
         {'wavelength_medium': 'vacuum'}),
 }
 
@@ -63,6 +67,9 @@ POINT_UNITS = {
         'erg s-1 Msun-1', 'nu L_nu of the grain emission (save continuum grain, optically thin) x s_k, '
                           'per Msun of SSP formed; diagnostic, never added to the SED'),
     'continuum/transmission': ('', 'col3 / col2 of the incident field (SED and CMB), 1 where col2 = 0'),
+    'incident/sed_per_Msun': (
+        'erg s-1 Msun-1', 'nu L_nu of the incident stellar SED per Msun of SSP formed, as written in the '
+                          'table SED file (on incident/wave_grid): no CMB, not scaled by s_k'),
     'lines_emergent/fluxes': (
         'erg s-1 Msun-1', 'emergent line LUMINOSITIES per Msun of SSP formed: CLOUDY absolute intensities '
                           '(erg cm-2 s-1, into 4 pi) x s_k'),
@@ -321,6 +328,70 @@ def air_to_vacuum_A(wl_A):
         n_air = 1.0 + 1.0e-8 * (8060.51 + 2480990.0 / (132.274 - sigma2) + 17455.7 / (39.32957 - sigma2))
         wl_vac[m] = wl_air[m] * n_air
     return wl_vac
+
+
+def staged_sed(wd, job_id):
+    """
+    Path of the table SED file read by CLOUDY: the one named by the deck hii_<job_id>.in of the
+    workdir, staged by run_core.stage_job into <workdir>/SED/.
+
+    Raises:
+        FileNotFoundError: If the deck is missing from the workdir.
+        ValueError: If the deck has no 'table SED' command.
+    """
+    from galapy.spectroscopy.utils.run_core import sed_referenced_by
+    deck = pathlib.Path(wd) / f"hii_{job_id}.in"
+    if not deck.is_file():
+        raise FileNotFoundError(f"[parse_one/hii] missing CLOUDY deck: {deck}")
+    name = sed_referenced_by(deck.read_text())
+    if name is None:
+        raise ValueError(f"[parse_one/hii] {deck}: no 'table SED' command in the deck")
+    return pathlib.Path(wd) / 'SED' / name
+
+
+def parse_table_sed(path):
+    """
+    Parses the table SED file read by CLOUDY, as written by galapy-sed-cloudy-extract
+    (extract_spectra.write_cloudy_sed).
+
+    The file holds lambda [Angstrom] and nu*L_nu [erg s^-1] per 1 Msun of SSP formed, with the
+    keywords 'nuFnu units Angstroms' (and optionally 'extrapolate') on the first data row.
+    CLOUDY reads the wavelengths in vacuum (Energy::set, RYDLAM / lambda) and interpolates the
+    SED in log-log, 0 outside the file: with 'extrapolate' it extends the reddest segment as a
+    power law to the low-energy limit of the code, which is not part of the returned arrays.
+
+    The columns are read as extract_spectra.cloudy_sed_QH reads them, i.e. as Qh_unit (and
+    then s_k) was computed.
+
+    Args:
+        path (str): The path to the table SED file.
+
+    Returns:
+        tuple of numpy.ndarray: The wavelengths [Angstrom], strictly increasing, and nu*L_nu
+        [erg s^-1 Msun^-1].
+
+    Raises:
+        FileNotFoundError: If the file does not exist.
+        ValueError: If the file is not in 'nuFnu units Angstroms', is not normalized per 1 Msun
+            of SSP, has fewer than two points, or its wavelengths are not strictly increasing.
+    """
+    p = pathlib.Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"[parse_one/hii] missing table SED: {p}")
+    rows = [l for l in p.read_text().splitlines() if l.strip()]
+    header = ' '.join(l for l in rows if l.lstrip().startswith('#')).lower()
+    first = next((l for l in rows if not l.lstrip().startswith('#')), '').lower()
+    if 'nufnu' not in first or 'angstrom' not in first:
+        raise ValueError(f"[parse_one/hii] {p}: table SED not in 'nuFnu units Angstroms' "
+                         f"(not written by galapy-sed-cloudy-extract?)")
+    if 'per 1 msun' not in header:
+        raise ValueError(f"[parse_one/hii] {p}: table SED not normalized per 1 Msun of SSP formed")
+    wave, nuLnu = np.loadtxt(p, comments='#', usecols=(0, 1), unpack=True, ndmin=2)
+    if wave.size < 2:
+        raise ValueError(f"[parse_one/hii] {p}: less than two points in the table SED")
+    if np.any(np.diff(wave) <= 0):
+        raise ValueError(f"[parse_one/hii] {p}: wavelengths of the table SED not strictly increasing")
+    return wave, nuLnu
 
 
 def integrate_grain_abundance(path):
@@ -729,9 +800,15 @@ def main(argv=None):
                                   'xi_d', 'f_esc_target', 'F_star', 'tau_SSP', 'Z_star')}
     with open(args.ssp_meta) as fh:
         meta = json.load(fh)
-    Qh = {(m['tau_SSP'], m['Z_star']): m['Qh_unit'] for m in meta}
-    s_k = s_k_factor(Qh[(float(p['tau_SSP']), float(p['Z_star']))],
-                     float(p['logU']), float(p['lognH_HII']))
+    node = {(m['tau_SSP'], m['Z_star']): m for m in meta}[(float(p['tau_SSP']), float(p['Z_star']))]
+    s_k = s_k_factor(node['Qh_unit'], float(p['logU']), float(p['lognH_HII']))
+
+    # incident stellar SED: the table SED file CLOUDY read, the same of Qh_unit (hence of s_k)
+    sed_path = staged_sed(wd, job_id)
+    if node.get('sed_file', sed_path.name) != sed_path.name:
+        raise ValueError(f"[parse_one/hii] {job_id}: the deck reads {sed_path.name}, {args.ssp_meta} "
+                         f"gives {node['sed_file']} for the SSP node")
+    sed_wave, sed_nuLnu = parse_table_sed(sed_path)
 
     # wavelength and continuum and lines
     wave, col2, col3, col4, col9 = parse_cloudy_con(f"{pre}.con", cols=(1, 2, 3, 4, 9))
@@ -754,6 +831,7 @@ def main(argv=None):
         write_root_dataset(f, 'lines_emergent/wavelengths_rest', line_data['wavelengths'].astype('f4'))
         write_root_dataset(f, 'lines_emergent/wavelengths_rest_vacuum',
                            air_to_vacuum_A(line_data['wavelengths']).astype('f4'))
+        write_root_dataset(f, 'incident/wave_grid', sed_wave.astype('f4'))
         g = f.create_group(f"grid_point_{job_id}")
         g.attrs.update({k: float(p[k]) for k in
                         ('logU', 'lognH_HII', 'z_CMB', 'log_zeta_O',
@@ -771,6 +849,7 @@ def main(argv=None):
         g.create_dataset('continuum/nebular_emission_per_Msun', data=(nebular * s_k).astype('f4'))
         g.create_dataset('continuum/grain_diag_per_Msun', data=(cong * s_k).astype('f4'))
         g.create_dataset('continuum/transmission', data=transmission.astype('f4'))
+        g.create_dataset('incident/sed_per_Msun', data=sed_nuLnu.astype('f4'))
         g.attrs['sed_support_A'] = sed_support
         g.create_dataset('lines_emergent/fluxes', data=(line_data['fluxes'] * s_k).astype('f4'))
         g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / M_Sun_G)

@@ -14,13 +14,16 @@ import pytest
 
 from galapy.spectroscopy.utils import merge_grid
 from galapy.spectroscopy.utils import run_core as rc
+from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed
 from galapy.spectroscopy.utils.hii import parse_one_hii as phii
 from galapy.spectroscopy.utils.hii.run_hii import main as run_hii_main
 
 #=============================== Sectors registers
 # the free parameters per sector and some defaults to test purposes
 SPEC_KEYS = {'hii': ('logU', 'lognH_HII', 'z_CMB', 'log_zeta_O', 'xi_d', 'f_esc_target', 'F_star')}
-SED_WRITERS = {'hii': lambda p: p.write_text('# synthetic sed \n1.0 1.0\n2.0 2.0\n')}
+# synthetic SSP node, written as galapy-sed-cloudy-extract writes it (the parser stores it)
+SED_LAMBDA = np.logspace(1.5, 6, 40)
+SED_WRITERS = {'hii': lambda p: write_cloudy_sed(SED_LAMBDA, 1e-3 * (SED_LAMBDA / 1e3) ** -2.2, p)}
 NODE = {'tau_SSP': 6.5, 'Z_star': 0.02}
 
 #=============================== CLOUDY TEST (fake CLOUDY for test purposes)
@@ -483,6 +486,19 @@ def test_merge_carries_the_units(hii, fake_cloudy, tmp_path):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize('which', [0, 1])
+def test_merge_rejects_fragments_without_the_incident_grid(hii, fake_cloudy, tmp_path, which):
+    runs, ids, argv = hii
+    assert run_hii_main(argv) == 0
+    with h5py.File(runs / 'parsed' / f'{ids[which]}.h5', 'a') as f:
+        del f['incident/wave_grid']             # a fragment of an older parser
+    out = tmp_path / 'hii_grid.h5'
+    with pytest.raises(ValueError, match='older parser'):
+        merge_grid.merge(runs / 'parsed', out)
+    assert not out.exists() and not out.with_name(out.name + '.part').exists()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize('which, alter', [(0, 'drop'), (1, 'drop'), (1, 'change')])
 def test_merge_rejects_fragments_with_different_units(hii, fake_cloudy, tmp_path, which, alter):
     runs, ids, argv = hii
@@ -554,3 +570,38 @@ def test_parse_one_write_is_atomic(hii, fake_cloudy,
     with pytest.raises(RuntimeError, match='writing'):
         phii.main([str(runs / 'work' / ids[0]), *argv[argv.index('--spec'):], '--out', str(out)])
     assert list(out.iterdir()) == []
+
+#======================================================== incident SED
+@pytest.mark.unit
+def test_fragment_carries_the_incident_sed_of_the_file(hii, fake_cloudy):
+    runs, ids, argv = hii
+    assert run_hii_main(argv + ['--job-id', ids[0]]) == 0
+    wave, nuLnu = np.loadtxt(runs / 'work' / ids[0] / 'SED' / 'ssp_003_02.sed', comments='#',
+                             usecols=(0, 1), unpack=True)
+    with h5py.File(runs / 'parsed' / f'{ids[0]}.h5', 'r') as f:
+        np.testing.assert_allclose(f['incident/wave_grid'][:], wave, rtol=1e-6)
+        np.testing.assert_allclose(f[f'grid_point_{ids[0]}/incident/sed_per_Msun'][:], nuLnu, rtol=1e-6)
+
+
+@pytest.mark.unit
+def test_parse_one_needs_the_staged_sed(hii, fake_cloudy):
+    runs, ids, argv = hii
+    assert run_hii_main(argv + ['--job-id', ids[0], '--no-parse']) == 0
+    wd, out = runs / 'work' / ids[0], runs / 'manual'
+    (wd / 'SED' / 'ssp_003_02.sed').unlink()
+    with pytest.raises(FileNotFoundError, match='table SED'):
+        phii.main([str(wd), *argv[argv.index('--spec'):], '--out', str(out)])
+    assert list(out.iterdir()) == []
+
+
+@pytest.mark.unit
+def test_parse_one_rejects_the_sed_of_another_node(hii, fake_cloudy):
+    runs, ids, argv = hii
+    assert run_hii_main(argv + ['--job-id', ids[0], '--no-parse']) == 0
+    wd, inputs = str(runs / 'work' / ids[0]), argv[argv.index('--spec'):]
+    meta = runs / 'ssp_metadata.json'
+    meta.write_text(json.dumps([{**NODE, 'Qh_unit': 1e40, 'sed_file': 'ssp_other.sed'}]))
+    with pytest.raises(ValueError, match='ssp_other.sed'):
+        phii.main([wd, *inputs, '--out', str(runs / 'manual')])
+    meta.write_text(json.dumps([{**NODE, 'Qh_unit': 1e40, 'sed_file': 'ssp_003_02.sed'}]))
+    assert phii.main([wd, *inputs, '--out', str(runs / 'manual')]) == 0

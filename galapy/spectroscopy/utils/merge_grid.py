@@ -10,7 +10,7 @@ import h5py
 import numpy as np
 
 ROOT_SHARED = ('continuum/wave_grid', 'line_names', 'lines_emergent/wavelengths_rest',
-               'lines_emergent/wavelengths_rest_vacuum')
+               'lines_emergent/wavelengths_rest_vacuum', 'incident/wave_grid')
 # units of the grid_point members, written once per fragment by the parser (root groups)
 UNITS_LEGEND = ('units', 'descriptions')
 
@@ -46,9 +46,10 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
         int: The total number of grid points written to the merged corpus file.
 
     Raises:
-        ValueError: If no .h5 fragments are found in the specified directory, if the first
-            fragment has no units, or if there is a mismatch in the units or in the shared
-            root datasets (data or attributes) among the fragments.
+        ValueError: If no .h5 fragments are found in the specified directory, if a fragment
+            lacks one of the shared root datasets, if the first fragment has no units, or if
+            there is a mismatch in the units or in the shared root datasets (data or
+            attributes) among the fragments.
         BaseException: If an unexpected error occurs during the merging process,
             ensuring the intermediate output file is deleted in such cases.
     """
@@ -68,11 +69,14 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
             for fp in frags:
                 with h5py.File(fp, 'r') as fr:
                     schema = fr.attrs.get('units_schema')
+                    absent = [d for d in ROOT_SHARED if d not in fr]
+                    if absent:
+                        raise ValueError(
+                            f"[merge] {fp}: fragment without {absent} ")
                     if ref is None:
                         if schema is None or any(name not in fr for name in UNITS_LEGEND):
                             raise ValueError(
-                                f"[merge] {fp}: fragment without units (written by an older parser): "
-                                f"parse it again, e.g. galapy-run-cloudy-hii --parse-only")
+                                f"[merge] {fp}: fragment without units ")
                         out.attrs['units_schema'] = schema
                         for name in UNITS_LEGEND:
                             fr.copy(fr[name], out, name=name)

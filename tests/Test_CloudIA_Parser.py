@@ -1,15 +1,18 @@
 # Author: Enrico Veraldi
 # Tests on parsing functions
 
+import pathlib
+
 import numpy as np
 import pytest
 
 # HII parser
 from galapy.spectroscopy.utils.hii.parse_one_hii import (fesc, fuv_transmittance_hii, s_k_factor, support_safe_ratio,
                                                          energy_balance, cmb_incident_ratio, air_to_vacuum_A,
-                                                         parse_cloudy_cong, STELLAR_MAX_A, UNITS_SCHEMA,
-                                                         ROOT_UNITS, POINT_UNITS)
-from galapy.internal.constants import LymanA, FUV_Lo_A, FUV_Hi_A, clight
+                                                         parse_cloudy_cong, parse_table_sed, STELLAR_MAX_A,
+                                                         UNITS_SCHEMA, ROOT_UNITS, POINT_UNITS)
+from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed
+from galapy.internal.constants import LymanA, FUV_Lo_A, FUV_Hi_A, clight, Lsun
 
 C_CGS = clight['cm/s']
 
@@ -189,8 +192,49 @@ def test_units_tables_are_well_formed():
         assert (unit is None or isinstance(unit, str)) and description.strip(), name
         assert isinstance(extra, dict)
     assert ROOT_UNITS['continuum/wave_grid'][2]['wavelength_medium'] == 'vacuum'
+    assert ROOT_UNITS['incident/wave_grid'][2]['wavelength_medium'] == 'vacuum'
     assert POINT_UNITS['continuum/nebular_emission_per_Msun'][0] == 'erg s-1 Msun-1'
+    assert POINT_UNITS['incident/sed_per_Msun'][0] == 'erg s-1 Msun-1'
     assert POINT_UNITS['s_k'][0] == 'cm2 Msun-1'
+
+
+#================================================= test incident table SED
+@pytest.mark.unit
+def test_table_sed_round_trip_of_the_written_file(tmp_path):
+    lam = np.logspace(1.5, 6, 40)[::-1]                   # any order: the writer sorts it
+    L_lambda = 1e-3 * (lam / 1e3) ** -2.2                 # Lsun A^-1 per Msun
+    wave, nuLnu = parse_table_sed(write_cloudy_sed(lam, L_lambda, tmp_path / 'n.sed'))
+    assert np.all(np.diff(wave) > 0)
+    np.testing.assert_allclose(wave, lam[::-1], rtol=1e-6)
+    np.testing.assert_allclose(nuLnu, (L_lambda * lam * Lsun)[::-1], rtol=1e-6)
+    wave_e, nuLnu_e = parse_table_sed(write_cloudy_sed(lam, L_lambda, tmp_path / 'e.sed', extrapolate=True))
+    assert np.array_equal(wave_e, wave) and np.array_equal(nuLnu_e, nuLnu)
+
+
+@pytest.mark.unit
+def test_table_sed_must_be_nufnu_angstrom_per_msun(tmp_path):
+    lam = np.logspace(2, 5, 10)
+    good = write_cloudy_sed(lam, np.ones_like(lam), tmp_path / 'g.sed')
+    text = pathlib.Path(good).read_text()
+    for name, bad, match in (('u.sed', text.replace('nuFnu units Angstroms', ''), 'nuFnu units Angstroms'),
+                             ('c.sed', text.replace('per 1 Msun SSP', 'of the whole CSP'), 'per 1 Msun')):
+        (tmp_path / name).write_text(bad)
+        with pytest.raises(ValueError, match=match):
+            parse_table_sed(tmp_path / name)
+    with pytest.raises(FileNotFoundError, match='table SED'):
+        parse_table_sed(tmp_path / 'absent.sed')
+
+
+@pytest.mark.unit
+def test_table_sed_wavelengths_must_increase(tmp_path):
+    path = tmp_path / 'm.sed'
+    path.write_text('# per 1 Msun SSP\n1.0e+03 1.0e+33 nuFnu units Angstroms\n'
+                    '3.0e+03 2.0e+33\n2.0e+03 3.0e+33\n')
+    with pytest.raises(ValueError, match='strictly increasing'):
+        parse_table_sed(path)
+    path.write_text('# per 1 Msun SSP\n1.0e+03 1.0e+33 nuFnu units Angstroms\n')
+    with pytest.raises(ValueError, match='two points'):
+        parse_table_sed(path)
 
 
 #================================================= test wavelength order
