@@ -9,7 +9,119 @@ import re
 import sys
 import numpy as np
 
-from galapy.internal.constants import M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight
+from galapy.internal.constants import M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight, Stellar_Max_A
+
+
+#============================== UNITS
+# Units of everything the parser writes, stored in the fragment itself
+UNITS_SCHEMA = 'cloudia.hii.v1'
+
+# root units datasets
+ROOT_UNITS = {
+    'continuum/wave_grid': (
+        'Angstrom', 'wavelength of the CLOUDY continuum mesh, decreasing (increasing energy)',
+        {'wavelength_medium': 'vacuum'}),
+    'line_names': (
+        None, 'CLOUDY labels of the lines (internal spaces collapsed), in the order of hii_lines.dat',
+        {}),
+    'lines_emergent/wavelengths_rest': (
+        'Angstrom', 'rest wavelengths of the lines as printed by CLOUDY in their labels',
+        {'wavelength_medium': 'air above 2000 A, vacuum below (CLOUDY print convention)'}),
+    'lines_emergent/wavelengths_rest_vacuum': (
+        'Angstrom', 'rest wavelengths of the lines in vacuum (air_to_vacuum_A)',
+        {'wavelength_medium': 'vacuum'}),
+}
+
+# members of grid_point_<job_id>
+POINT_UNITS = {
+    # grid axes and SSP node, copied from the spec
+    'logU': ('dex', 'log10 of the ionization parameter U = Phi_H / (n_H c) at the illuminated face'),
+    'lognH_HII': ('dex(cm-3)', 'log10 of the hydrogen density n_H (CLOUDY hden)'),
+    'z_CMB': ('', 'redshift of the CMB of the run, T_CMB = 2.725 (1 + z_CMB) K'),
+    'log_zeta_O': ('dex', 'log10 zeta_O, zeta_O = (O/H) / (O/H)_GC (Nicholls+17)'),
+    'xi_d': ('', 'dust-to-metal mass ratio'),
+    'f_esc_target': ('', 'target escape fraction of the H-ionizing photons (sets the stopping column)'),
+    'F_star': ('', 'depletion strength F* of Jenkins (2009)'),
+    'tau_SSP': ('yr', 'age of the SSP node'),
+    'Z_star': ('', 'metallicity (mass fraction) of the SSP node'),
+    # flags and diagnostics
+    'not_converged': ('', 'flag: CLOUDY did not converge'),
+    'cloudy_warnings': ('', 'flag: CLOUDY ended with warnings'),
+    'energy_balance_rel': ('', '|E2 - (E3 + E4)| / E2(lambda < 10 um), E_n = int col_n dln(lambda): '
+                               'energy imbalance over the STELLAR incident energy'),
+    'cmb_incident_ratio': ('', 'E2(lambda >= 10 um) / E2(lambda < 10 um): incident energy of the CMB '
+                               'over the stellar one'),
+    'f_esc_meas': ('', 'escape fraction of the H-ionizing PHOTONS: int col3 dlambda / int col2 dlambda, '
+                       'lambda < 911.6 A'),
+    'sed_support_A': ('Angstrom', '(min, max) wavelength where the incident field (SED and CMB) is > 0: '
+                                  'transmission measured inside, 1 outside'),
+    # datasets
+    'continuum/nebular_emission_per_Msun': (
+        'erg s-1 Msun-1', 'nu L_nu of the outward own emission without lines, (col4 - col9) s_k, per Msun '
+                          'of SSP formed; includes the grains heated by the CMB'),
+    'continuum/grain_diag_per_Msun': (
+        'erg s-1 Msun-1', 'nu L_nu of the grain emission (save continuum grain, optically thin) x s_k, '
+                          'per Msun of SSP formed; diagnostic, never added to the SED'),
+    'continuum/transmission': ('', 'col3 / col2 of the incident field (SED and CMB), 1 where col2 = 0'),
+    'lines_emergent/fluxes': (
+        'erg s-1 Msun-1', 'emergent line LUMINOSITIES per Msun of SSP formed: CLOUDY absolute intensities '
+                          '(erg cm-2 s-1, into 4 pi) x s_k'),
+    'T_fuv_hii': ('', 'Habing band (6-13.6 eV) ENERGY transmittance: int col3 dln(lambda) / int col2 dln(lambda)'),
+    'N_fuv_hii': ('', 'Habing band energy of the own emission (lines included) over the incident one: '
+                      'int col4 dln(lambda) / int col2 dln(lambda)'),
+    'dust_mass_per_Msun': ('Msun Msun-1', 'dust mass of the cloud per Msun of SSP formed: Sigma_d s_k / M_sun'),
+    's_k': ('cm2 Msun-1', 'area of the illuminated face per Msun of SSP formed: Q_H(1 Msun) / (U n_H c)'),
+}
+
+
+def write_root_dataset(f, name, data, table=ROOT_UNITS):
+    """
+    Creates the root dataset `name` and writes its attributes 'units' (when it has a unit),
+    'description' and the extra ones of `table` (e.g. 'wavelength_medium').
+    """
+    unit, description, extra = table[name]
+    ds = f.create_dataset(name, data=data)
+    if unit is not None:
+        ds.attrs['units'] = unit
+    ds.attrs['description'] = description
+    ds.attrs.update(extra)
+    return ds
+
+
+def write_units_legend(f, schema=UNITS_SCHEMA, table=POINT_UNITS):
+    """
+    Writes the units of the grid_point members once per file: the root attribute
+    'units_schema' and the groups 'units' (name -> unit) and 'descriptions' (name -> text).
+    """
+    f.attrs['units_schema'] = schema
+    units, descriptions = f.create_group('units'), f.create_group('descriptions')
+    for name, (unit, description) in table.items():
+        if unit is not None:
+            units.attrs[name] = unit
+        descriptions.attrs[name] = description
+
+
+def point_members(group):
+    """
+    Names of the attributes and paths (relative to the group) of the datasets of a grid_point group.
+    """
+    import h5py
+    members = set(group.attrs)
+    group.visititems(lambda name, obj: members.add(name) if isinstance(obj, h5py.Dataset) else None)
+    return members
+
+
+def check_point_units(group, table=POINT_UNITS):
+    """
+    Every member of the grid_point group has its units in `table`, and every entry of `table` is
+    written: a quantity added to the fragment without its units fails here, not downstream.
+    """
+    members = point_members(group)
+    missing, stale = sorted(members - set(table)), sorted(set(table) - members)
+    if missing or stale:
+        raise ValueError(f"[parse_one/hii] {group.name}: units table out of date, members without "
+                         f"units {missing}, units of absent members {stale}")
+
 
 def _load_columns(path, ncol_expected):
     """
@@ -51,14 +163,14 @@ def parse_cloudy_con(path, cols=(1, 2, 3, 4, 9)):
     of the CLOUDY run.
 
     The default column indices (1-based) extracted are:
-        - 1: Wavelengths [Angstrom].
-        - 2: Incident flux.
+        - 1: Wavelengths [Angstrom], in vacuum (Energy::angstromVac of CLOUDY).
+        - 2: Incident flux (SED and, with the 'CMB' command, 4 pi nu B_nu(T_CMB)).
         - 3: Pure attenuated incident flux (stellar transmitted)
         - 4: Diffuse flux emitted by the cloud (gas + grains, including lines).
         - 9: Flux from emission lines only.
 
-    Columns related to flux are expressed in units of nuFnu
-    [erg cm^-2 s^-1].
+    Columns related to flux are expressed in units of nuFnu [erg cm^-2 s^-1], per cm^2
+    of the illuminated face (intensity case: flxCell of save_do.cpp, zone_startend.cpp).
 
     Raises:
         ValueError: If the wavelengths in the first column are not strictly
@@ -93,20 +205,32 @@ def parse_cloudy_con(path, cols=(1, 2, 3, 4, 9)):
 
 
 # diagnostic file extraction
-def parse_cloudy_cong(path):
+def parse_cloudy_cong(path, wave_ref=None):
     """Parses the CONG file to extract the total contribution of dust components.
 
     This function extracts the last column that represents the total contribution from
-    dust grains (graphite, silicates, and overall total) in an optically-thin limit.
+    dust grains (graphite, silicates, and overall total) in an optically-thin limit, in
+    nuFnu [erg cm^-2 s^-1] per cm^2 of the illuminated face, like the continuum.
 
     Args:
         path (str): The file path of the CONG diagnostic file.
+        wave_ref (numpy.ndarray, optional): The wavelength column of the continuum ('.con').
+            If given, the first column of the file must coincide with it: the grain emission
+            is then on the same mesh, in the same order and units, as the continuum it is
+            stored with.
 
     Returns:
         numpy.ndarray: A 1D array containing the total contribution values extracted
         from the file.
+
+    Raises:
+        ValueError: If `wave_ref` is given and the wavelength column differs from it.
     """
     arr = _load_columns(path, 4)   # lambda | graphite | silicates | total
+    if wave_ref is not None:
+        wave_ref = np.asarray(wave_ref, dtype=float)
+        if arr.shape[0] != wave_ref.size or not np.allclose(arr[:, 0], wave_ref, rtol=1e-6, atol=0.0):
+            raise ValueError(f"[parse_one/hii] {path}: wavelength column differs from the continuum mesh ")
     return arr[:, -1]
 
 
@@ -124,8 +248,11 @@ def parse_cloudy_linelist(path):
     Returns:
         dict: A dictionary with the following keys:
             - 'names' (numpy.ndarray): Array of extracted line labels as strings.
-            - 'wavelengths' (numpy.ndarray): Array of wavelengths in Angstroms.
-            - 'fluxes' (numpy.ndarray): Array of flux intensities.
+            - 'wavelengths' (numpy.ndarray): Array of wavelengths in Angstroms, as printed by
+              CLOUDY: air above 2000 A, vacuum below (t_wavl::sprt_wl; see air_to_vacuum_A).
+            - 'fluxes' (numpy.ndarray): Array of line intensities: with 'absolute', linear,
+              in erg cm^-2 s^-1 into 4 pi per cm^2 of the illuminated face (cdLine_ip of
+              cddrive.cpp, Conv2PrtInten = 1 in the intensity case).
 
     Raises:
         ValueError: If the file contains unparsable lines, invalid wavelength formats,
@@ -168,6 +295,32 @@ def parse_cloudy_linelist(path):
         'wavelengths': np.array(waves),
         'fluxes': np.array(fluxes)
     }
+
+
+def air_to_vacuum_A(wl_A):
+    """
+    Vacuum wavelengths of the lines printed by CLOUDY.
+
+    CLOUDY keeps vacuum wavelengths internally and prints them in air above 2000 A
+    while the continuum mesh is printed in vacuum. This is the inverse CLOUDY uses
+    itself: index of refraction of air of Peck & Reeder
+    (1972), applied only above 2000 A, iterated twice because it depends on the vacuum
+    wavenumber. The coefficients belong to that formula, not to galapy.internal.constants.
+
+    Parameters:
+        wl_A (array-like): Wavelengths in Angstrom, as printed by CLOUDY.
+
+    Returns:
+        numpy.ndarray: The vacuum wavelengths in Angstrom (unchanged at and below 2000 A).
+    """
+    wl_air = np.asarray(wl_A, dtype=float)
+    wl_vac = wl_air.copy()
+    m = wl_air > 2000.0
+    for _ in range(2):
+        sigma2 = (1.0e4 / wl_vac[m]) ** 2      # vacuum wavenumber squared [um^-2]
+        n_air = 1.0 + 1.0e-8 * (8060.51 + 2480990.0 / (132.274 - sigma2) + 17455.7 / (39.32957 - sigma2))
+        wl_vac[m] = wl_air[m] * n_air
+    return wl_vac
 
 
 def integrate_grain_abundance(path):
@@ -293,6 +446,11 @@ def fuv_transmittance_hii(wave_A, col2_incident, col3_transmitted, col4_own):
       consisting of components like two-photon emission (1400 Å) and Ly-alpha (10.2 eV),
       normalized by the integrated incident flux (col2).
 
+    Both are ratios of ENERGY fluxes: the nuFnu columns are integrated in d(ln lambda), which
+    gives int F_lambda dlambda over the band. They correct G0, an energy flux in the Habing band
+    (the PDR deck imposes int F_nu dnu over 6-13.6 eV), and the PDR must receive the energy the
+    ionized skin transmits. An integral in d(lambda) would give photon rates instead (as fesc).
+
     This computation accounts for the influence of dust attenuation, Stromgren column
     parameters, and the enhancements from the nebular continuum. The result is dimensionless
     and provides inputs for simulating the FUV impact on photodissociation regions
@@ -300,14 +458,13 @@ def fuv_transmittance_hii(wave_A, col2_incident, col3_transmitted, col4_own):
 
     Parameters:
     wave_A: array_like
-        Wavelength array in Ångströms, defining the spectral range of interest.
+        Wavelength array in Ångströms, DECREASING (the native CLOUDY order).
     col2_incident: array_like
-        Flux density corresponding to the incident FUV radiation in units of erg cm^-2 s^-1.
+        Incident nuFnu [erg cm^-2 s^-1].
     col3_transmitted: array_like
-        Flux density corresponding to the transmitted FUV radiation in units of erg cm^-2 s^-1.
+        Transmitted nuFnu [erg cm^-2 s^-1].
     col4_own: array_like
-        Flux density corresponding to the nebular continuum contribution in units of
-        erg cm^-2 s^-1.
+        Own diffuse emission nuFnu (lines included) [erg cm^-2 s^-1].
 
     Returns:
     tuple(float, float)
@@ -317,7 +474,7 @@ def fuv_transmittance_hii(wave_A, col2_incident, col3_transmitted, col4_own):
     m = (wave_A >= FUV_Lo_A) & (wave_A <= FUV_Hi_A)
     if not np.any(m):
         return 0.0, 0.0
-    x = wave_A[m][::-1]
+    x = np.log(wave_A[m][::-1])
     den = np.trapezoid(col2_incident[m][::-1], x)
     if den <= 0:
         return 0.0, 0.0
@@ -326,7 +483,17 @@ def fuv_transmittance_hii(wave_A, col2_incident, col3_transmitted, col4_own):
     return T_fuv, N_fuv
 
 
-def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own):
+def _band_energy(wave_A, col, mask):
+    """
+    Energy flux int col d(ln lambda) of a nuFnu column over the bins in `mask`, independent of
+    the order of wave_A. 0 with less than two bins.
+    """
+    if np.count_nonzero(mask) < 2:
+        return 0.0
+    return float(abs(np.trapezoid(np.asarray(col, dtype=float)[mask], np.log(wave_A[mask]))))
+
+
+def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own, split_A=None):
     """
     Relative energy balance of the cloud: incident = transmitted + diffuse outward emission.
 
@@ -334,6 +501,12 @@ def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own):
         I_n = int nuFnu d(ln lambda) = int F_lambda d(lambda)     [erg cm^-2 s^-1].
     The integral in d(lambda) would instead be proportional to the PHOTON flux (as in fesc),
     which is not conserved: the dust re-emits each absorbed UV photon as many IR photons.
+
+    With the 'CMB' command col2 also holds 4 pi nu B_nu(T_CMB), which in many models carries
+    more energy than the SED. The CMB balances itself (what the cloud absorbs, it re-emits),
+    so the imbalance is referred to the STELLAR incident energy, int col2 below `split_A`
+    (STELLAR_MAX_A in the parser): otherwise it would measure the CMB and stay blind to the
+    stellar budget, which is what a double-counted component would break.
 
     Parameters:
     wave_A: ndarray
@@ -344,20 +517,49 @@ def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own):
         Transmitted flux (nuFnu) corresponding to wave_A.
     col4_own: ndarray
         Diffuse outward emission (nuFnu, lines included) corresponding to wave_A.
+    split_A: float, optional
+        Wavelength [Angstrom] below which col2 is the stellar incident field. None: the whole
+        col2 is the reference.
 
     Returns:
     float
-        |I2 - (I3 + I4)| / I2, independent of the order of wave_A. NaN if the incident
-        energy is zero.
+        |I2 - (I3 + I4)| / E_ref, independent of the order of wave_A, with E_ref = I2, or the
+        col2 energy below `split_A`. NaN if the reference energy is zero.
     """
     lnl = np.log(wave_A)
     I2 = np.trapezoid(col2_incident, lnl)
     I3 = np.trapezoid(col3_transmitted, lnl)
     I4 = np.trapezoid(col4_own, lnl)
-    if I2 == 0:
+    E_ref = I2 if split_A is None else _band_energy(wave_A, col2_incident, wave_A < split_A)
+    if E_ref == 0:
         return float('nan')
     # the abs() at the denominator makes the ratio independent of the wavelength order
-    return float(abs(I2 - (I3 + I4)) / abs(I2))
+    return float(abs(I2 - (I3 + I4)) / abs(E_ref))
+
+
+def cmb_incident_ratio(wave_A, col2_incident, split_A=STELLAR_MAX_A):
+    """
+    Incident energy above `split_A` over the incident energy below it: with the 'CMB' command,
+    the CMB over the stellar incident field (the SED adds at most ~1% above 10 um). Large
+    values flag the models whose continua are dominated by the CMB: the imbalance referred to
+    the stellar energy is (1 + ratio) times the one referred to the total incident energy.
+
+    Parameters:
+    wave_A: ndarray
+        Array of wavelengths in Ångströms, strictly monotonic (either order).
+    col2_incident: ndarray
+        Incident flux (nuFnu) corresponding to wave_A.
+    split_A: float
+        Wavelength [Angstrom] separating the stellar and the CMB incident field.
+
+    Returns:
+    float
+        The dimensionless ratio, NaN if there is no stellar incident energy.
+    """
+    stellar = _band_energy(wave_A, col2_incident, wave_A < split_A)
+    if stellar == 0:
+        return float('nan')
+    return _band_energy(wave_A, col2_incident, wave_A >= split_A) / stellar
 
 
 def support_safe_ratio(col2, col3):
@@ -392,19 +594,19 @@ def s_k_factor(Qh_unit_node, logU, lognH):
     k=(tau_SSP, Z_star), with the ionizing rate Q_H,k(1 Msun)
     (extracted from the SED ), the
     effective area is computed as:
-        s_k = Q_H,k(1 Msun) / (U * n_H * c)     [cm^2].
+        s_k = Q_H,k(1 Msun) / (U * n_H * c)     [cm^2 Msun^-1].
 
     This factor (s_k) converts all outputs provided per cm^2
     (such as absolute row values, col3/col4, CONG, Sigma_d) into
     luminosities/masses per 1 Msun of formed SSP.
 
     Args:
-        Qh_unit_node: Ionizing photon rate from the SSP in photons/s.
+        Qh_unit_node: Ionizing photon rate of the SSP node in photons s^-1 Msun^-1.
         logU: Logarithm of the dimensionless ionization parameter.
         lognH: Logarithm of the hydrogen number density in cm^-3.
 
     Returns:
-        float: Geometric factor that converts outputs from per cm^2
+        float: Geometric factor [cm^2 Msun^-1] that converts outputs from per cm^2
         to luminosity/mass per 1 Msun of formed SSP.
     """
     return Qh_unit_node / (10.0**logU * 10.0**lognH * clight['cm/s'])
@@ -533,8 +735,8 @@ def main(argv=None):
 
     # wavelength and continuum and lines
     wave, col2, col3, col4, col9 = parse_cloudy_con(f"{pre}.con", cols=(1, 2, 3, 4, 9))
-    # grains
-    cong = parse_cloudy_cong(f"{pre}.con_grain")
+    # grains, on the mesh of the continuum
+    cong = parse_cloudy_cong(f"{pre}.con_grain", wave_ref=wave)
     # emission CLOUD with no emission lines
     nebular = col4 - col9
     # Transmission
@@ -545,17 +747,21 @@ def main(argv=None):
     Sigma_d = integrate_grain_abundance(f"{pre}.dusa")
 
     with atomic_h5(out) as f:
-        f.create_dataset('continuum/wave_grid', data=wave.astype('f4'))
-        f.create_dataset('line_names', data=line_data['names'].astype('S'))
-        f.create_dataset('lines_emergent/wavelengths_rest',
-                         data=line_data['wavelengths'].astype('f4'))
+        # units: root attribute + legend of the grid_point members, attributes of the root datasets
+        write_units_legend(f)
+        write_root_dataset(f, 'continuum/wave_grid', wave.astype('f4'))
+        write_root_dataset(f, 'line_names', line_data['names'].astype('S'))
+        write_root_dataset(f, 'lines_emergent/wavelengths_rest', line_data['wavelengths'].astype('f4'))
+        write_root_dataset(f, 'lines_emergent/wavelengths_rest_vacuum',
+                           air_to_vacuum_A(line_data['wavelengths']).astype('f4'))
         g = f.create_group(f"grid_point_{job_id}")
         g.attrs.update({k: float(p[k]) for k in
                         ('logU', 'lognH_HII', 'z_CMB', 'log_zeta_O',
                          'xi_d', 'f_esc_target', 'F_star', 'tau_SSP', 'Z_star')})
         g.attrs['not_converged'] = bool(not_converged)  # DD-4
         g.attrs['cloudy_warnings'] = bool(cloudy_warnings)
-        g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4)
+        g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4, split_A=STELLAR_MAX_A)
+        g.attrs['cmb_incident_ratio'] = cmb_incident_ratio(wave, col2)
         f_esc_meas = fesc(wave, col2, col3)
         g.attrs['f_esc_meas'] = float(f_esc_meas)
         g.create_dataset('f_esc_meas', data=f_esc_meas)
@@ -568,7 +774,9 @@ def main(argv=None):
         g.attrs['sed_support_A'] = sed_support
         g.create_dataset('lines_emergent/fluxes', data=(line_data['fluxes'] * s_k).astype('f4'))
         g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / M_Sun_G)
-        g.attrs['dust_mass_units'] = 'Msun per Msun SSP formed'
+        g.create_dataset('s_k', data=s_k)
+        # inside atomic_h5: a member written without its units leaves no fragment
+        check_point_units(g)
     print(f"[parse_one/hii] {job_id} -> {out}")
     return 0
 

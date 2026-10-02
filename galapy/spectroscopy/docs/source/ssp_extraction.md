@@ -56,7 +56,9 @@ The resulting file is formatted to match the CLOUDY `table SED` specification:
 - A comment line starting with `#` describing the columns.
 - Two space-separated columns:
     - **Wavelength** in Angstroms ($\text{A}$).
-    - **$\nu F_\nu$ linear** ($\lambda L_\lambda$ or $\nu L_\nu$) scaled to units of $\text{erg/s}$ per $1\,M_\odot$ SSP.
+    - **$\nu F_\nu$ linear** ($\lambda L_\lambda$ or $\nu L_\nu$) scaled to units of $\text{erg/s}$ per $1\,M_\odot$ SSP
+      (the SSP tables of GalaPy give $L_\lambda$ in $L_\odot\,$Å$^{-1}\,M_\odot^{-1}$). A file written from a CSP
+      is the luminosity of the whole population, and its header says so (`of the whole CSP`).
 - Wavelengths are filtered to be strictly monotonically increasing.
 - The first data row contains the unit and configuration prefix: `nuFnu units Angstroms` (and optionally `extrapolate` if requested).
 
@@ -73,7 +75,9 @@ Example file header (with extrapolation):
 
 This file lists all exported nodes in a JSON array of objects. It is the input of
 [`galapy-gen-lhs-hii`](gen_hii.md) and of the HII parser, which reads the ionizing photon rate per $M_\odot$
-(`Qh_unit`) of each node from it (see [Parse HII](parse_hii.md)).
+(`Qh_unit`) of each node from it (see [Parse HII](parse_hii.md)). The units of its fields are: `tau_SSP` in yr,
+`Z_star` as a mass fraction, `Qh_unit` in photons ${\rm s^{-1}}\,M_\odot^{-1}$ (ionizing photons below the Lyman limit,
+`CONST.LymanA` = 911.6 Å, of the written `.sed` file).
 
 Example:
 ```json

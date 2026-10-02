@@ -38,6 +38,7 @@ LymanA=911.6
 SED_cut=1.0e6
 FUV_Lo_A=911.76 # this two are Habing band (6-13.6 eV) on Angstroms
 FUV_Hi_A=2066.0 # //
+Stellar_Max_A = 1.0e5  #Split between the stellar and the CMB part of the incident field [Angstrom].
 
 ## ABUNDANCES
 #  Standard Atomic Weight (IUPAC, https://iupac.qmul.ac.uk/AtWt/)

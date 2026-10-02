@@ -11,7 +11,7 @@ rendered by [`galapy-gen-hii`](gen_hii.md). The two modules split the work as fo
 
 By default each successful run is **parsed in the same worker** that ran it, producing one HDF5 fragment
 `<job_id>.h5` per model (see [Parse HII](parse_hii.md)). The fragments are then merged into the grid corpus by
-`galapy-h5`.
+`galapy-merge-h5`.
 
 The HII production chain is therefore:
 
@@ -22,7 +22,7 @@ The HII production chain is therefore:
 | 3 | [`galapy-gen-hii`](gen_hii.md) | `data/hii/hii_<job_id>.in`, `data/hii/SED/`, `data/hii/jobs_hii.txt` |
 | 4 | [`galapy-gen-linelist --hii`](line_list.md) | `data/lines/hii_lines.dat` |
 | 5 | `galapy-run-cloudy-hii` | `data/hii/work/<job_id>/`, `data/hii/parsed/<job_id>.h5` |
-| 6 | `galapy-h5 --hii` | `data/products/hii_grid.h5` |
+| 6 | `galapy-merge-h5 --hii` | `data/products/hii_grid.h5` |
 
 The defaults of every step are chained, so the whole grid can be produced from the project root without passing
 any path.
@@ -89,7 +89,7 @@ usage: galapy-run-cloudy-hii [-h] [-r RUNS] [-w WORK] [-m MANIFEST]
 | `-d`, `--dry-run` | None | Print the plan of the launch and exit, without running anything. |
 | `--report` | `REPORT` | Path of the JSON report of the launch. <br> Default: `<work>/run_manifest.json`, or `<frags>/parse_manifest.json` with `--parse-only`. |
 | `--no-version-check` | None | Skip the check of the CLOUDY version banner. **For development only**: a grid produced this way cannot be combined with the production grids. |
-| `--frags` | `FRAGS` | Output directory of the fragments `<job_id>.h5`. It is the `--frags` of `galapy-h5`. <br> Default: `<runs>/parsed`. |
+| `--frags` | `FRAGS` | Output directory of the fragments `<job_id>.h5`. It is the `--frags` of `galapy-merge-h5`. <br> Default: `<runs>/parsed`. |
 | `--spec` | `SPEC` | Job specification produced by `galapy-gen-lhs-hii`, forwarded to the parser. <br> Default: `data/grids/hii/hii_grid_spec.h5`. |
 | `--ssp-meta` | `SSP_META` | `ssp_metadata.json` written by `galapy-sed-cloudy-extract`. The parser reads $Q_H$ of the SSP node from it. <br> Default: `data/cloudy_seds/ssp_metadata.json`. |
 | `--no-parse` | None | Run CLOUDY only. Mutually exclusive with `--parse-only`. |

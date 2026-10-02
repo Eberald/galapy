@@ -78,7 +78,7 @@ def sed_from_csp(csp, age, sfh) -> tuple:
     Parameters:
         csp (CSP): The composite stellar population model object. It is expected to have the
             methods `set_parameters` and `core.emission`, and attributes `l` and `t`.
-        age (float): The age (in appropriate time units) to set for the CSP model.
+        age (float): The age [yr] to set for the CSP model.
         sfh (array-like): The star formation history (SFH) to set for the CSP model. It should be
             compatible with the model's requirements.
 
@@ -100,7 +100,8 @@ def write_cloudy_sed(wavelength_A,
                      outpath,
                      extrapolate=False,
                      lambda_min_A=None,
-                     lambda_max_A=None) -> str:
+                     lambda_max_A=None,
+                     normalization='per 1 Msun SSP') -> str:
     """
     Converts a SED to a CLOUDY table SED format.
 
@@ -110,7 +111,9 @@ def write_cloudy_sed(wavelength_A,
 
     Parameters:
         wavelength_A (array-like): Array of wavelengths in Angstroms. Must contain at least two data points.
-        L_lambda (array-like): Luminosity array corresponding to the wavelengths provided.
+        L_lambda (array-like): L_lambda [Lsun A^-1] corresponding to the wavelengths provided: per Msun
+            of SSP formed for a node of the SSP library, of the whole population for a CSP. It is
+            written as nu*F_nu = lambda * L_lambda [erg s^-1].
         outpath (str): File path where the CLOUDY table SED will be saved.
         extrapolate (bool, optional): If True, CLOUDY extrapolates the SED to the low-energy limit of the code.
             Defaults to False.
@@ -118,6 +121,8 @@ def write_cloudy_sed(wavelength_A,
             this value will be ignored. Defaults to None.
         lambda_max_A (float, optional): Maximum wavlenght cutoff value in Angstroms. If provided, wavelengths above
             this value will be ignored. Defaults to None.
+        normalization (str, optional): The normalization of L_lambda, written in the header of the file.
+            Defaults to 'per 1 Msun SSP'.
 
     Raises:
         ValueError: Raised if the input wavelength array contains fewer than two data points or if the
@@ -154,7 +159,7 @@ def write_cloudy_sed(wavelength_A,
     prefix = "nuFnu units Angstroms" + (" extrapolate" if extrapolate else "")
 
     with open(outpath, 'w') as f:
-        f.write('# CLOUDY table SED | col1 = lambda[Angstrom], col2 = nu*Fnu linear (erg/s per 1 Msun SSP)\n')
+        f.write(f'# CLOUDY table SED | col1 = lambda[Angstrom], col2 = nu*Fnu linear (erg/s {normalization})\n')
         for i, (w, n) in enumerate(zip(wavelength_A, nuFnu)):
             f.write(f'{w:.6e} {n:.6e} {prefix if i == 0 else ""}\n')
 
@@ -209,13 +214,15 @@ def to_cloudy_sed(outpath,
 
     if cube is not None and it is not None and iz is not None:
         wave, spectrum = sed_from_ssp_cube_node(cube, it, iz)
+        normalization = 'per 1 Msun SSP'
     elif csp is not None and age is not None and sfh is not None:
         wave, spectrum = sed_from_csp(csp, age, sfh)
+        normalization = 'of the whole CSP'
     else:
         raise ValueError('you must provide either (cube,it,iz) or (csp,age,sfh)')
 
     return write_cloudy_sed(wave, spectrum, outpath, extrapolate=extrapolate, lambda_min_A=lambda_min_A,
-                            lambda_max_A=lambda_max_A)
+                            lambda_max_A=lambda_max_A, normalization=normalization)
 
 
 # =============== QH ===============
@@ -226,17 +233,19 @@ def cloudy_sed_QH(sed_path, lyman_A=CONST.LymanA) -> float:
 
     This function reads a spectral energy distribution (SED) from a file
     and calculates the hydrogen-ionizing photon rate using the continuum
-    flux below the Lyman-alpha wavelength limit. The photon rate is calculated
-    by integrating the flux over these wavelengths using the trapezoidal rule.
+    flux below the Lyman limit (the H-ionization threshold, NOT Lyman-alpha).
+    The photon rate is int nu*L_nu dlambda / (h c), integrated with the trapezoidal rule:
+    the 1/(h nu) of the photon count cancels the lambda of F_lambda = nu*F_nu / lambda.
 
     Parameters:
         sed_path (str): Path to the SED file. The file must contain two columns:
-            wavelength in Angstroms and flux in units of nu*F(nu).
-        lyman_A (float, optional): The Lyman-alpha wavelength limit in Angstroms.
+            wavelength in Angstroms and nu*L_nu in erg s^-1.
+        lyman_A (float, optional): The Lyman limit in Angstroms.
             Defaults to the constant CONST.LymanA
 
     Returns:
-        float: The hydrogen-ionizing photon rate in photons per second.
+        float: The hydrogen-ionizing photon rate in photons s^-1, with the normalization of the
+        file: photons s^-1 Msun^-1 for a node of the SSP library.
     """
     wavelength_A, nuFnu = np.loadtxt(sed_path, comments='#', usecols=(0, 1), unpack=True)
     euv = wavelength_A < lyman_A
@@ -265,7 +274,7 @@ def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LymanA) -> float:
         lyman_A (float, optional): Lyman limit wavelength in Angstroms. Defaults to CONST.LymanA.
 
     Returns:
-        float: Hydrogen-ionizing photon rate in photons per second per solar mass.
+        float: Hydrogen-ionizing photon rate in photons s^-1 Msun^-1.
     """
     l, _t, _Z, L = cube
     wavelength_A = np.asarray(l, dtype=float)
@@ -296,8 +305,8 @@ def extract_ssp_seds(outdir, target_taus = taus,
         outdir (str): Path to the output directory where the SED files and metadata will be saved.
         target_taus (list[float], optional): List of target stellar age values (in years) for which SEDs should be extracted.
             Default: taus.
-        target_Z (list[float], optional): List of target stellar metallicities for which SEDs should be extracted.
-            Default: Z.
+        target_Z (list[float], optional): List of target stellar metallicities (mass fractions) for which SEDs
+            should be extracted. Default: Z.
         ssp_lib (str, optional): Name of the SSP library to load the cube from.
             Default: "parsec22.NT".
         truncate_lyman (float, optional): Minimum wavelength (in Angstroms) to include in the SED.
@@ -312,11 +321,12 @@ def extract_ssp_seds(outdir, target_taus = taus,
             - int: Number of SED files generated.
             - list[dict]: Metadata for each extracted SED if `truncate_lyman` is None. The metadata includes:
                 - tau_SSP (float): Stellar age value in years.
-                - Z_star (float): Stellar metallicity.
+                - Z_star (float): Stellar metallicity (mass fraction).
                 - sed_file (str): File name of the corresponding SED.
                 - it (int): Index of the stellar age in the SSP cube.
                 - iz (int): Index of the metallicity in the SSP cube.
-                - Qh_unit (float): Hydrogen ionizing photon rate in units computed from the SED.
+                - Qh_unit (float): Hydrogen ionizing photon rate of the written SED, in photons s^-1 per
+                  Msun of SSP formed (cloudy_sed_QH).
     """
     cube = load_ssp_cube(ssp_lib)
     _l, t, Z, _L = cube

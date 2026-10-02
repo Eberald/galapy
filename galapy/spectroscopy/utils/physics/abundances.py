@@ -163,15 +163,15 @@ class Chemistry:
 
     def delta_O(self, element, log_zeta_O):
         """
-        Compute the oxygen abundance delta value for a given element based on the specified
-        logarithmic ionization parameter (log zeta_O) Nicholls+17
+        Compute the deviation Delta_O (dex) of a given element from the uniform scaling, at the
+        specified log10 zeta_O, zeta_O = (O/H)/(O/H)_GC (Nicholls+17; not an ionization parameter)
 
         Parameters:
         element : str
             The symbol of the element for which the delta value should be calculated. Supported
             values include 'H', 'He', and 'N', or other elements defined in the instance's parameters.
         log_zeta_O : float
-            The logarithmic oxygen ionization parameter (log zeta_O) in base 10 (fiducial Nicholls+17)
+            log10 zeta_O in dex, zeta_O = (O/H)/(O/H)_GC (fiducial Nicholls+17)
 
         Returns:
         float
@@ -409,7 +409,8 @@ def grain_scale_from_xi_d(xi_d):
     Here, Z(zeta_O) derived using the Chemistry.metallicity_from_zeta() method.
 
     Args:
-        xi_d (float): Dust-to-gas mass ratio, xi_d. Must be in the range (0, 1].
+        xi_d (float): Dust-to-metal mass ratio, xi_d (the dust-to-gas ratio is xi_d Z). Must be in the
+            range (0, 1].
 
     Raises:
         ValueError: If xi_d is not within the range (0, 1].

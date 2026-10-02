@@ -10,7 +10,7 @@ The merge is the last step of the production chain of a sector (see [Running CLO
 | Step | Command | Produces |
 | :--- | :--- | :--- |
 | 5 | `galapy-run-cloudy-hii` | `data/hii/parsed/<job_id>.h5`, one fragment per model |
-| 6 | `galapy-h5 --hii` | `data/products/hii_grid.h5`, the corpus |
+| 6 | `galapy-merge-h5 --hii` | `data/products/hii_grid.h5`, the corpus |
 
 The fragments are only read, never modified or deleted, so the corpus can be regenerated from them at any time,
 e.g. after new jobs have been run.
@@ -24,13 +24,13 @@ e.g. after new jobs have been run.
 
 ## Command Line Interface (CLI)
 
-The module exposes the CLI entrypoint `galapy-h5`.
+The module exposes the CLI entrypoint `galapy-merge-h5`.
 
 ### Usage
 
 ```text
-usage: galapy-h5 [-h] [--hii | --pdr] [--frags FRAGS] [--out OUT] [--cloudy-version CLOUDY_VERSION]
-                 [--ssp-lib SSP_LIB]
+usage: galapy-merge-h5 [-h] [--hii | --pdr] [--frags FRAGS] [--out OUT] [--cloudy-version CLOUDY_VERSION]
+                       [--ssp-lib SSP_LIB]
 ```
 
 ### Options
@@ -56,19 +56,19 @@ The HII defaults chain with those of the runner: `galapy-run-cloudy-hii` writes 
 Merge the HII grid produced with the default paths:
 
 ```bash
-galapy-h5 --hii
+galapy-merge-h5 --hii
 ```
 
 Merge a grid staged elsewhere:
 
 ```bash
-galapy-h5 --hii --frags /scratch/hii/parsed --out /scratch/products/hii_grid.h5
+galapy-merge-h5 --hii --frags /scratch/hii/parsed --out /scratch/products/hii_grid.h5
 ```
 
 Build a corpus from a test subset, without touching the production one:
 
 ```bash
-galapy-h5 --frags data/hii_test/parsed --out data/products/hii_grid_test.h5
+galapy-merge-h5 --frags data/hii_test/parsed --out data/products/hii_grid_test.h5
 ```
 
 A successful run reports the number of fragments and of grid points:
@@ -81,29 +81,38 @@ A successful run reports the number of fragments and of grid points:
 
 ## How the merge works
 
-The function `merge` proceeds in four steps.
+The function `merge` proceeds in five steps.
 
 **1. Fragment discovery.** It takes all the `*.h5` files of `--frags`, sorted by name. Fragments still being
 written by the parser (`<job_id>.h5.part`) do not match the pattern and are ignored. The output file is excluded
 too, so the corpus can be written inside the fragment directory itself. An empty directory is an error.
 
-**2. Shared datasets.** The three root datasets of the fragments depend only on the CLOUDY version, the deck
+**2. Units.** The units travel with the data (see [Parse HII](parse_hii.md#1-the-fragment-job_idh5)). The root
+attribute `units_schema` and the root groups `units` and `descriptions`, which give the unit and the meaning of
+every member of the `grid_point_*` groups, are copied **once**, from the first fragment. Every other fragment must
+carry the same schema and the same legend. A fragment without them was written by an older parser and aborts the
+merge: it must be parsed again (`galapy-run-cloudy-hii --parse-only`). A corpus can therefore never mix
+quantities in different units, or in the same units with a different meaning.
+
+**3. Shared datasets.** The four root datasets of the fragments depend only on the CLOUDY version, the deck
 template and the line list, so they are the same for every model of a grid:
 
 ```python
-ROOT_SHARED = ('continuum/wave_grid', 'line_names', 'lines_emergent/wavelengths_rest')
+ROOT_SHARED = ('continuum/wave_grid', 'line_names', 'lines_emergent/wavelengths_rest',
+               'lines_emergent/wavelengths_rest_vacuum')
 ```
 
-They are copied **once**, from the first fragment. Every other fragment is compared against that copy
-(`np.array_equal`), and any difference aborts the merge, naming the fragment and the dataset. This keeps a corpus
-from mixing grids with different wavelength meshes or line lists, whose spectra would not be comparable element
-by element.
+They are copied **once**, from the first fragment, **with their attributes** (`units`, `description`,
+`wavelength_medium`). Every other fragment is compared against that copy, data (`np.array_equal`) and
+attributes, and any difference aborts the merge, naming the fragment and the dataset. This keeps a corpus from
+mixing grids with different wavelength meshes or line lists, whose spectra would not be comparable element by
+element.
 
-**3. Grid points.** Every group `grid_point_<job_id>` of every fragment is copied as it is, with all its datasets
+**4. Grid points.** Every group `grid_point_<job_id>` of every fragment is copied as it is, with all its datasets
 and attributes. The group name comes from the `job_id`, so two fragments of the same grid can never collide. The
 same job found in two files (e.g. a renamed copy of a fragment) aborts the merge.
 
-**4. Metadata.** The root attributes `cloudy_version`, `ssp_lib` and `n_grid_points` are written, the last one
+**5. Metadata.** The root attributes `cloudy_version`, `ssp_lib` and `n_grid_points` are written, the last one
 counting the copied groups.
 
 The corpus is written to `<out>.part` and renamed to `<out>` only once complete. On any error the partial file
@@ -126,10 +135,13 @@ is deleted, and a previous corpus at `<out>` is left untouched.
 
 ```text
 hii_grid.h5
-├── attrs: cloudy_version, ssp_lib, n_grid_points
-├── continuum/wave_grid                    # shared, one copy
+├── attrs: cloudy_version, ssp_lib, n_grid_points, units_schema
+├── units/                                 # one copy: unit of every member of grid_point_*
+├── descriptions/                          # one copy: description of every member of grid_point_*
+├── continuum/wave_grid                    # shared, one copy, with its units
 ├── line_names                             # shared, one copy
-├── lines_emergent/wavelengths_rest        # shared, one copy
+├── lines_emergent/wavelengths_rest        # shared, one copy, with its units
+├── lines_emergent/wavelengths_rest_vacuum # shared, one copy, with its units
 ├── grid_point_00000_003_02/               # one group per model, as in its fragment
 ├── grid_point_00000_003_03/
 └── ...
@@ -142,6 +154,7 @@ The root attributes are:
 | `cloudy_version` | `str` | The `--cloudy-version` of the merge, e.g. `C25.00`. |
 | `ssp_lib` | `str` | The `--ssp-lib` of the merge, e.g. `parsec22.NT`. |
 | `n_grid_points` | `int` | Number of `grid_point_*` groups in the file. |
+| `units_schema` | `str` | Version of the units of the parser, e.g. `cloudia.hii.v1`, copied from the fragments. |
 
 The shared datasets and the content of each `grid_point_<job_id>` group — sampled parameters, continua, line
 luminosities, diagnostics and quality flags — are described in [Parse HII](parse_hii.md#1-the-fragment-job_idh5).
@@ -151,7 +164,10 @@ luminosities, diagnostics and quality flags — are described in [Parse HII](par
 | Error | Cause |
 | :--- | :--- |
 | `ValueError: [merge] <frags>: no fragments available` | No `*.h5` file in `--frags`: wrong directory, or nothing parsed yet. |
-| `ValueError: [merge] <fragment>: '<dataset>' different from first fragment` | Fragments of different grids (CLOUDY version or line list) in the same directory. |
+| `ValueError: [merge] <fragment>: '<dataset>' different from first fragment` | Fragments of different grids (CLOUDY version or line list) in the same directory, or a root dataset with different units. |
+| `ValueError: [merge] <fragment>: fragment without units` | The first fragment was written by a parser older than the units: parse the grid again. |
+| `ValueError: [merge] <fragment>: units_schema ... different from first fragment` | Fragments of different parser versions, or one without units, in the same directory. |
+| `ValueError: [merge] <fragment>: 'units' (units) different from first fragment` | The legend of the units differs: fragments of different parser versions. |
 | `RuntimeError: Unable to synchronously copy object (destination object already exists)` | The same `grid_point_<job_id>` found in two files. |
 
 These errors abort the merge with exit status `1`, and leave no output file. A missing sector together with a
@@ -179,7 +195,8 @@ print(f"{n} grid points merged")
 
 # read the corpus, keeping the converged models without warnings
 with h5py.File('data/products/hii_grid.h5', 'r') as f:
-    print(f.attrs['cloudy_version'], f.attrs['ssp_lib'], f.attrs['n_grid_points'])
+    print(f.attrs['cloudy_version'], f.attrs['ssp_lib'], f.attrs['n_grid_points'], f.attrs['units_schema'])
+    print(dict(f['units'].attrs))                    # units of the grid_point members
     wave = f['continuum/wave_grid'][:]
     names = f['line_names'][:].astype(str)
     good = [k for k in f if k.startswith('grid_point_')

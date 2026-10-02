@@ -90,7 +90,8 @@ N_{\rm stop} = \max\left(1 - f_{\rm esc},\; 10^{-3}\right) \times N_S
 $$
 
 with $c$ in ${\rm cm\,s^{-1}}$ and $\alpha_B = 2.59\times10^{-13}\ {\rm cm^3\,s^{-1}}$ the case-B recombination
-coefficient at $T_e = 10^4$ K (`CONST.alphaB_1e4K`). The floor on $1 - f_{\rm esc}$ guarantees
+coefficient at $T_e = 10^4$ K (`CONST.alphaB_1e4K`): $N_S$ and $N_{\rm stop}$ are hydrogen column densities, in
+${\rm cm^{-2}}$ ($U$ is dimensionless). The floor on $1 - f_{\rm esc}$ guarantees
 $N_{\rm stop} \le N_S$ and a finite $\log N_{\rm stop}$ even for $f_{\rm esc} \to 1$. The job stores
 $\log_{10} N_{\rm stop}$.
 
@@ -187,15 +188,22 @@ galapy-gen-hii -s ./data/grids/hii/hii_grid_spec.h5 -d ./ssp_seds -o ./data/hii 
 The grid spec is written in *columnar* form by `lhs_core.write_grid_spec`: each job field becomes a dataset of
 length $N_{\rm jobs}$, strings being stored with `h5py.string_dtype()`. Its datasets are:
 
-| Dataset | Type | Description |
-| :--- | :--- | :--- |
-| `job_id` | `str` | Unique job identifier, `{sample}_{it}_{iz}`. |
-| `logU`, `lognH_HII`, `log_zeta_O`, `z_CMB`, `xi_d`, `f_esc_target`, `F_star` | `float64` | The sampled axes, copied verbatim from the LHS row. |
-| `log_N_stop` | `float64` | $\log_{10} N_{\rm stop}$ derived from `logU` and `f_esc_target`. |
-| `grain_scale` | `float64` | Linear argument of `grains ISM`. |
-| `element_scale_block` | `str` | The `element scale factor ...` lines for this $\log\zeta_O$, newline-joined. |
-| `tau_SSP`, `Z_star` | `float64` | Age and metallicity of the SSP node. |
-| `sed_file` | `str` | Name of the `.sed` file of the SSP node. |
+| Dataset | Type | Units | Description |
+| :--- | :--- | :--- | :--- |
+| `job_id` | `str` | — | Unique job identifier, `{sample}_{it}_{iz}`. |
+| `logU` | `float64` | dex | $\log_{10} U$, copied verbatim from the LHS row. |
+| `lognH_HII` | `float64` | dex(cm⁻³) | $\log_{10} n_{\rm H}$, copied verbatim from the LHS row. |
+| `log_zeta_O` | `float64` | dex | $\log_{10}\zeta_O$, copied verbatim from the LHS row. |
+| `z_CMB`, `xi_d`, `f_esc_target`, `F_star` | `float64` | dimensionless | The other sampled axes, copied verbatim from the LHS row. |
+| `log_N_stop` | `float64` | dex(cm⁻²) | $\log_{10} N_{\rm stop}$ derived from `logU` and `f_esc_target`. |
+| `grain_scale` | `float64` | dimensionless | Linear argument of `grains ISM`. |
+| `element_scale_block` | `str` | — | The `element scale factor ...` lines for this $\log\zeta_O$, newline-joined. |
+| `tau_SSP` | `float64` | yr | Age of the SSP node. |
+| `Z_star` | `float64` | dimensionless | Metallicity (mass fraction) of the SSP node. |
+| `sed_file` | `str` | — | Name of the `.sed` file of the SSP node. |
+
+The spec carries no unit attributes: the units of the axes are written in every fragment by the parser (see
+[Parse HII](parse_hii.md#1-the-fragment-job_idh5)).
 
 Note that `xi_d`, `f_esc_target`, `tau_SSP` and `Z_star` are not consumed by the template: they are carried
 along for provenance, so that the spec alone is enough to reconstruct how each deck was built.

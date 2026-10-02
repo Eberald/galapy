@@ -80,7 +80,7 @@ galapy-download-database = "galapy.internal.data:_entrypoint_download_database"
 #========== CLOUDIA ==========# WIP tools, placeholder
 galapy-translate-filter   = "galapy.CloudIA.cli.translate_filter:main" #WIP
 galapy-agent              = "galapy.CloudIA.cli.agent:main" #WIP
-galapy-h5                 = "galapy.spectroscopy.utils.merge_grid:main"
+galapy-merge-h5           = "galapy.spectroscopy.utils.merge_grid:main"
 galapy-run-cloudy-pdr     = "galapy.spectroscopy.utils.pdr.run_pdr:main" #WIP
 galapy-run-cloudy-hii     = "galapy.spectroscopy.utils.hii.run_hii:main"
 galapy-gen-pdr            = "galapy.spectroscopy.utils.hii.gen_input_pdr:main" #WIP

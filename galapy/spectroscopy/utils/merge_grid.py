@@ -9,7 +9,15 @@ import sys
 import h5py
 import numpy as np
 
-ROOT_SHARED = ('continuum/wave_grid', 'line_names', 'lines_emergent/wavelengths_rest')
+ROOT_SHARED = ('continuum/wave_grid', 'line_names', 'lines_emergent/wavelengths_rest',
+               'lines_emergent/wavelengths_rest_vacuum')
+# units of the grid_point members, written once per fragment by the parser (root groups)
+UNITS_LEGEND = ('units', 'descriptions')
+
+
+def _same_attrs(a, b):
+    """True if two attribute sets have the same names and values."""
+    return set(a) == set(b) and all(np.array_equal(a[k], b[k]) for k in a)
 
 
 def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
@@ -19,6 +27,12 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
     This function reads all .h5 files from the specified directory and combines
     their datasets into a single output file while validating the consistency of
     shared root datasets among the fragments.
+
+    The units travel with the data: the root datasets are copied with their attributes
+    ('units', 'description', 'wavelength_medium'), and the units of the grid_point members
+    (root attribute 'units_schema', root groups 'units' and 'descriptions') are copied once.
+    Every fragment must carry the same units as the first one: a fragment without them was
+    written by an older parser and must be parsed again.
 
     Args:
         frag_dir (str): The directory containing the .h5 fragment files to merge.
@@ -32,8 +46,9 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
         int: The total number of grid points written to the merged corpus file.
 
     Raises:
-        ValueError: If no .h5 fragments are found in the specified directory or if
-            there is a mismatch in the shared root datasets among the fragments.
+        ValueError: If no .h5 fragments are found in the specified directory, if the first
+            fragment has no units, or if there is a mismatch in the units or in the shared
+            root datasets (data or attributes) among the fragments.
         BaseException: If an unexpected error occurs during the merging process,
             ensuring the intermediate output file is deleted in such cases.
     """
@@ -52,13 +67,30 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
             n_pts = 0
             for fp in frags:
                 with h5py.File(fp, 'r') as fr:
+                    schema = fr.attrs.get('units_schema')
                     if ref is None:
+                        if schema is None or any(name not in fr for name in UNITS_LEGEND):
+                            raise ValueError(
+                                f"[merge] {fp}: fragment without units (written by an older parser): "
+                                f"parse it again, e.g. galapy-run-cloudy-hii --parse-only")
+                        out.attrs['units_schema'] = schema
+                        for name in UNITS_LEGEND:
+                            fr.copy(fr[name], out, name=name)
                         for d in ROOT_SHARED:
                             out.create_dataset(d, data=fr[d][:])
+                            out[d].attrs.update(fr[d].attrs)
                         ref = {d: out[d][:] for d in ROOT_SHARED}
                     else:
+                        if schema != out.attrs['units_schema']:
+                            raise ValueError(
+                                f"[merge] {fp}: units_schema {schema!r} different from first fragment "
+                                f"({out.attrs['units_schema']!r})")
+                        for name in UNITS_LEGEND:
+                            if name not in fr or not _same_attrs(fr[name].attrs, out[name].attrs):
+                                raise ValueError(
+                                    f"[merge] {fp}: '{name}' (units) different from first fragment ")
                         for d in ROOT_SHARED:
-                            if not np.array_equal(fr[d][:], ref[d]):
+                            if not np.array_equal(fr[d][:], ref[d]) or not _same_attrs(fr[d].attrs, out[d].attrs):
                                 raise ValueError(
                                     f"[merge] {fp}: '{d}' different from first fragment ")
                     for gname in (k for k in fr.keys() if k.startswith('grid_point_')):

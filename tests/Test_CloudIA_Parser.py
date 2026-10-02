@@ -5,7 +5,10 @@ import numpy as np
 import pytest
 
 # HII parser
-from galapy.spectroscopy.utils.hii.parse_one_hii import (fesc, fuv_transmittance_hii, s_k_factor, support_safe_ratio)
+from galapy.spectroscopy.utils.hii.parse_one_hii import (fesc, fuv_transmittance_hii, s_k_factor, support_safe_ratio,
+                                                         energy_balance, cmb_incident_ratio, air_to_vacuum_A,
+                                                         parse_cloudy_cong, STELLAR_MAX_A, UNITS_SCHEMA,
+                                                         ROOT_UNITS, POINT_UNITS)
 from galapy.internal.constants import LymanA, FUV_Lo_A, FUV_Hi_A, clight
 
 C_CGS = clight['cm/s']
@@ -94,6 +97,100 @@ def test_tfuv_clipped_nfuv_nonnegative():
 def test_fuv_no_incident_returns_zeros():
     wave = np.array([200.0, 100.0]) # put of bands
     assert fuv_transmittance_hii(wave, np.ones(2), np.ones(2), np.ones(2)) == (0.0, 0.0)
+
+
+@pytest.mark.unit
+def test_fuv_ratios_are_energy_weighted():
+    # nuFnu integrated in dln(lambda) (energy): in dlambda (photon rates) it would be 0.25
+    wave = np.array([2000.0, 1500.0, 1000.0])
+    col = np.array([1.0, 0.0, 0.0])
+    T, N = fuv_transmittance_hii(wave, np.ones(3), col, col)
+    expected = np.log(2000.0 / 1500.0) / (2.0 * np.log(2.0))
+    assert T == pytest.approx(expected)
+    assert N == pytest.approx(expected)
+
+
+#================================================= test energy balance and CMB
+def _star_and_cmb():
+    wave = np.logspace(7, 2, 400)                 # decreasing, as the CLOUDY mesh
+    star = np.where(wave < 3.0e4, 1.0, 0.0)       # stellar incident field
+    cmb = np.where(wave > 2.0e5, 50.0, 0.0)       # isotropic CMB of the run
+    return wave, star, cmb
+
+
+@pytest.mark.unit
+def test_energy_balance_is_referred_to_the_stellar_incident_energy():
+    wave, star, cmb = _star_and_cmb()
+    col2 = star + cmb
+    col3 = 0.5 * col2
+    col4 = 0.5 * col2 + 0.01 * star               # 1% of the stellar energy counted twice
+    stellar = energy_balance(wave, col2, col3, col4, split_A=STELLAR_MAX_A)
+    assert stellar == pytest.approx(0.01, rel=1e-9)
+    assert energy_balance(wave, col2, col3, col4) < stellar    # diluted by the CMB energy
+    assert energy_balance(wave[::-1], col2[::-1], col3[::-1], col4[::-1],
+                          split_A=STELLAR_MAX_A) == pytest.approx(stellar)
+
+
+@pytest.mark.unit
+def test_cmb_incident_ratio_compares_the_two_sides_of_the_split():
+    wave, star, cmb = _star_and_cmb()
+    lnw = np.log(wave[::-1])
+    expected = np.trapezoid(cmb[::-1], lnw) / np.trapezoid(star[::-1], lnw)
+    assert cmb_incident_ratio(wave, star + cmb) == pytest.approx(expected, rel=1e-9)
+    assert cmb_incident_ratio(wave, star) == 0.0
+    assert np.isnan(cmb_incident_ratio(wave, cmb))
+
+
+#================================================= test air -> vacuum wavelengths
+def _cloudy_print_air(wl_vac):
+    """The print rule of CLOUDY (t_wavl::sprt_wl): vacuum -> air above 2000 A."""
+    wl_vac = np.asarray(wl_vac, dtype=float)
+    sigma2 = (1.0e4 / wl_vac) ** 2
+    n_air = 1.0 + 1.0e-8 * (8060.51 + 2480990.0 / (132.274 - sigma2) + 17455.7 / (39.32957 - sigma2))
+    return np.where(wl_vac > 2000.0, wl_vac / n_air, wl_vac)
+
+
+@pytest.mark.unit
+def test_air_to_vacuum_halpha():
+    assert air_to_vacuum_A([6562.80])[0] == pytest.approx(6564.613, abs=2e-3)
+
+
+@pytest.mark.unit
+def test_air_to_vacuum_is_identity_up_to_2000A():
+    wl = np.array([1215.67, 1906.68, 2000.0])
+    np.testing.assert_array_equal(air_to_vacuum_A(wl), wl)
+
+
+@pytest.mark.unit
+def test_air_to_vacuum_inverts_the_cloudy_print_rule():
+    wl_vac = np.array([2500.0, 4862.68, 6564.61, 1.0e4, 1.5768e6, 2.0e8])   # optical to radio
+    np.testing.assert_allclose(air_to_vacuum_A(_cloudy_print_air(wl_vac)), wl_vac, rtol=1e-7)
+
+
+#================================================= test grain continuum and units
+@pytest.mark.unit
+def test_cong_must_share_the_continuum_mesh(tmp_path):
+    wave = np.logspace(6, 2, 50)
+    path = tmp_path / 'model.con_grain'
+    np.savetxt(path, np.column_stack([wave, wave, wave, wave]))
+    assert parse_cloudy_cong(path, wave_ref=wave).shape == wave.shape
+    with pytest.raises(ValueError, match='continuum mesh'):
+        parse_cloudy_cong(path, wave_ref=wave * (1.0 + 1e-3))
+    with pytest.raises(ValueError, match='continuum mesh'):
+        parse_cloudy_cong(path, wave_ref=wave[1:])
+
+
+@pytest.mark.unit
+def test_units_tables_are_well_formed():
+    assert UNITS_SCHEMA.startswith('cloudia.hii.')
+    for name, (unit, description) in POINT_UNITS.items():
+        assert isinstance(unit, str) and description.strip(), name
+    for name, (unit, description, extra) in ROOT_UNITS.items():
+        assert (unit is None or isinstance(unit, str)) and description.strip(), name
+        assert isinstance(extra, dict)
+    assert ROOT_UNITS['continuum/wave_grid'][2]['wavelength_medium'] == 'vacuum'
+    assert POINT_UNITS['continuum/nebular_emission_per_Msun'][0] == 'erg s-1 Msun-1'
+    assert POINT_UNITS['s_k'][0] == 'cm2 Msun-1'
 
 
 #================================================= test wavelength order

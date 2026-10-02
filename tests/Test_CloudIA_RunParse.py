@@ -439,6 +439,79 @@ def test_merge_rejects_fragments_with_different_line_list(hii,
     assert not out.exists() and not out.with_name(out.name + '.part').exists()
 
 
+#================================================================ units
+@pytest.mark.unit
+def test_fragment_declares_the_units_of_every_member(hii, fake_cloudy):
+    runs, ids, argv = hii
+    assert run_hii_main(argv + ['--job-id', ids[0]]) == 0
+    with h5py.File(runs / 'parsed' / f'{ids[0]}.h5', 'r') as f:
+        assert f.attrs['units_schema'] == phii.UNITS_SCHEMA
+        g = f[f'grid_point_{ids[0]}']
+        members = phii.point_members(g)
+        assert set(f['units'].attrs) == members == set(f['descriptions'].attrs)
+        assert {k: f['units'].attrs[k] for k in members} == {k: phii.POINT_UNITS[k][0] for k in members}
+        for name, (unit, _description, extra) in phii.ROOT_UNITS.items():
+            attrs = dict(f[name].attrs)
+            assert attrs.get('units') == unit and attrs['description']
+            assert all(attrs[k] == v for k, v in extra.items())
+        assert 'dust_mass_units' not in g.attrs
+
+
+@pytest.mark.unit
+def test_fragment_carries_vacuum_wavelengths(hii, fake_cloudy):
+    runs, ids, argv = hii
+    assert run_hii_main(argv + ['--job-id', ids[0]]) == 0
+    with h5py.File(runs / 'parsed' / f'{ids[0]}.h5', 'r') as f:
+        native = f['lines_emergent/wavelengths_rest'][:].astype(float)
+        vacuum = f['lines_emergent/wavelengths_rest_vacuum'][:]
+    np.testing.assert_allclose(vacuum, phii.air_to_vacuum_A(native), rtol=1e-6)
+    assert vacuum[0] == pytest.approx(6564.61, abs=0.01)        # H-alpha, 6562.80 A in air
+
+
+@pytest.mark.unit
+def test_merge_carries_the_units(hii, fake_cloudy, tmp_path):
+    runs, ids, argv = hii
+    assert run_hii_main(argv) == 0
+    out = tmp_path / 'hii_grid.h5'
+    assert merge_grid.main(['--frags', str(runs / 'parsed'), '--out', str(out)]) == 0
+    with h5py.File(runs / 'parsed' / f'{ids[0]}.h5', 'r') as fr, h5py.File(out, 'r') as f:
+        assert f.attrs['units_schema'] == fr.attrs['units_schema']
+        for name in merge_grid.UNITS_LEGEND:
+            assert dict(f[name].attrs) == dict(fr[name].attrs)
+        for d in merge_grid.ROOT_SHARED:
+            assert dict(f[d].attrs) == dict(fr[d].attrs)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize('which, alter', [(0, 'drop'), (1, 'drop'), (1, 'change')])
+def test_merge_rejects_fragments_with_different_units(hii, fake_cloudy, tmp_path, which, alter):
+    runs, ids, argv = hii
+    assert run_hii_main(argv) == 0
+    with h5py.File(runs / 'parsed' / f'{ids[which]}.h5', 'a') as f:
+        if alter == 'drop':                     # a fragment of an older parser
+            del f.attrs['units_schema']
+        else:
+            f['units'].attrs['dust_mass_per_Msun'] = 'g g-1'
+    out = tmp_path / 'hii_grid.h5'
+    with pytest.raises(ValueError, match='units'):
+        merge_grid.merge(runs / 'parsed', out)
+    assert not out.exists() and not out.with_name(out.name + '.part').exists()
+
+
+@pytest.mark.unit
+def test_validate_grid_reads_the_units_of_the_corpus(hii, fake_cloudy, tmp_path):
+    from galapy.spectroscopy.utils import validate_grid
+    runs, ids, argv = hii
+    assert run_hii_main(argv) == 0
+    out = tmp_path / 'hii_grid.h5'
+    assert merge_grid.main(['--frags', str(runs / 'parsed'), '--out', str(out)]) == 0
+    report = tmp_path / 'report.json'
+    validate_grid.main(['--sector', 'hii', '--corpus', str(out), '--report', str(report),
+                        '--markdown', str(tmp_path / 'report.md')])
+    checks = {c['name']: c for c in json.loads(report.read_text())['checks']}
+    assert checks['units_legend']['status'] == 'PASS', checks['units_legend']['detail']
+
+
 #======================================================== parse done manually
 @pytest.mark.unit
 def test_parse_one_refuses_unsuccessful_workdirs(hii, fake_cloudy):

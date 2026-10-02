@@ -28,10 +28,14 @@ def stromgren_stop_logN(logU, f_esc):
     """
     Calculates column density corresponding to escape fraction in the Stromgren sphere model.
 
+    N_S = U c / alpha_B is the hydrogen column of the Stromgren layer [cm^-2] (c in cm s^-1,
+    alpha_B in cm^3 s^-1), and N_stop = max(1 - f_esc, 1e-3) N_S the column at which CLOUDY
+    stops ('stop column density').
+
     Parameters:
         logU : float
-            The dimensionless ionization parameter, expressed as the logarithm of the
-            rate of ionizing photons per unit volume.
+            log10 of the dimensionless ionization parameter U = Phi_H / (n_H c), the ratio
+            of the densities of ionizing photons and of hydrogen at the illuminated face.
 
         f_esc : float
             The escape fraction, representing the fraction of ionizing photons that
@@ -39,7 +43,7 @@ def stromgren_stop_logN(logU, f_esc):
 
     Returns:
         float
-            The base-10 logarithm of the stopping photon number (N_stop).
+            log10 of the stopping hydrogen column density N_stop [cm^-2].
     """
     N_S = (10.0 ** logU) * CONST.clight['cm/s'] / CONST.alphaB_1e4K
     N_stop = max(1.0 - f_esc, 1e-3) * N_S # N_stop <= N_S always

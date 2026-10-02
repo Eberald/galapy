@@ -10,7 +10,7 @@ right after each successful CLOUDY run, and `--parse-only` re-runs it on existin
 also be called standalone, to debug a single model or as a separate step of a pipeline (the Nextflow process
 `PARSE_ONE_HII`).
 
-The fragments of a grid are then merged into a single corpus file by `galapy-h5 --hii`.
+The fragments of a grid are then merged into a single corpus file by `galapy-merge-h5 --hii`.
 
 !!! warning
     Only **successful** runs are parsed: the working directory must hold `converged.flag` and no `RUN_FAILED`
@@ -47,6 +47,20 @@ Of the saves written by the deck, four are parsed:
 | `hii_<job_id>.dusa` | Dust mass density per zone | `integrate_grain_abundance` |
 
 `hii_<job_id>.grain_temp` is saved for diagnostics only, and is not read.
+
+!!! note "Units, verified on the CLOUDY C25.00 source"
+    The deck sets the field with `ionization parameter` and no radius (*intensity case*), so every output is
+    **per cm² of the illuminated face** (`zone_startend.cpp`: "intensity per unit inner cloud area").
+
+    | Output | Units | Source |
+    | :--- | :--- | :--- |
+    | `save continuum`, columns 2–9 | $\nu F_\nu$ [${\rm erg\,cm^{-2}\,s^{-1}}$] | `save_do.cpp`, `flxCell` |
+    | `save continuum ... units angstrom`, column 1 | Å, **vacuum** | `energy.cpp`, `angstromVac` |
+    | `save continuum grain` | as the continuum, same mesh and order | `save_do.cpp`, branch `CONG` |
+    | `save line list ... absolute` | ${\rm erg\,cm^{-2}\,s^{-1}}$ into $4\pi$, **linear** | `cddrive.cpp`, `cdLine_ip` |
+    | wavelength in the line labels | Å/µm/cm, **air** above 2000 Å, vacuum below | `cddefines.cpp`, `t_wavl::sprt_wl` |
+    | `save grain abundance` | ${\rm g\,cm^{-3}}$ per zone, depth in cm | `save_do.cpp`, branch `DUSA` |
+    | `CMB z` | adds $4\pi\nu B_\nu(2.725\,(1+z)\,{\rm K})$ to the incident column | `parse_CMB.cpp` |
 
 ---
 
@@ -118,8 +132,8 @@ python -m galapy.spectroscopy.utils.hii.parse_one_hii /scratch/hii/work/00042_00
 
 | Column | Symbol | Content |
 | :--- | :--- | :--- |
-| 1 [`nu`] | $\lambda$ | Wavelength in Å (the deck saves with `units angstrom`). |
-| 2 [`incident`] | ${\rm col}_2$ | Incident SED. |
+| 1 [`nu`] | $\lambda$ | Wavelength in Å, in vacuum (the deck saves with `units angstrom`). |
+| 2 [`incident`] | ${\rm col}_2$ | Incident field: the SED and the CMB of the run. |
 | 3 [`trans`] | ${\rm col}_3$ | Transmitted SED: the incident one attenuated by the cloud, with no diffuse emission. |
 | 4 [`DiffOut`] | ${\rm col}_4$ | Diffuse outward emission of the cloud: gas and grains, lines included. |
 | 9 [`outlin`] | ${\rm col}_9$ | Outward line emission only. |
@@ -135,12 +149,13 @@ node $k = (\tau_{\rm SSP}, Z_*)$, of ionizing photon rate $Q_{H,k}$ per $1\,M_\o
 receives exactly that rate is
 
 $$
-s_k = \frac{Q_{H,k}(1\,M_\odot)}{U\, n_{\rm H}\, c} \qquad [{\rm cm^2}]
+s_k = \frac{Q_{H,k}(1\,M_\odot)}{U\, n_{\rm H}\, c} \qquad [{\rm cm^2}\,M_\odot^{-1}]
 $$
 
-computed by `s_k_factor` from `logU`, `lognH_HII` and `Qh_unit`. Multiplying any per-${\rm cm^2}$ output by $s_k$
-turns it into a luminosity (or a mass) **per $1\,M_\odot$ of SSP formed**, the normalization of the GalaPy SSP
-libraries.
+computed by `s_k_factor` from `logU`, `lognH_HII` and `Qh_unit` [photons ${\rm s^{-1}}\,M_\odot^{-1}$]. Multiplying
+any per-${\rm cm^2}$ output by $s_k$ turns it into a luminosity (or a mass) **per $1\,M_\odot$ of SSP formed**, the
+normalization of the GalaPy SSP libraries. $s_k$ is stored in the fragment, so every per-$M_\odot$ quantity can be
+brought back to the per-${\rm cm^2}$ units of CLOUDY.
 
 ### 4. Derived quantities
 
@@ -179,9 +194,9 @@ column density, it measures how well the Strömgren stopping criterion reproduce
 (`CONST.FUV_Lo_A`, `CONST.FUV_Hi_A`), `fuv_transmittance_hii` computes
 
 $$
-T_{\rm FUV} = \frac{\int_{\rm FUV} {\rm col}_3\, d\lambda}{\int_{\rm FUV} {\rm col}_2\, d\lambda},
+T_{\rm FUV} = \frac{\int_{\rm FUV} {\rm col}_3\, d\ln\lambda}{\int_{\rm FUV} {\rm col}_2\, d\ln\lambda},
 \qquad
-N_{\rm FUV} = \frac{\int_{\rm FUV} {\rm col}_4\, d\lambda}{\int_{\rm FUV} {\rm col}_2\, d\lambda}
+N_{\rm FUV} = \frac{\int_{\rm FUV} {\rm col}_4\, d\ln\lambda}{\int_{\rm FUV} {\rm col}_2\, d\ln\lambda}
 $$
 
 $T_{\rm FUV}$, clipped to $[0, 1]$, is the fraction of the stellar FUV field that crosses the ionized layer.
@@ -189,19 +204,53 @@ $N_{\rm FUV} \ge 0$ is the FUV emission of the ionized gas itself (two-photon co
 the incident field. Both are set to $0$ when the band is empty or not illuminated. Together they describe the
 FUV field reaching the photodissociation region behind the HII region.
 
+Both are ratios of **energy** fluxes ($\int \nu F_\nu\, d\ln\lambda = \int F_\lambda\, d\lambda$), unlike
+$f_{\rm esc}^{\rm meas}$: they correct $G_0$, an energy flux in the Habing band (the PDR deck imposes
+$\int F_\nu\, d\nu$ over 6–13.6 eV), and the PDR must receive the energy that the ionized layer transmits.
+
 **Energy budget.** The relative mismatch between the incident energy and the energy that leaves the cloud,
 computed by `energy_balance`:
 
 $$
-\epsilon = \frac{\left| I_2 - (I_3 + I_4) \right|}{I_2},
+\epsilon = \frac{\left| I_2 - (I_3 + I_4) \right|}{I_2^{\star}},
 \qquad
-I_n = \int {\rm col}_n\, d\ln\lambda = \int F_{\lambda,n}\, d\lambda
+I_n = \int {\rm col}_n\, d\ln\lambda = \int F_{\lambda,n}\, d\lambda,
+\qquad
+I_2^{\star} = \int_{\lambda < 10\,\mu{\rm m}} {\rm col}_2\, d\ln\lambda
 $$
 
-integrated over the full wavelength grid, and stored as `energy_balance_rel`. The integral is taken in
-$d\ln\lambda$ because $\int \nu F_\nu\, d\lambda$, the weighting of $f_{\rm esc}^{\rm meas}$, counts
-**photons**. Photon number is not conserved: the dust re-emits every absorbed UV photon as many IR photons, so a
-photon budget would never close. $\epsilon$ is `NaN` if the incident energy is zero.
+with $I_2$, $I_3$, $I_4$ integrated over the full wavelength grid, and stored as `energy_balance_rel`. The
+integral is taken in $d\ln\lambda$ because $\int \nu F_\nu\, d\lambda$, the weighting of $f_{\rm esc}^{\rm meas}$,
+counts **photons**. Photon number is not conserved: the dust re-emits every absorbed UV photon as many IR
+photons, so a photon budget would never close. $\epsilon$ is `NaN` if the reference energy is zero.
+
+The reference $I_2^{\star}$ is the **stellar** incident energy. With `CMB z_CMB` the incident column also holds
+$4\pi\nu B_\nu(T_{\rm CMB})$, which in many models carries more energy than the SED: referred to the whole $I_2$,
+the imbalance would measure the CMB, which balances itself, and stay blind to a double-counted stellar
+component. The split at $10\,\mu$m (`STELLAR_MAX_A`) is exact enough for this: below it the CMB of every
+$z_{\rm CMB} \le 12$ carries $\sim 3\times10^{-14}$ of its energy, above it the SSP nodes carry at most $1.3\%$ of
+theirs. The weight of the CMB is stored as
+
+$$
+\texttt{cmb\_incident\_ratio} = \frac{\int_{\lambda \ge 10\,\mu{\rm m}} {\rm col}_2\, d\ln\lambda}{I_2^{\star}}
+$$
+
+In the models where it is large, the print precision of CLOUDY ($3$ decimals) sets the floor of $\epsilon$:
+the grid validation grades the energy budget only below a threshold of this ratio.
+
+!!! warning "The CMB in the per-$M_\odot$ outputs"
+    The CMB is a field per unit area that does not scale with the stellar mass, while $s_k$ scales everything per
+    $M_\odot$. The incident column is neither stored nor emulated: through it the CMB only reaches the
+    diagnostics (`energy_balance_rel`, `cmb_incident_ratio`, `sed_support_A`). It cancels in
+    `continuum/transmission` (the same transmission of the medium for SED and CMB, pure absorption), and it is
+    negligible in $f_{\rm esc}^{\rm meas}$, $T_{\rm FUV}$ and $N_{\rm FUV}$ (below 2066 Å).
+
+    The emulated quantities are touched only through the **own emission**: the grains re-emit the CMB they
+    absorb, and CLOUDY includes it in ${\rm col}_4$. The observed continuum is the contrast against the
+    background, $I_{\rm obs}(\lambda) = I_{\rm emitted}(\lambda) - (1 - T(\lambda))\, 4\pi\nu B_\nu(T_{\rm CMB})$.
+    On the pilot grid this correction is below $10^{-3}$ of the own emission in most models, a few per cent at
+    high $z$ and intermediate $U n_{\rm H}$, and 33–37% of the far-IR energy (above 50 µm) at $z \approx 9$–10
+    with $n_{\rm H} \approx 1$–3 cm⁻³. How to subtract it (da Cunha et al. 2013) is an open modelling decision.
 
 **Dust mass.** `integrate_grain_abundance` integrates the dust mass density $\rho_d$ (the `total` column of
 `save grain abundance`, in ${\rm g\,cm^{-3}}$) over the depth $r$ of the zones:
@@ -223,8 +272,15 @@ $\times 10^8$; `A` or no unit: $\times 1$). A row starting with `iteration` rest
 iteration is kept. The intensities, `absolute` and `emergent`, are multiplied by $s_k$. The lines follow the order
 of `hii_lines.dat`, i.e. of the master list (see [Line list](line_list.md)).
 
+CLOUDY prints the line wavelengths in **air** above 2000 Å (far-IR and radio lines included) and in vacuum
+below, while the continuum mesh is in vacuum. The printed values are stored as they are, since they identify the
+line (Decision 15), and `air_to_vacuum_A` converts them to vacuum with the same formula CLOUDY uses
+(`t_wavl::p_wlAirVac`, Peck & Reeder 1972): H$\alpha$ $6562.80 \to 6564.61$ Å. The vacuum values are the ones to
+place the lines on the continuum mesh, or to compare with an observed wavelength.
+
 **Grain emission.** The `total` column of `save continuum grain`, multiplied by $s_k$, is kept as a diagnostic
-of the dust emission.
+of the dust emission. Its wavelength column must coincide with that of the continuum (`parse_cloudy_cong(...,
+wave_ref=wave)`), so the stored array is on `continuum/wave_grid`.
 
 ---
 
@@ -234,14 +290,19 @@ of the dust emission.
 
 ```text
 00042_003_02.h5
+├── attrs: units_schema                    # 'cloudia.hii.v1'
+├── units/                                 # attrs: unit of every member of grid_point_*
+├── descriptions/                          # attrs: description of every member of grid_point_*
 ├── continuum/wave_grid                    # shared
 ├── line_names                             # shared
 ├── lines_emergent/wavelengths_rest        # shared
+├── lines_emergent/wavelengths_rest_vacuum # shared
 └── grid_point_00042_003_02/
     ├── f_esc_meas
     ├── T_fuv_hii
     ├── N_fuv_hii
     ├── dust_mass_per_Msun
+    ├── s_k
     ├── continuum/
     │   ├── nebular_emission_per_Msun
     │   ├── grain_diag_per_Msun
@@ -250,41 +311,62 @@ of the dust emission.
         └── fluxes
 ```
 
-The three **root** datasets depend only on the CLOUDY version, the deck template and `hii_lines.dat`, so they are
-identical in every fragment of a grid. `galapy-h5` verifies this, and keeps a single copy of them in the corpus file:
+**Units.** The units are written in the fragment itself, from the tables `ROOT_UNITS` and `POINT_UNITS` of the
+parser (unit strings in the astropy *generic* syntax: `Msun` is `solMass`, `''` dimensionless or flag, `dex(X)`
+the log10 of a quantity in X):
 
-| Dataset | Type | Description |
-| :--- | :--- | :--- |
-| `continuum/wave_grid` | `float32[n_λ]` | Wavelength grid of the continuum, in Å, in the native CLOUDY order. |
-| `line_names` | `bytes[n_lines]` | CLOUDY labels of the lines, e.g. `b'H 1'`. |
-| `lines_emergent/wavelengths_rest` | `float32[n_lines]` | Rest wavelengths of the lines, in Å, as printed by CLOUDY. |
+- each **root** dataset carries the attributes `units`, `description` and, for the wavelengths,
+  `wavelength_medium`;
+- the members of every `grid_point_<job_id>` group, attributes and datasets, are described **once per file** by
+  the root groups `units` and `descriptions`, keyed by attribute name or by dataset path relative to the group
+  (e.g. `continuum/transmission`). Writing them once avoids repeating the same strings in every model of the
+  corpus;
+- the root attribute `units_schema` versions the tables. `check_point_units` refuses to write a fragment with a
+  member missing from them, and `galapy-merge-h5` refuses to merge fragments with different units.
+
+The four **root** datasets depend only on the CLOUDY version, the deck template and `hii_lines.dat`, so they are
+identical in every fragment of a grid. `galapy-merge-h5` verifies this, and keeps a single copy of them in the corpus file:
+
+| Dataset | Type | Units | Description |
+| :--- | :--- | :--- | :--- |
+| `continuum/wave_grid` | `float32[n_λ]` | Å, vacuum | Wavelength grid of the continuum, in the native CLOUDY order. |
+| `line_names` | `bytes[n_lines]` | — | CLOUDY labels of the lines, e.g. `b'H 1'`. |
+| `lines_emergent/wavelengths_rest` | `float32[n_lines]` | Å, air above 2000 Å | Rest wavelengths of the lines, as printed by CLOUDY. |
+| `lines_emergent/wavelengths_rest_vacuum` | `float32[n_lines]` | Å, vacuum | The same, in vacuum (`air_to_vacuum_A`). |
 
 The group `grid_point_<job_id>` holds the model itself. It is named after the job, so the fragments of a grid
 can be merged without collisions. Its datasets are:
 
 | Dataset | Type | Units | Description |
 | :--- | :--- | :--- | :--- |
-| `continuum/nebular_emission_per_Msun` | `float32[n_λ]` | ${\rm erg\,s^{-1}}$ ($\nu L_\nu$) per $M_\odot$ | $({\rm col}_4 - {\rm col}_9)\, s_k$ |
-| `continuum/grain_diag_per_Msun` | `float32[n_λ]` | ${\rm erg\,s^{-1}}$ ($\nu L_\nu$) per $M_\odot$ | Grain emission $\times\, s_k$ (diagnostic) |
-| `continuum/transmission` | `float32[n_λ]` | — | $T(\lambda) = {\rm col}_3 / {\rm col}_2$ |
-| `lines_emergent/fluxes` | `float32[n_lines]` | ${\rm erg\,s^{-1}}$ per $M_\odot$ | Emergent line luminosities |
-| `f_esc_meas` | scalar | — | Measured ionizing escape fraction |
-| `T_fuv_hii` | scalar | — | FUV transmittance of the ionized layer |
-| `N_fuv_hii` | scalar | — | FUV emission of the ionized layer, in units of the incident field |
-| `dust_mass_per_Msun` | scalar | $M_\odot$ per $M_\odot$ | Dust mass of the cloud |
+| `continuum/nebular_emission_per_Msun` | `float32[n_λ]` | `erg s-1 Msun-1` ($\nu L_\nu$) | $({\rm col}_4 - {\rm col}_9)\, s_k$ |
+| `continuum/grain_diag_per_Msun` | `float32[n_λ]` | `erg s-1 Msun-1` ($\nu L_\nu$) | Grain emission $\times\, s_k$ (diagnostic) |
+| `continuum/transmission` | `float32[n_λ]` | `''` | $T(\lambda) = {\rm col}_3 / {\rm col}_2$ |
+| `lines_emergent/fluxes` | `float32[n_lines]` | `erg s-1 Msun-1` | Emergent line **luminosities** |
+| `f_esc_meas` | scalar | `''` | Measured ionizing escape fraction (photons) |
+| `T_fuv_hii` | scalar | `''` | FUV energy transmittance of the ionized layer |
+| `N_fuv_hii` | scalar | `''` | FUV emission of the ionized layer, in units of the incident energy |
+| `dust_mass_per_Msun` | scalar | `Msun Msun-1` | Dust mass of the cloud per $M_\odot$ of SSP formed |
+| `s_k` | scalar | `cm2 Msun-1` | Area of the illuminated face per $M_\odot$ of SSP formed |
+
+Every quantity "per Msun" is per $M_\odot$ of SSP **formed**.
 
 and its attributes:
 
-| Attribute | Type | Description |
-| :--- | :--- | :--- |
-| `logU`, `lognH_HII`, `log_zeta_O`, `z_CMB`, `xi_d`, `f_esc_target`, `F_star` | `float` | The sampled axes of the job, copied from the spec. |
-| `tau_SSP`, `Z_star` | `float` | The SSP node. |
-| `not_converged` | `bool` | `True` if CLOUDY did not converge (`converged.flag` = `0`). |
-| `cloudy_warnings` | `bool` | `True` if CLOUDY ended with warnings (exit code `2`, marker `WARNINGS`). |
-| `f_esc_meas` | `float` | Same value as the dataset, for quick filtering. |
-| `energy_balance_rel` | `float` | The energy-budget mismatch $\epsilon$. |
-| `sed_support_A` | `float[2]` | $(\lambda_{\min}, \lambda_{\max})$ where the incident SED is non-zero. |
-| `dust_mass_units` | `str` | `'Msun per Msun SSP formed'`. |
+| Attribute | Type | Units | Description |
+| :--- | :--- | :--- | :--- |
+| `logU` | `float` | `dex` | $\log_{10} U$, copied from the spec. |
+| `lognH_HII` | `float` | `dex(cm-3)` | $\log_{10} n_{\rm H}$, copied from the spec. |
+| `log_zeta_O` | `float` | `dex` | $\log_{10}\zeta_O$, copied from the spec. |
+| `z_CMB`, `xi_d`, `f_esc_target`, `F_star` | `float` | `''` | The other sampled axes, copied from the spec. |
+| `tau_SSP` | `float` | `yr` | Age of the SSP node. |
+| `Z_star` | `float` | `''` | Metallicity (mass fraction) of the SSP node. |
+| `not_converged` | `bool` | `''` | `True` if CLOUDY did not converge (`converged.flag` = `0`). |
+| `cloudy_warnings` | `bool` | `''` | `True` if CLOUDY ended with warnings (exit code `2`, marker `WARNINGS`). |
+| `f_esc_meas` | `float` | `''` | Same value as the dataset, for quick filtering. |
+| `energy_balance_rel` | `float` | `''` | The energy-budget mismatch $\epsilon$, over the stellar incident energy. |
+| `cmb_incident_ratio` | `float` | `''` | Incident energy of the CMB over the stellar one. |
+| `sed_support_A` | `float[2]` | `Angstrom` | $(\lambda_{\min}, \lambda_{\max})$ where the incident field (SED and CMB) is non-zero. |
 
 ### 2. Atomic writing
 
@@ -306,6 +388,8 @@ The messages of the parser checks are prefixed with `[parse_one/hii]`. No error 
 | `FileNotFoundError` | A save is missing. The runner would have marked such a run `RUN_FAILED`. |
 | `ValueError: ... not strictly monotonic` | Corrupted continuum. |
 | `ValueError: ... columns, expected columns: 4` | The grain continuum does not have the expected layout. |
+| `ValueError: ... wavelength column differs from the continuum mesh` | The grain continuum is not on the mesh of the continuum (e.g. a different `units` on its save). |
+| `ValueError: ... units table out of date` | A quantity is written without its units in `POINT_UNITS` (a development error). |
 | `ValueError: ... expected header '#Depth<TAB>...<TAB>total'` | The grain abundance format changed. |
 | `ValueError: ... depth not strictly increasing` | Several iterations were saved: the `last` keyword is missing from the deck. |
 | `ValueError: ... no lines extracted` | Empty line list. |
@@ -374,12 +458,37 @@ The messages of the parser checks are prefixed with `[parse_one/hii]`. No error 
       show_root_heading: true
       show_source: false
 
+::: galapy.spectroscopy.utils.hii.parse_one_hii.cmb_incident_ratio
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.hii.parse_one_hii.air_to_vacuum_A
+    options:
+      show_root_heading: true
+      show_source: false
+
 ::: galapy.spectroscopy.utils.hii.parse_one_hii.support_safe_ratio
     options:
       show_root_heading: true
       show_source: false
 
 ::: galapy.spectroscopy.utils.hii.parse_one_hii.atomic_h5
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.hii.parse_one_hii.write_units_legend
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.hii.parse_one_hii.write_root_dataset
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.hii.parse_one_hii.check_point_units
     options:
       show_root_heading: true
       show_source: false
@@ -398,4 +507,11 @@ with h5py.File('data/hii/parsed/00042_003_02.h5', 'r') as f:
     L_neb = g['continuum/nebular_emission_per_Msun'][:]
     L_lines = g['lines_emergent/fluxes'][:]
     print(f"f_esc: target {g.attrs['f_esc_target']:.3f}, measured {g.attrs['f_esc_meas']:.3f}")
+
+    # units: of the root datasets on the datasets, of the grid_point members in the root legend
+    print(f.attrs['units_schema'], f['continuum/wave_grid'].attrs['units'],
+          f['continuum/wave_grid'].attrs['wavelength_medium'])
+    units = dict(f['units'].attrs)
+    print(units['continuum/nebular_emission_per_Msun'], units['dust_mass_per_Msun'], units['tau_SSP'])
+    print(f['descriptions'].attrs['energy_balance_rel'])
 ```

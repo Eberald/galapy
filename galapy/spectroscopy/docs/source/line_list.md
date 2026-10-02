@@ -34,7 +34,7 @@ lines:
 | :--- | :--- |
 | `label` | The CLOUDY species tag, **at most 4 characters, spaces included and significant** (`'H  1'`, `'he 2'`, `'Blnd'`). Matching is case-insensitive and blind to internal spaces, but the string is emitted verbatim. |
 | `wl` | The wavelength, kept as a **string**: it must reproduce the official entry character by character, so `6562.80` and `6562.8` are *not* interchangeable. |
-| `unit` | `A` (Angstrom), `m` (micron), `c`/`M` for the longer bands, or the empty string when the official list carries no unit. |
+| `unit` | `A` (Angstrom), `m` or `M` (micron: CLOUDY reads the suffix case-insensitively), `c` (cm), or the empty string when the official list carries no unit (Angstrom). |
 | `name` | CloudIA alias of the line. Must be unique. It is not written into the `.dat`: the parsed fragments identify the lines by CLOUDY label and wavelength, in the order of the master list (see [Parse HII](parse_hii.md)). |
 | `group` | Free-form tag (`HI`, `UV`, `OIII`, `dual_origin`, ...), used only to organise the list and the diagnostics; it is **not** written into the `.dat`. |
 
