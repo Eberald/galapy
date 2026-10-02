@@ -9,77 +9,8 @@ import re
 import sys
 import numpy as np
 
-from galapy.internal.constants import M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight, Stellar_Max_A as STELLAR_MAX_A
-
-
-#============================== UNITS
-# Units of everything the parser writes, stored in the fragment itself
-UNITS_SCHEMA = 'cloudia.hii.v2'
-
-# root units datasets
-ROOT_UNITS = {
-    'continuum/wave_grid': (
-        'Angstrom', 'wavelength of the CLOUDY continuum mesh, decreasing (increasing energy)',
-        {'wavelength_medium': 'vacuum'}),
-    'line_names': (
-        None, 'CLOUDY labels of the lines (internal spaces collapsed), in the order of hii_lines.dat',
-        {}),
-    'lines_emergent/wavelengths_rest': (
-        'Angstrom', 'rest wavelengths of the lines as printed by CLOUDY in their labels',
-        {'wavelength_medium': 'air above 2000 A, vacuum below (CLOUDY print convention)'}),
-    'lines_emergent/wavelengths_rest_vacuum': (
-        'Angstrom', 'rest wavelengths of the lines in vacuum (air_to_vacuum_A)',
-        {'wavelength_medium': 'vacuum'}),
-    'incident/wave_grid': (
-        'Angstrom', 'wavelength of the incident stellar SED, the table SED file read by CLOUDY '
-                    '(galapy-sed-cloudy-extract), increasing',
-        {'wavelength_medium': 'vacuum'}),
-}
-
-# members of grid_point_<job_id>
-POINT_UNITS = {
-    # grid axes and SSP node, copied from the spec
-    'logU': ('dex', 'log10 of the ionization parameter U = Phi_H / (n_H c) at the illuminated face'),
-    'lognH_HII': ('dex(cm-3)', 'log10 of the hydrogen density n_H (CLOUDY hden)'),
-    'z_CMB': ('', 'redshift of the CMB of the run, T_CMB = 2.725 (1 + z_CMB) K'),
-    'log_zeta_O': ('dex', 'log10 zeta_O, zeta_O = (O/H) / (O/H)_GC (Nicholls+17)'),
-    'xi_d': ('', 'dust-to-metal mass ratio'),
-    'f_esc_target': ('', 'target escape fraction of the H-ionizing photons (sets the stopping column)'),
-    'F_star': ('', 'depletion strength F* of Jenkins (2009)'),
-    'tau_SSP': ('yr', 'age of the SSP node'),
-    'Z_star': ('', 'metallicity (mass fraction) of the SSP node'),
-    # flags and diagnostics
-    'not_converged': ('', 'flag: CLOUDY did not converge'),
-    'cloudy_warnings': ('', 'flag: CLOUDY ended with warnings'),
-    'energy_balance_rel': ('', '|E2 - (E3 + E4)| / E2(lambda < 10 um), E_n = int col_n dln(lambda): '
-                               'energy imbalance over the STELLAR incident energy'),
-    'cmb_incident_ratio': ('', 'E2(lambda >= 10 um) / E2(lambda < 10 um): incident energy of the CMB '
-                               'over the stellar one'),
-    'f_esc_meas': ('', 'escape fraction of the H-ionizing PHOTONS: int col3 dlambda / int col2 dlambda, '
-                       'lambda < 911.6 A'),
-    'sed_support_A': ('Angstrom', '(min, max) wavelength where the incident field (SED and CMB) is > 0: '
-                                  'transmission measured inside, 1 outside'),
-    # datasets
-    'continuum/nebular_emission_per_Msun': (
-        'erg s-1 Msun-1', 'nu L_nu of the outward own emission without lines, (col4 - col9) s_k, per Msun '
-                          'of SSP formed; includes the grains heated by the CMB'),
-    'continuum/grain_diag_per_Msun': (
-        'erg s-1 Msun-1', 'nu L_nu of the grain emission (save continuum grain, optically thin) x s_k, '
-                          'per Msun of SSP formed; diagnostic, never added to the SED'),
-    'continuum/transmission': ('', 'col3 / col2 of the incident field (SED and CMB), 1 where col2 = 0'),
-    'incident/sed_per_Msun': (
-        'erg s-1 Msun-1', 'nu L_nu of the incident stellar SED per Msun of SSP formed, as written in the '
-                          'table SED file (on incident/wave_grid): no CMB, not scaled by s_k'),
-    'lines_emergent/fluxes': (
-        'erg s-1 Msun-1', 'emergent line LUMINOSITIES per Msun of SSP formed: CLOUDY absolute intensities '
-                          '(erg cm-2 s-1, into 4 pi) x s_k'),
-    'T_fuv_hii': ('', 'Habing band (6-13.6 eV) ENERGY transmittance: int col3 dln(lambda) / int col2 dln(lambda)'),
-    'N_fuv_hii': ('', 'Habing band energy of the own emission (lines included) over the incident one: '
-                      'int col4 dln(lambda) / int col2 dln(lambda)'),
-    'dust_mass_per_Msun': ('Msun Msun-1', 'dust mass of the cloud per Msun of SSP formed: Sigma_d s_k / M_sun'),
-    's_k': ('cm2 Msun-1', 'area of the illuminated face per Msun of SSP formed: Q_H(1 Msun) / (U n_H c)'),
-}
-
+from galapy.internal.constants import (M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight, Stellar_Max_A,
+                                       Root_Units_HII, Points_Units_HII)
 
 def write_root_dataset(f, name, data, table=ROOT_UNITS):
     """
@@ -95,12 +26,10 @@ def write_root_dataset(f, name, data, table=ROOT_UNITS):
     return ds
 
 
-def write_units_legend(f, schema=UNITS_SCHEMA, table=POINT_UNITS):
+def write_units_legend(f, table=POINT_UNITS):
     """
-    Writes the units of the grid_point members once per file: the root attribute
-    'units_schema' and the groups 'units' (name -> unit) and 'descriptions' (name -> text).
+    Writes the units of the grid_point members once per file
     """
-    f.attrs['units_schema'] = schema
     units, descriptions = f.create_group('units'), f.create_group('descriptions')
     for name, (unit, description) in table.items():
         if unit is not None:
@@ -576,7 +505,7 @@ def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own, split_A=No
     With the 'CMB' command col2 also holds 4 pi nu B_nu(T_CMB), which in many models carries
     more energy than the SED. The CMB balances itself (what the cloud absorbs, it re-emits),
     so the imbalance is referred to the STELLAR incident energy, int col2 below `split_A`
-    (STELLAR_MAX_A in the parser): otherwise it would measure the CMB and stay blind to the
+    (Stellar_Max_A in the parser): otherwise it would measure the CMB and stay blind to the
     stellar budget, which is what a double-counted component would break.
 
     Parameters:
@@ -608,7 +537,7 @@ def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own, split_A=No
     return float(abs(I2 - (I3 + I4)) / abs(E_ref))
 
 
-def cmb_incident_ratio(wave_A, col2_incident, split_A=STELLAR_MAX_A):
+def cmb_incident_ratio(wave_A, col2_incident, split_A=Stellar_Max_A):
     """
     Incident energy above `split_A` over the incident energy below it: with the 'CMB' command,
     the CMB over the stellar incident field (the SED adds at most ~1% above 10 um). Large
@@ -838,7 +767,7 @@ def main(argv=None):
                          'xi_d', 'f_esc_target', 'F_star', 'tau_SSP', 'Z_star')})
         g.attrs['not_converged'] = bool(not_converged)  # DD-4
         g.attrs['cloudy_warnings'] = bool(cloudy_warnings)
-        g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4, split_A=STELLAR_MAX_A)
+        g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4, split_A=Stellar_Max_A)
         g.attrs['cmb_incident_ratio'] = cmb_incident_ratio(wave, col2)
         f_esc_meas = fesc(wave, col2, col3)
         g.attrs['f_esc_meas'] = float(f_esc_meas)

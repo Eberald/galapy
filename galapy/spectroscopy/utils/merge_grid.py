@@ -9,10 +9,7 @@ import sys
 import h5py
 import numpy as np
 
-ROOT_SHARED = ('continuum/wave_grid', 'line_names', 'lines_emergent/wavelengths_rest',
-               'lines_emergent/wavelengths_rest_vacuum', 'incident/wave_grid')
-# units of the grid_point members, written once per fragment by the parser (root groups)
-UNITS_LEGEND = ('units', 'descriptions')
+from galapy.internal.constants import Units_Legend, Root_Shared_HII
 
 
 def _same_attrs(a, b):
@@ -27,12 +24,6 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
     This function reads all .h5 files from the specified directory and combines
     their datasets into a single output file while validating the consistency of
     shared root datasets among the fragments.
-
-    The units travel with the data: the root datasets are copied with their attributes
-    ('units', 'description', 'wavelength_medium'), and the units of the grid_point members
-    (root attribute 'units_schema', root groups 'units' and 'descriptions') are copied once.
-    Every fragment must carry the same units as the first one: a fragment without them was
-    written by an older parser and must be parsed again.
 
     Args:
         frag_dir (str): The directory containing the .h5 fragment files to merge.
@@ -68,32 +59,26 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
             n_pts = 0
             for fp in frags:
                 with h5py.File(fp, 'r') as fr:
-                    schema = fr.attrs.get('units_schema')
-                    absent = [d for d in ROOT_SHARED if d not in fr]
+                    absent = [d for d in Root_Shared_HII if d not in fr]
                     if absent:
                         raise ValueError(
                             f"[merge] {fp}: fragment without {absent} ")
                     if ref is None:
-                        if schema is None or any(name not in fr for name in UNITS_LEGEND):
+                        if any(name not in fr for name in Units_Legend):
                             raise ValueError(
                                 f"[merge] {fp}: fragment without units ")
-                        out.attrs['units_schema'] = schema
-                        for name in UNITS_LEGEND:
+                        for name in Units_Legend:
                             fr.copy(fr[name], out, name=name)
-                        for d in ROOT_SHARED:
+                        for d in Root_Shared_HII:
                             out.create_dataset(d, data=fr[d][:])
                             out[d].attrs.update(fr[d].attrs)
-                        ref = {d: out[d][:] for d in ROOT_SHARED}
+                        ref = {d: out[d][:] for d in Root_Shared_HII}
                     else:
-                        if schema != out.attrs['units_schema']:
-                            raise ValueError(
-                                f"[merge] {fp}: units_schema {schema!r} different from first fragment "
-                                f"({out.attrs['units_schema']!r})")
-                        for name in UNITS_LEGEND:
+                        for name in Units_Legend:
                             if name not in fr or not _same_attrs(fr[name].attrs, out[name].attrs):
                                 raise ValueError(
                                     f"[merge] {fp}: '{name}' (units) different from first fragment ")
-                        for d in ROOT_SHARED:
+                        for d in Root_Shared_HII:
                             if not np.array_equal(fr[d][:], ref[d]) or not _same_attrs(fr[d].attrs, out[d].attrs):
                                 raise ValueError(
                                     f"[merge] {fp}: '{d}' different from first fragment ")
