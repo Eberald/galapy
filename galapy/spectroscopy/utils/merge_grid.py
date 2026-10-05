@@ -62,7 +62,7 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
                     absent = [d for d in Root_Shared_HII if d not in fr]
                     if absent:
                         raise ValueError(
-                            f"[merge] {fp}: fragment without {absent} ")
+                            f"[merge] {fp}: fragment without {absent} (written by an older parser)")
                     if ref is None:
                         if any(name not in fr for name in Units_Legend):
                             raise ValueError(

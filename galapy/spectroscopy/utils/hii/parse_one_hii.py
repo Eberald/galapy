@@ -12,7 +12,7 @@ import numpy as np
 from galapy.internal.constants import (M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight, Stellar_Max_A,
                                        Root_Units_HII, Points_Units_HII)
 
-def write_root_dataset(f, name, data, table=ROOT_UNITS):
+def write_root_dataset(f, name, data, table=Root_Units_HII):
     """
     Creates the root dataset `name` and writes its attributes 'units' (when it has a unit),
     'description' and the extra ones of `table` (e.g. 'wavelength_medium').
@@ -26,7 +26,7 @@ def write_root_dataset(f, name, data, table=ROOT_UNITS):
     return ds
 
 
-def write_units_legend(f, table=POINT_UNITS):
+def write_units_legend(f, table=Points_Units_HII):
     """
     Writes the units of the grid_point members once per file
     """
@@ -47,7 +47,7 @@ def point_members(group):
     return members
 
 
-def check_point_units(group, table=POINT_UNITS):
+def check_point_units(group, table=Points_Units_HII):
     """
     Every member of the grid_point group has its units in `table`, and every entry of `table` is
     written: a quantity added to the fragment without its units fails here, not downstream.

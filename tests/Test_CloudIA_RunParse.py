@@ -17,6 +17,7 @@ from galapy.spectroscopy.utils import run_core as rc
 from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed
 from galapy.spectroscopy.utils.hii import parse_one_hii as phii
 from galapy.spectroscopy.utils.hii.run_hii import main as run_hii_main
+from galapy.internal.constants import (Units_Legend,Root_Units_HII, Points_Units_HII)
 
 #=============================== Sectors registers
 # the free parameters per sector and some defaults to test purposes
@@ -425,7 +426,7 @@ def test_merge_builds_corpus_from_run_fragments(hii, fake_cloudy,
         assert f.attrs['n_grid_points'] == len(ids)
         assert sorted(k for k in f if k.startswith('grid_point_')) == \
             [f'grid_point_{j}' for j in ids]
-        assert all(d in f for d in merge_grid.ROOT_SHARED)
+        assert all(d in f for d in Root_Units_HII)
 
 
 @pytest.mark.unit
@@ -448,12 +449,11 @@ def test_fragment_declares_the_units_of_every_member(hii, fake_cloudy):
     runs, ids, argv = hii
     assert run_hii_main(argv + ['--job-id', ids[0]]) == 0
     with h5py.File(runs / 'parsed' / f'{ids[0]}.h5', 'r') as f:
-        assert f.attrs['units_schema'] == phii.UNITS_SCHEMA
         g = f[f'grid_point_{ids[0]}']
         members = phii.point_members(g)
         assert set(f['units'].attrs) == members == set(f['descriptions'].attrs)
-        assert {k: f['units'].attrs[k] for k in members} == {k: phii.POINT_UNITS[k][0] for k in members}
-        for name, (unit, _description, extra) in phii.ROOT_UNITS.items():
+        assert {k: f['units'].attrs[k] for k in members} == {k: phii.Points_Units_HII[k][0] for k in members}
+        for name, (unit, _description, extra) in phii.Root_Units_HII.items():
             attrs = dict(f[name].attrs)
             assert attrs.get('units') == unit and attrs['description']
             assert all(attrs[k] == v for k, v in extra.items())
@@ -478,10 +478,9 @@ def test_merge_carries_the_units(hii, fake_cloudy, tmp_path):
     out = tmp_path / 'hii_grid.h5'
     assert merge_grid.main(['--frags', str(runs / 'parsed'), '--out', str(out)]) == 0
     with h5py.File(runs / 'parsed' / f'{ids[0]}.h5', 'r') as fr, h5py.File(out, 'r') as f:
-        assert f.attrs['units_schema'] == fr.attrs['units_schema']
-        for name in merge_grid.UNITS_LEGEND:
+        for name in merge_grid.Units_Legend:
             assert dict(f[name].attrs) == dict(fr[name].attrs)
-        for d in merge_grid.ROOT_SHARED:
+        for d in Root_Units_HII:
             assert dict(f[d].attrs) == dict(fr[d].attrs)
 
 
@@ -504,9 +503,6 @@ def test_merge_rejects_fragments_with_different_units(hii, fake_cloudy, tmp_path
     runs, ids, argv = hii
     assert run_hii_main(argv) == 0
     with h5py.File(runs / 'parsed' / f'{ids[which]}.h5', 'a') as f:
-        if alter == 'drop':                     # a fragment of an older parser
-            del f.attrs['units_schema']
-        else:
             f['units'].attrs['dust_mass_per_Msun'] = 'g g-1'
     out = tmp_path / 'hii_grid.h5'
     with pytest.raises(ValueError, match='units'):

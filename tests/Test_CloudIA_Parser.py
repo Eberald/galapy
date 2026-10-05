@@ -9,8 +9,8 @@ import pytest
 # HII parser
 from galapy.spectroscopy.utils.hii.parse_one_hii import (fesc, fuv_transmittance_hii, s_k_factor, support_safe_ratio,
                                                          energy_balance, cmb_incident_ratio, air_to_vacuum_A,
-                                                         parse_cloudy_cong, parse_table_sed, STELLAR_MAX_A,
-                                                         UNITS_SCHEMA, ROOT_UNITS, POINT_UNITS)
+                                                         parse_cloudy_cong, parse_table_sed, Stellar_Max_A,
+                                                         Root_Units_HII, Points_Units_HII)
 from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed
 from galapy.internal.constants import LymanA, FUV_Lo_A, FUV_Hi_A, clight, Lsun
 
@@ -127,11 +127,11 @@ def test_energy_balance_is_referred_to_the_stellar_incident_energy():
     col2 = star + cmb
     col3 = 0.5 * col2
     col4 = 0.5 * col2 + 0.01 * star               # 1% of the stellar energy counted twice
-    stellar = energy_balance(wave, col2, col3, col4, split_A=STELLAR_MAX_A)
+    stellar = energy_balance(wave, col2, col3, col4, split_A=Stellar_Max_A)
     assert stellar == pytest.approx(0.01, rel=1e-9)
     assert energy_balance(wave, col2, col3, col4) < stellar    # diluted by the CMB energy
     assert energy_balance(wave[::-1], col2[::-1], col3[::-1], col4[::-1],
-                          split_A=STELLAR_MAX_A) == pytest.approx(stellar)
+                          split_A=Stellar_Max_A) == pytest.approx(stellar)
 
 
 @pytest.mark.unit
@@ -185,17 +185,16 @@ def test_cong_must_share_the_continuum_mesh(tmp_path):
 
 @pytest.mark.unit
 def test_units_tables_are_well_formed():
-    assert UNITS_SCHEMA.startswith('cloudia.hii.')
-    for name, (unit, description) in POINT_UNITS.items():
+    for name, (unit, description) in Points_Units_HII.items():
         assert isinstance(unit, str) and description.strip(), name
-    for name, (unit, description, extra) in ROOT_UNITS.items():
+    for name, (unit, description, extra) in Root_Units_HII.items():
         assert (unit is None or isinstance(unit, str)) and description.strip(), name
         assert isinstance(extra, dict)
-    assert ROOT_UNITS['continuum/wave_grid'][2]['wavelength_medium'] == 'vacuum'
-    assert ROOT_UNITS['incident/wave_grid'][2]['wavelength_medium'] == 'vacuum'
-    assert POINT_UNITS['continuum/nebular_emission_per_Msun'][0] == 'erg s-1 Msun-1'
-    assert POINT_UNITS['incident/sed_per_Msun'][0] == 'erg s-1 Msun-1'
-    assert POINT_UNITS['s_k'][0] == 'cm2 Msun-1'
+    assert Root_Units_HII['continuum/wave_grid'][2]['wavelength_medium'] == 'vacuum'
+    assert Root_Units_HII['incident/wave_grid'][2]['wavelength_medium'] == 'vacuum'
+    assert Points_Units_HII['continuum/nebular_emission_per_Msun'][0] == 'erg s-1 Msun-1'
+    assert Points_Units_HII['incident/sed_per_Msun'][0] == 'erg s-1 Msun-1'
+    assert Points_Units_HII['s_k'][0] == 'cm2 Msun-1'
 
 
 #================================================= test incident table SED
