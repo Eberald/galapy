@@ -322,6 +322,33 @@ def parse_table_sed(path):
         raise ValueError(f"[parse_one/hii] {p}: wavelengths of the table SED not strictly increasing")
     return wave, nuLnu
 
+def zone_edges(depth_mid):
+    """
+    Computes the edges of zones based on their midpoints.
+
+    This function takes an array of midpoint depths and calculates the edges of
+    the zones such that the midpoint of each zone corresponds to the input depths.
+    Zone boundaries [cm] from the depth of the middle of each zone (column 1 of 'save grain abundance',
+    radius.depth_mid_zone): edge_0 = 0 (illuminated face), edge_k+1 = 2 depth_mid_k - edge_k.
+    The last edge is the thickness of the cloud.
+
+    Parameters:
+    depth_mid (np.ndarray): A 1D array of midpoint depths.
+
+    Returns:
+    np.ndarray: A 1D array containing the calculated zone edges.
+
+    Raises:
+    ValueError: If the calculated edges are not monotonically increasing.
+    """
+    edges = np.zeros(len(depth_mid) + 1)
+    for k, mid in enumerate(depth_mid):
+        edges[k + 1] = 2.0 * mid - edges[k]
+    if np.any(np.diff(edges) <= 0):
+        raise ValueError("[parse_one/hii] zone edges not increasing: depth is not the middle of the zones")
+    return edges
+
+
 
 def integrate_grain_abundance(path):
     """
@@ -751,6 +778,8 @@ def main(argv=None):
     sed_support = (float(lam_support.min()), float(lam_support.max()))
     line_data = parse_cloudy_linelist(f"{pre}.lines")
     Sigma_d = integrate_grain_abundance(f"{pre}.dusa")
+    # .con_grain is the emissivity [erg cm-3 s-1] of the LAST zone: x thickness -> per cm2
+    thickness = zone_edges(np.loadtxt(f"{pre}.dusa", comments='#', usecols=0, ndmin=1))[-1]
 
     with atomic_h5(out) as f:
         # units: root attribute + legend of the grid_point members, attributes of the root datasets
@@ -776,7 +805,7 @@ def main(argv=None):
         g.create_dataset('T_fuv_hii', data=T_fuv)
         g.create_dataset('N_fuv_hii', data=N_fuv)
         g.create_dataset('continuum/nebular_emission_per_Msun', data=(nebular * s_k).astype('f4'))
-        g.create_dataset('continuum/grain_diag_per_Msun', data=(cong * s_k).astype('f4'))
+        g.create_dataset('continuum/grain_diag_per_Msun', data=(cong * thickness * s_k).astype('f4'))
         g.create_dataset('continuum/transmission', data=transmission.astype('f4'))
         g.create_dataset('incident/sed_per_Msun', data=sed_nuLnu.astype('f4'))
         g.attrs['sed_support_A'] = sed_support

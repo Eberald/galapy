@@ -146,8 +146,9 @@ Points_Units_HII = {
         'erg s-1 Msun-1', 'nu L_nu of the outward own emission without lines, (col4 - col9) s_k, per Msun '
                           'of SSP formed; includes the grains heated by the CMB'),
     'continuum/grain_diag_per_Msun': (
-        'erg s-1 Msun-1', 'nu L_nu of the grain emission (save continuum grain, optically thin) x s_k, '
-                          'per Msun of SSP formed; diagnostic, never added to the SED'),
+        'erg s-1 Msun-1', 'nu L_nu of the grain emission: emissivity of the LAST zone in the optically thin '
+                          'limit (save continuum grain, erg cm-3 s-1) x thickness of the cloud x s_k, per Msun '
+                          'of SSP formed; exact for uniform grain temperature; diagnostic, never added to the SED'),
     'continuum/transmission': ('', 'col3 / col2 of the incident field (SED and CMB), 1 where col2 = 0'),
     'incident/sed_per_Msun': (
         'erg s-1 Msun-1', 'nu L_nu of the incident stellar SED per Msun of SSP formed, as written in the '
