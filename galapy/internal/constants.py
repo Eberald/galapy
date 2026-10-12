@@ -154,18 +154,22 @@ Points_Units_HII = {
     # datasets
     'continuum/nebular_emission_per_Msun': (
         'erg s-1 Msun-1', 'nu L_nu of the outward own emission without lines, (col4 - col9) s_k, per Msun '
-                          'of SSP formed; includes the grains heated by the CMB'),
+                          'of SSP formed; includes the grains heated by the CMB (emission, CMB not subtracted); '
+                          'cells below the print precision interpolated; lambda < 911.76 A scaled to the energy '
+                          'budget'),
     'continuum/grain_diag_per_Msun': (
         'erg s-1 Msun-1', 'nu L_nu of the grain emission: emissivity of the LAST zone in the optically thin '
                           'limit (save continuum grain, erg cm-3 s-1) x thickness of the cloud x s_k, per Msun '
                           'of SSP formed; exact for uniform grain temperature; diagnostic, never added to the SED'),
-    'continuum/transmission': ('', 'col3 / col2 of the incident field (SED and CMB), 1 where col2 = 0'),
+    'continuum/transmission': ('', 'col3 / col2 of the incident field (SED and CMB), 1 where col2 = 0; absorption '
+                                   'only (with sphere scattering does not attenuate the incident field)'),
     'incident/sed_per_Msun': (
         'erg s-1 Msun-1', 'nu L_nu of the incident stellar SED per Msun of SSP formed, as written in the '
                           'table SED file (on incident/wave_grid): no CMB, not scaled by s_k'),
     'lines_emergent/fluxes': (
         'erg s-1 Msun-1', 'emergent line LUMINOSITIES per Msun of SSP formed: CLOUDY absolute intensities '
-                          '(erg cm-2 s-1, into 4 pi) x s_k'),
+                         '(erg cm-2 s-1, into 4 pi) x s_k; contrast against the CMB (CLOUDY default); resonance '
+                          'blends without continuum pumping'),
     'T_fuv_hii': ('', 'Habing band (6-13.6 eV) ENERGY transmittance: int col3 dln(lambda) / int col2 dln(lambda)'),
     'N_fuv_hii': ('', 'Habing band energy of the own emission (lines included) over the incident one: '
                       'int col4 dln(lambda) / int col2 dln(lambda)'),
