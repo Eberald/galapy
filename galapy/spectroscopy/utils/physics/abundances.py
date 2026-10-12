@@ -241,6 +241,13 @@ class Chemistry:
         met = sum(CONST.ATOMIC_WEIGHT[s] * n for s, n in ab.items() if s not in ('H', 'He'))
         return float(met / tot)
 
+    def metal_mass_per_H(self, log_zeta_O):
+        """
+        Mass of the metals (elements heavier than helium, before depletion) per H atom [g].
+        """
+        ab = self.abundance_pattern(log_zeta_O)
+        return float(sum(CONST.ATOMIC_WEIGHT[s] * n for s, n in ab.items() if s not in ('H', 'He')) * CONST.AMU_G)
+
     def zeta_from_metallicity(self, Z_gas):
         """
         This method calculates the value of zeta (Nicholls+17) based on the provided gas metallicity

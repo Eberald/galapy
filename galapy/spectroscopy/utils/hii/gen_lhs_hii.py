@@ -11,7 +11,7 @@ import galapy.internal.constants as CONST
 import galapy.internal.globs as GLOBS
 from galapy.internal.data import DataFile
 import  galapy.spectroscopy.utils.lhs_core as CORE
-from galapy.spectroscopy.utils.physics.abundances import (Chemistry, grain_scale_from_xi_d)
+from galapy.spectroscopy.utils.physics.abundances import Chemistry
 
 _CHEM = None # shared chemical module
 
@@ -94,8 +94,8 @@ def build_jobs(sample, names, ssp_meta):
                 'sed_file' : ssp['sed_file'],
                 'F_star' : F_star,
                 'element_scale_block' : "\n".join(_chem().element_scale_lines(log_zeta_O)),
-                'grain_scale' : (_chem().metallicity_from_zeta(log_zeta_O) / _chem().Z_GC)
-                                * grain_scale_from_xi_d(xi_d),
+                # dust mass per H = xi_d x metal mass per H (D/G = xi_d Z) in units of 'grains ISM'
+                'grain_scale': xi_d * _chem().metal_mass_per_H(log_zeta_O) / CONST.GRAIN_MASS_ISM_PER_H,
             })
     return jobs
 

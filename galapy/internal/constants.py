@@ -77,6 +77,11 @@ ZMAP_FILE  = 'zeta_Z.npz'
 # GC is metallicity of MW (0.014254, Nicholls+17), D/G_MW (1/162,Zubko+04)
 XI_D_MW = 0.43
 
+# atomic mass unit [g] (CODATA 2018) and grain mass per H atom of CLOUDY 'grains ISM' at scale 1 [g]
+# (C25: Dust to gas ratio of the .out x gas mass per H / grain_scale, constant within 1e-4)
+AMU_G = 1.66053906660e-24
+GRAIN_MASS_ISM_PER_H = 1.4934e-26
+
 # solar references for absolute metallicities
 SOLAR_REFERENCES = {
     'GASS10':   0.013370,   # Grevesse+10
