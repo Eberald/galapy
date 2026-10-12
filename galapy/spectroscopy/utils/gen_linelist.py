@@ -141,6 +141,27 @@ def emit_dat(entries):
         out.append(f"{lab} {e['wl']}{e.get('unit') or ''}")
     return '\n'.join(out) + '\n'
 
+def emit_pump_dat(pump, entries):
+    """
+    Generates the .dat of the resonance blends pumped by the continuum: each blend of the master
+    list, then its components and their 'Pump' entries (label '<ion> Pump').
+
+    Args:
+        pump (dict[str, list[dict]]): master-list name of each blend -> its components ('label', 'wl', 'unit').
+        entries (list[dict]): entries of the master list, where the blends are looked up by 'name'.
+
+    Returns:
+        str: the .dat for 'save line list', one entry per line.
+    """
+    by_name = {e['name']: e for e in entries}
+    out = []
+    for blend, comps in pump.items():
+        out.append(emit_dat([by_name[blend]]).rstrip('\n'))
+        for c in comps:
+            wl = f"{c['wl']}{c.get('unit') or ''}"
+            out += [f"{c['label']:<4s} {wl}", f"\"{c['label']} Pump\" {wl}"]
+    return '\n'.join(out) + '\n'
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -163,9 +184,11 @@ def main():
 
     spec = yaml.safe_load(pathlib.Path(yaml_path).read_text())
     entries = spec['lines']
+    pump = spec.get('pump') or {}  # resonance blends pumped by the continuum
 
     official = load_official(official_paths)
     errs = validate(entries, official) + check_duplicates(entries)
+    errs += [f"  pump: blend {b!r} not in lines" for b in pump if b not in {e['name'] for e in entries}]
     if errs:
         print(f"[gen_line] {len(errs)} Wrong format in {yaml_path}:", file=sys.stderr)
         print('\n'.join(errs), file=sys.stderr)
@@ -177,6 +200,10 @@ def main():
     out_path = out_dir / dat_name
     out_path.write_text(emit_dat(entries))
     print(f"[gen_line] {len(entries)} lines -> {out_path} all validated against CLOUDY official LineLists", file=sys.stderr)
+    if pump:
+        pump_path = out_dir / dat_name.replace('_lines', '_pump')
+        pump_path.write_text(emit_pump_dat(pump, entries))
+        print(f"[gen_line] {len(pump)} pumped blends -> {pump_path}", file=sys.stderr)
 
 
 if __name__ == '__main__':

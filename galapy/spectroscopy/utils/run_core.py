@@ -41,10 +41,11 @@ MARKERS = ('converged.flag', 'NOT_CONVERGED', 'WARNINGS', 'TIMEOUT', 'RUN_FAILED
 # is the sector associated to runs
 @dataclass(frozen=True)
 class Sector:
-    name: str           # 'hii' - 'pdr'
-    saves: tuple        # saving files from deck cloudy inputs
-    linelist: str       # file list from command 'save line list'
-    parse_module: str   # parser per model
+    name: str                   # 'hii' - 'pdr'
+    saves: tuple                # saving files from deck cloudy inputs
+    linelist: str               # file list from command 'save line list'
+    parse_module: str           # parser per model
+    extra_lists: tuple = ()     # further line-list files, copied when present
 
 # SECTORS HII AND PDR METADATA
 SECTORS = {
@@ -57,7 +58,8 @@ SECTORS = {
         name='pdr',
         saves=('.con', '.con_grain', '.lines', '.dusa', '.pdr', '.heat', '.cool'),
         linelist='pdr_lines.dat',
-        parse_module='galapy.spectroscopy.utils.pdr.parse_one_pdr'),
+        parse_module='galapy.spectroscopy.utils.pdr.parse_one_pdr',
+        extra_lists=('pdr_pump.dat',)),
 }
 
 _SED_RE = re.compile(r'^\s*table\s+SED\s+"([^"]+)"', re.IGNORECASE | re.MULTILINE) #reg expression for SED name in cloudy deck
@@ -243,6 +245,10 @@ def stage_job(runs_dir, work_root, sector, job_id, linelist_dir=None):
     if not ll_src.is_file():
         raise FileNotFoundError(f'line list file absent: {ll_src}.')
     shutil.copy2(ll_src, wd / sector.linelist)
+
+    for name in sector.extra_lists:
+        if (ll_dir / name).is_file():
+            shutil.copy2(ll_dir / name, wd / name)
 
     return wd, deck_dst
 

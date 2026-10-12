@@ -232,6 +232,44 @@ def parse_cloudy_linelist(path):
         'fluxes': np.array(fluxes)
     }
 
+def remove_pumping(line_data, pump_path):
+    """
+    Removes the effects of pumping from the provided line data by adjusting flux values
+    based on information from a specified pump file. This function identifies blended
+    lines ('blnd') in the pump data and calculates the contributions from regular and
+    'pump' components. The flux of each line in the `line_data` is then modified
+    proportionally to reduce the effect of pumping.
+
+    Parameters:
+        line_data (dict): A dictionary containing information about spectral lines with
+                          keys 'names', 'wavelengths', and 'fluxes'. Expected types:
+                          'names' (list[str]): The names of the lines.
+                          'wavelengths' (list[float]): The corresponding wavelengths of the lines.
+                          'fluxes' (list[float]): The corresponding flux values for the lines.
+        pump_path (str): A file path to the pump data file. Expected to contain information
+                         on blended lines ('blnd') and the corresponding flux values for
+                         pump components.
+
+    Raises:
+        KeyError: If the required keys ('names', 'wavelengths', 'fluxes') are not present
+                  in either the `line_data` or pump data dictionaries.
+
+        ValueError: If an invalid or unparsable data is encountered in the pump file, such
+                    as improperly formatted wavelength or flux values.
+    """
+    pump = parse_cloudy_linelist(pump_path)
+    sums, blend = {}, None
+    for name, wl, flux in zip(pump['names'], pump['wavelengths'], pump['fluxes']):
+        if name.lower() == 'blnd':
+            blend = round(float(wl), 1)
+            sums[blend] = [0.0, 0.0]   # [sum(line), sum(Pump)] of its components
+        else:
+            sums[blend][name.endswith('Pump')] += flux
+    for k, (name, wl) in enumerate(zip(line_data['names'], line_data['wavelengths'])):
+        line, pumped = sums.get(round(float(wl), 1), (0.0, 0.0)) if name.lower() == 'blnd' else (0.0, 0.0)
+        if line > 0:
+            line_data['fluxes'][k] *= 1.0 - pumped / line
+
 
 def air_to_vacuum_A(wl_A):
     """
@@ -819,6 +857,8 @@ def main(argv=None):
     lam_support = wave[col2 > 0]
     sed_support = (float(lam_support.min()), float(lam_support.max()))
     line_data = parse_cloudy_linelist(f"{pre}.lines")
+    if pathlib.Path(f"{pre}.pump").is_file():  # continuum pumping of the resonance blends
+        remove_pumping(line_data, f"{pre}.pump")
     Sigma_d = integrate_grain_abundance(f"{pre}.dusa")
     # .con_grain is the emissivity [erg cm-3 s-1] of the LAST zone: x thickness -> per cm2
     thickness = zone_edges(np.loadtxt(f"{pre}.dusa", comments='#', usecols=0, ndmin=1))[-1]
