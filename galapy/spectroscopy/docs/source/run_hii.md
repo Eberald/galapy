@@ -20,7 +20,7 @@ The HII production chain is therefore:
 | 1 | [`galapy-sed-cloudy-extract`](ssp_extraction.md) | `data/cloudy_seds/*.sed`, `ssp_metadata.json` |
 | 2 | [`galapy-gen-lhs-hii`](gen_hii.md) | `data/grids/hii/hii_grid_spec.h5` |
 | 3 | [`galapy-gen-hii`](gen_hii.md) | `data/hii/hii_<job_id>.in`, `data/hii/SED/`, `data/hii/jobs_hii.txt` |
-| 4 | [`galapy-gen-linelist --hii`](line_list.md) | `data/lines/hii_lines.dat` |
+| 4 | [`galapy-gen-linelist --hii`](line_list.md) | `data/lines/hii_lines.dat`, `data/lines/hii_pump.dat` |
 | 5 | `galapy-run-cloudy-hii` | `data/hii/work/<job_id>/`, `data/hii/parsed/<job_id>.h5` |
 | 6 | `galapy-merge-h5 --hii` | `data/products/hii_grid.h5` |
 
@@ -41,21 +41,24 @@ any path.
 | :--- | :--- | :--- |
 | `name` | `hii` | Prefix of decks (`hii_<job_id>.in`), outputs and manifest (`jobs_hii.txt`). |
 | `saves` | `.con`, `.con_grain`, `.lines`, `.dusa`, `.grain_temp` | Outputs that must exist for a run to count as successful. |
-| `linelist` | `hii_lines.dat` | Line list staged next to the deck for `save line list`. |
+| `linelist` | `hii_lines.dat` | Line list staged next to the deck for `save line list`. **Required**. |
 | `parse_module` | `galapy.spectroscopy.utils.hii.parse_one_hii` | Parser called after each successful run. |
+| `extra_lists` | `hii_pump.dat` | Further line lists staged next to the deck, **only when present** in the line-list directory. |
 
-The five extensions are the `save last ...` commands of the `hii.in.j2` template:
+The five extensions are the required `save last ...` commands of the `hii.in.j2` template. The template also
+saves the pump list, which is parsed when present but is not required for a run to count as successful:
 
 | Output | CLOUDY command | Used by the parser |
 | :--- | :--- | :--- |
 | `hii_<job_id>.con` | `save last continuum ... units angstrom no hash` | Continuum, transmission, $f_{\rm esc}$, FUV terms |
 | `hii_<job_id>.con_grain` | `save last continuum grain ... units angstrom no hash` | Grain emission (diagnostic) |
 | `hii_<job_id>.lines` | `save last line list ... "hii_lines.dat" emergent absolute column no hash` | Emergent line fluxes |
+| `hii_<job_id>.pump` | `save last line list ... "hii_pump.dat" absolute column no hash` | Pumped share of the resonance blends, removed from the line fluxes (optional, not in `saves`) |
 | `hii_<job_id>.dusa` | `save last grain abundance ... no hash` | Dust mass |
 | `hii_<job_id>.grain_temp` | `save last grain temperature ... no hash` | Not parsed, kept for diagnostics |
 
-The PDR sector registers its own `Sector` (with `.pdr`, `.heat`, `.cool` outputs and `pdr_lines.dat`) and
-runs on the same engine.
+The PDR sector registers its own `Sector` (with `.pdr`, `.heat`, `.cool` outputs, `pdr_lines.dat` and the extra
+list `pdr_pump.dat`) and runs on the same engine.
 
 ---
 
@@ -84,7 +87,7 @@ usage: galapy-run-cloudy-hii [-h] [-r RUNS] [-w WORK] [-m MANIFEST]
 | `--job-id` | `JOB_ID [JOB_ID ...]` | Select the jobs by explicit id, mainly for debugging a single model. Mutually exclusive with `--index`. |
 | `-j`, `--jobs` | `JOBS` | Number of parallel processes. With `1`, jobs run serially in the main process. <br> Default: `1`. |
 | `-t`, `--timeout` | `TIMEOUT` | Wall-clock limit of a single CLOUDY run, in seconds. <br> Default: `7200` (2 h). |
-| `-l`, `--linelists` | `LINELISTS` | Directory of `hii_lines.dat`. <br> Default: `$CLOUDIA_LINELISTS`, then `data/lines`. |
+| `-l`, `--linelists` | `LINELISTS` | Directory of `hii_lines.dat` and `hii_pump.dat`. <br> Default: `$CLOUDIA_LINELISTS`, then `data/lines`. |
 | `--resume` | None | Skip the jobs whose fragment is up to date, only parse the successful runs without a fragment, and rerun all the others. See [Resuming a launch](#resuming-a-launch). |
 | `-d`, `--dry-run` | None | Print the plan of the launch and exit, without running anything. |
 | `--report` | `REPORT` | Path of the JSON report of the launch. <br> Default: `<work>/run_manifest.json`, or `<frags>/parse_manifest.json` with `--parse-only`. |
@@ -196,7 +199,8 @@ data/hii/work/00042_003_02/
 ├── SED/
 │   └── ssp_tau1.000e+07_Z0.0010.sed   # from <runs>/SED/, the file named by `table SED "..."`
 ├── GC.abn                     # from the GalaPy database, the file named by `abundances "..."`
-└── hii_lines.dat              # from -l, $CLOUDIA_LINELISTS or data/lines
+├── hii_lines.dat              # from -l, $CLOUDIA_LINELISTS or data/lines
+└── hii_pump.dat               # same directory, copied only if present
 ```
 
 - The **deck** `<runs>/hii_<job_id>.in` must exist.
@@ -206,8 +210,12 @@ data/hii/work/00042_003_02/
   the `Nebular/Abundances` directory of the GalaPy database, and downloaded on first access if missing.
 - The **line list** `hii_lines.dat` is looked up in the `-l`/`--linelists` directory first, then in
   `$CLOUDIA_LINELISTS`, then in `data/lines` (see [Line list](line_list.md)).
+- The **extra lists** of the sector (`Sector.extra_lists`, i.e. `hii_pump.dat`) are copied from the same
+  directory, **if they exist there**. Their absence is not a staging error: since the HII deck always saves the
+  pump list, a missing `hii_pump.dat` makes CLOUDY itself fail, and the job is reported as `failed` by the run
+  check. `galapy-gen-linelist --hii` writes the two lists together.
 
-A missing file fails **the job**, not the launch: the job is reported as `failed` with the error
+A missing deck, SED, abundance file or `hii_lines.dat` fails **the job**, not the launch: the job is reported as `failed` with the error
 `FileNotFoundError in stage_job: ...` and CLOUDY is not started. The files are re-staged on every run, so a
 fixed SED or line list is picked up by the next rerun.
 

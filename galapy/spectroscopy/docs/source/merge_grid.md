@@ -88,10 +88,10 @@ written by the parser (`<job_id>.h5.part`) do not match the pattern and are igno
 too, so the corpus can be written inside the fragment directory itself. An empty directory is an error.
 
 **2. Units.** The units travel with the data (see [Parse HII](parse_hii.md#1-the-fragment-job_idh5)). The root
-attribute `units_schema` and the root groups `units` and `descriptions`, which give the unit and the meaning of
-every member of the `grid_point_*` groups, are copied **once**, from the first fragment. Every other fragment must
-carry the same schema and the same legend. A fragment without them was written by an older parser and aborts the
-merge: it must be parsed again (`galapy-run-cloudy-hii --parse-only`). A corpus can therefore never mix
+groups `units` and `descriptions` (`CONST.Units_Legend`), which give the unit and the meaning of every member of
+the `grid_point_*` groups, are copied **once**, from the first fragment. Every other fragment must carry the same
+legend, attribute by attribute. A first fragment without them was written by a parser older than the units and
+aborts the merge: it must be parsed again (`galapy-run-cloudy-hii --parse-only`). A corpus can therefore never mix
 quantities in different units, or in the same units with a different meaning.
 
 **3. Shared datasets.** The five root datasets of the fragments depend only on the CLOUDY version, the deck
@@ -99,8 +99,9 @@ template, the line list and the `galapy-sed-cloudy-extract` run (the wavelength 
 are the same for every model of a grid:
 
 ```python
-ROOT_SHARED = ('continuum/wave_grid', 'line_names', 'lines_emergent/wavelengths_rest',
-               'lines_emergent/wavelengths_rest_vacuum', 'incident/wave_grid')
+# galapy.internal.constants
+Root_Shared_HII = ('continuum/wave_grid', 'line_names', 'lines_emergent/wavelengths_rest',
+                   'lines_emergent/wavelengths_rest_vacuum', 'incident/wave_grid')
 ```
 
 A fragment without one of them was written by an older parser and aborts the merge: it must be parsed again.
@@ -138,7 +139,7 @@ is deleted, and a previous corpus at `<out>` is left untouched.
 
 ```text
 hii_grid.h5
-├── attrs: cloudy_version, ssp_lib, n_grid_points, units_schema
+├── attrs: cloudy_version, ssp_lib, n_grid_points
 ├── units/                                 # one copy: unit of every member of grid_point_*
 ├── descriptions/                          # one copy: description of every member of grid_point_*
 ├── continuum/wave_grid                    # shared, one copy, with its units
@@ -158,7 +159,6 @@ The root attributes are:
 | `cloudy_version` | `str` | The `--cloudy-version` of the merge, e.g. `C25.00`. |
 | `ssp_lib` | `str` | The `--ssp-lib` of the merge, e.g. `parsec22.NT`. |
 | `n_grid_points` | `int` | Number of `grid_point_*` groups in the file. |
-| `units_schema` | `str` | Version of the units of the parser, e.g. `cloudia.hii.v2`, copied from the fragments. |
 
 The shared datasets and the content of each `grid_point_<job_id>` group — sampled parameters, continua, line
 luminosities, diagnostics and quality flags — are described in [Parse HII](parse_hii.md#1-the-fragment-job_idh5).
@@ -169,10 +169,9 @@ luminosities, diagnostics and quality flags — are described in [Parse HII](par
 | :--- | :--- |
 | `ValueError: [merge] <frags>: no fragments available` | No `*.h5` file in `--frags`: wrong directory, or nothing parsed yet. |
 | `ValueError: [merge] <fragment>: '<dataset>' different from first fragment` | Fragments of different grids (CLOUDY version, line list or SED extraction) in the same directory, or a root dataset with different units. |
-| `ValueError: [merge] <fragment>: fragment without [...] (written by an older parser)` | A fragment lacks a shared root dataset (e.g. `incident/wave_grid`, added in `cloudia.hii.v2`): parse the grid again. |
+| `ValueError: [merge] <fragment>: fragment without [...] (written by an older parser)` | A fragment lacks a shared root dataset (e.g. `incident/wave_grid`, added together with the stored incident SED): parse the grid again. |
 | `ValueError: [merge] <fragment>: fragment without units` | The first fragment was written by a parser older than the units: parse the grid again. |
-| `ValueError: [merge] <fragment>: units_schema ... different from first fragment` | Fragments of different parser versions, or one without units, in the same directory. |
-| `ValueError: [merge] <fragment>: 'units' (units) different from first fragment` | The legend of the units differs: fragments of different parser versions. |
+| `ValueError: [merge] <fragment>: 'units' (units) different from first fragment` | The legend of the units (`units` or `descriptions`) differs, or is missing: fragments of different parser versions. |
 | `RuntimeError: Unable to synchronously copy object (destination object already exists)` | The same `grid_point_<job_id>` found in two files. |
 
 These errors abort the merge with exit status `1`, and leave no output file. A missing sector together with a
@@ -200,7 +199,7 @@ print(f"{n} grid points merged")
 
 # read the corpus, keeping the converged models without warnings
 with h5py.File('data/products/hii_grid.h5', 'r') as f:
-    print(f.attrs['cloudy_version'], f.attrs['ssp_lib'], f.attrs['n_grid_points'], f.attrs['units_schema'])
+    print(f.attrs['cloudy_version'], f.attrs['ssp_lib'], f.attrs['n_grid_points'])
     print(dict(f['units'].attrs))                    # units of the grid_point members
     wave = f['continuum/wave_grid'][:]
     names = f['line_names'][:].astype(str)

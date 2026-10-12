@@ -163,18 +163,29 @@ directives against a directly-tabulated chemistry.
 
 ### 5. Grains
 
-The full argument of the CLOUDY `grains ISM` command factorises as
+The argument of the CLOUDY `grains ISM` command scales the grain abundance of the ISM mixture, i.e. the dust
+mass per H atom. The grid sets it so that the dust is the fraction $\xi_d$ of the metals, $D/G = \xi_d\, Z$:
 
 $$
-{\rm grain\_fac} = \frac{Z(\zeta_O)}{Z_{\rm GC}} \times g(\xi_d),
+{\rm grain\_scale} = \frac{\xi_d\ m_Z(\zeta_O)}{m_{\rm ISM}},
 \qquad
-g(\xi_d) = \frac{\xi_d}{\xi_{d,{\rm MW}}}
+m_Z(\zeta_O) = m_u \sum_{X \ne {\rm H,\,He}} A_X\, \frac{n_X}{n_{\rm H}}
 $$
 
-with $\xi_{d,\rm MW} = 0.43$ (`CONST.XI_D_MW`), obtained from the Milky Way dust-to-gas ratio
-$(D/G)_{\rm MW} = 1/162$ (Zubko+04) and $Z^{\rm MW}_{\rm GC} = 0.014254$ (Nicholls+17).
-`grain_scale_from_xi_d` returns **only** the $\xi_d$-dependent factor $g(\xi_d)$; the metallicity term must be
-multiplied in by the caller, via `Chemistry.metallicity_from_zeta`.
+- $m_Z$ is the mass of the metals per H atom **before depletion** [g], returned by
+  `Chemistry.metal_mass_per_H(log_zeta_O)` from the abundance pattern of $\zeta_O$ and the atomic weights $A_X$;
+  $m_u = 1.66053906660\times10^{-24}$ g (`CONST.AMU_G`, CODATA 2018);
+- $m_{\rm ISM} = 1.4934\times10^{-26}$ g (`CONST.GRAIN_MASS_ISM_PER_H`) is the grain mass per H atom of
+  `grains ISM` at scale 1 in CLOUDY C25: the dust-to-gas ratio printed in the `.out` times the gas mass per H,
+  divided by the grain scale, constant within $10^{-4}$.
+
+Because both $m_Z$ and the gas mass per H are taken from the same abundance pattern, the dust-to-gas ratio of the
+run is $\xi_d$ times the metal mass fraction of the gas, with no reference to the Milky Way.
+
+`grain_scale_from_xi_d`, the older factor $g(\xi_d) = \xi_d / \xi_{d,{\rm MW}}$ with
+$\xi_{d,\rm MW} = 0.43$ (`CONST.XI_D_MW`, from $(D/G)_{\rm MW} = 1/162$, Zubko+04, and
+$Z^{\rm MW}_{\rm GC} = 0.014254$, Nicholls+17), is still available, but it is no longer used by
+`galapy-gen-lhs-hii`.
 
 ---
 
@@ -207,6 +218,7 @@ of the following references:
         - delta_O
         - abundance_pattern
         - metallicity_from_zeta
+        - metal_mass_per_H
         - zeta_from_metallicity
         - oh_from_zeta
         - zeta_from_oh

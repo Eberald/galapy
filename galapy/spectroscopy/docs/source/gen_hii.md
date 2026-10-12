@@ -59,7 +59,7 @@ nodes:
 | `lognH_HII` | $\log n_{\rm H}$ | Hydrogen density of the cloud, in ${\rm cm}^{-3}$ (`hden`). |
 | `log_zeta_O` | $\log\zeta_O$ | Metallicity axis, see [Abundances](abundances.md). Drives the whole chemistry block and the metallicity term of the grain scaling. |
 | `z_CMB` | $z$ | Redshift of the CMB thermal floor (`CMB`). |
-| `xi_d` | $\xi_d$ | Dust-to-metal ratio, gauged on $\xi_{d,\rm MW} = 0.43$. |
+| `xi_d` | $\xi_d$ | Dust-to-metal mass ratio: the dust mass is $\xi_d$ times the metal mass, see the grain scaling below. |
 | `f_esc_target` | $f_{\rm esc}$ | Target escape fraction of ionizing photons; converted into the stopping column density. |
 | `F_star` | $F_*$ | Jenkins (2009) depletion strength (`metals deplete jenkins 2009`). |
 
@@ -95,15 +95,20 @@ ${\rm cm^{-2}}$ ($U$ is dimensionless). The floor on $1 - f_{\rm esc}$ guarantee
 $N_{\rm stop} \le N_S$ and a finite $\log N_{\rm stop}$ even for $f_{\rm esc} \to 1$. The job stores
 $\log_{10} N_{\rm stop}$.
 
-**Grain scaling.** The argument of the CLOUDY `grains ISM` command factorises into a metallicity term and a
-dust-to-metal term (see [Abundances](abundances.md)):
+**Grain scaling.** The argument of the CLOUDY `grains ISM` command is the dust mass per H atom, in units of the
+one of `grains ISM` at scale 1 (see [Abundances](abundances.md#5-grains)). The dust mass is the fraction $\xi_d$
+of the metal mass, $D/G = \xi_d\, Z$:
 
 $$
-{\rm grain\_scale} = \frac{Z(\zeta_O)}{Z_{\rm GC}} \times g(\xi_d)
+{\rm grain\_scale} = \frac{\xi_d\ m_Z(\zeta_O)}{m_{\rm ISM}},
+\qquad
+m_Z(\zeta_O) = m_u \sum_{X \ne {\rm H,\,He}} A_X\, \frac{n_X}{n_{\rm H}}
 $$
 
-computed as `Chemistry.metallicity_from_zeta(log_zeta_O) / Chemistry.Z_GC * grain_scale_from_xi_d(xi_d)`. The
-`Chemistry` instance is built once per process and cached, to avoid re-reading the chemistry files for each of
+with $m_Z$ the metal mass per H atom **before depletion** [g], $m_u$ the atomic mass unit (`CONST.AMU_G`) and
+$m_{\rm ISM} = 1.4934\times10^{-26}$ g the grain mass per H atom of `grains ISM` at scale 1
+(`CONST.GRAIN_MASS_ISM_PER_H`), computed as `xi_d * Chemistry.metal_mass_per_H(log_zeta_O) /
+CONST.GRAIN_MASS_ISM_PER_H`. The `Chemistry` instance is built once per process and cached, to avoid re-reading the chemistry files for each of
 the hundreds of thousands of jobs.
 
 ---
@@ -249,14 +254,18 @@ The `hii.in.j2` template maps the job fields onto the CLOUDY commands as follows
 | `log_N_stop` | `stop column density` |
 
 The physical configuration fixed by the template — identical for every job of the grid — is a closed spherical
-geometry (`sphere` plus `double optical depths`), stopping either at the column density set by $f_{\rm esc}$ or
+geometry (`sphere`), stopping either at the column density set by $f_{\rm esc}$ or
 at $T = 4000$ K, with `iterate to convergence`. The fiducial chemistry is read from `abundances "GC.abn"`, and
 then rescaled by the `metals` and `element scale factor` commands. The template also sets `turbulence 5 km/s`
-and the `cosmic rays background`. PAHs are absent by construction in the HII sector, which also allows
+and the `cosmic rays background`, and switches off the continuum pumping of the H I Lyman lines
+(`database H-like Lyman pumping off`): the stellar SED already carries the photospheric Lyman absorption, and with
+`sphere` the transmitted continuum has no absorption troughs. PAHs are absent by construction in the HII sector, which also allows
 `no grain qheat` to save run time.
 
-Each deck saves the emergent continuum, the grain continuum, the line list (against `hii_lines.dat`), the grain
-abundance and the grain temperature, all prefixed with `hii_{job_id}`.
+Each deck saves the emergent continuum, the grain continuum, the line list (against `hii_lines.dat`), the
+intrinsic intensities of the pumped resonance blends (against `hii_pump.dat`, see
+[Line list](line_list.md#pumped-resonance-blends)), the grain abundance and the grain temperature, all prefixed
+with `hii_{job_id}`.
 
 ---
 

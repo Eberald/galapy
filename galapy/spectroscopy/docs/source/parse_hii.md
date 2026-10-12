@@ -3,7 +3,8 @@
 CloudIA implements the module `utils/hii/parse_one_hii.py` to turn the working directory of **one** CLOUDY run
 into **one** HDF5 fragment, `<job_id>.h5`. The parser reads the saves of the model and rescales them from the
 per-unit-area outputs of CLOUDY to quantities per solar mass of SSP formed. Along the way it computes the
-diagnostics of the run: measured escape fraction, FUV transmittance, energy budget and dust mass.
+diagnostics of the run: measured escape fraction, FUV transmittance, energy and reprocessing budgets and dust
+mass.
 
 The parser is normally not called by hand. [`galapy-run-cloudy-hii`](run_hii.md) runs it in the same worker,
 right after each successful CLOUDY run, and `--parse-only` re-runs it on existing working directories. It can
@@ -42,14 +43,15 @@ The table SED is the file the run actually read: its name comes from the `table 
 When the node of `--ssp-meta` carries `sed_file`, it must be the same name: $Q_H$ (hence $s_k$) and the stored
 incident SED then come from the same file.
 
-Of the saves written by the deck, four are parsed, plus the table SED:
+Of the saves written by the deck, four are parsed, plus the pump list when present and the table SED:
 
 | File | Content | Parsed by |
 | :--- | :--- | :--- |
 | `hii_<job_id>.con` | Continuum: $\lambda$ plus the components below, in $\nu F_\nu$ [${\rm erg\,cm^{-2}\,s^{-1}}$] | `parse_cloudy_con` |
-| `hii_<job_id>.con_grain` | Grain emission: $\lambda$, graphite, silicates, total | `parse_cloudy_cong` |
+| `hii_<job_id>.con_grain` | Grain emissivity of the last zone: $\lambda$, graphite, silicates, total | `parse_cloudy_cong` |
 | `hii_<job_id>.lines` | Emergent absolute line intensities [${\rm erg\,cm^{-2}\,s^{-1}}$] | `parse_cloudy_linelist` |
-| `hii_<job_id>.dusa` | Dust mass density per zone | `integrate_grain_abundance` |
+| `hii_<job_id>.pump` | Intrinsic intensities of the pumped resonance blends, of their components and of their `Pump` entries (optional) | `remove_pumping` |
+| `hii_<job_id>.dusa` | Dust mass density per zone, and the depth of the zones | `integrate_grain_abundance`, `zone_edges` |
 | `SED/<sed_file>` | Incident stellar SED: $\lambda$ [Å], $\nu L_\nu$ [${\rm erg\,s^{-1}}$] per $1\,M_\odot$ of SSP | `parse_table_sed` |
 
 `hii_<job_id>.grain_temp` is saved for diagnostics only, and is not read.
@@ -62,7 +64,7 @@ Of the saves written by the deck, four are parsed, plus the table SED:
     | :--- | :--- | :--- |
     | `save continuum`, columns 2–9 | $\nu F_\nu$ [${\rm erg\,cm^{-2}\,s^{-1}}$] | `save_do.cpp`, `flxCell` |
     | `save continuum ... units angstrom`, column 1 | Å, **vacuum** | `energy.cpp`, `angstromVac` |
-    | `save continuum grain` | as the continuum, same mesh and order | `save_do.cpp`, branch `CONG` |
+    | `save continuum grain` | emissivity of the **last zone** [${\rm erg\,cm^{-3}\,s^{-1}}$], same mesh and order as the continuum | `save_do.cpp`, branch `CONG` |
     | `save line list ... absolute` | ${\rm erg\,cm^{-2}\,s^{-1}}$ into $4\pi$, **linear** | `cddrive.cpp`, `cdLine_ip` |
     | wavelength in the line labels | Å/µm/cm, **air** above 2000 Å, vacuum below | `cddefines.cpp`, `t_wavl::sprt_wl` |
     | `save grain abundance` | ${\rm g\,cm^{-3}}$ per zone, depth in cm | `save_do.cpp`, branch `DUSA` |
@@ -172,7 +174,27 @@ L^{\rm neb}_\lambda = \left({\rm col}_4 - {\rm col}_9\right) s_k
 \qquad [{\rm erg\,s^{-1}}\ (\nu L_\nu)\ {\rm per}\ M_\odot]
 $$
 
-The lines are removed here because they are stored separately, as integrated fluxes.
+The lines are removed here because they are stored separately, as integrated fluxes. Two corrections follow.
+
+*Line-dominated cells.* CLOUDY prints the columns with 4 significant digits. In a cell where a line dominates,
+${\rm col}_4 - {\rm col}_9$ falls below that precision and is numerical noise (or negative). The cells with
+${\rm col}_9 > 0$ and ${\rm col}_4 - {\rm col}_9 \le 10^{-3}\,{\rm col}_4$ are therefore treated as holes and
+filled by linear interpolation in $\ln L^{\rm neb}$ vs $\ln\lambda$ from the other cells with
+$L^{\rm neb} > 0$.
+
+*Diffuse Lyman continuum.* With `sphere`, CLOUDY counts twice the inward half of the diffuse Lyman continuum, so
+the cloud emits more energy than it absorbs (see the reprocessing budget below). When
+`reprocessing_excess` $> 0$ and `lyc_emit_fraction` $> 0$, the continuum below the H threshold,
+$\lambda < 911.76$ Å (`CONST.LyLimit`), is rescaled by
+
+$$
+L^{\rm neb}_\lambda \to L^{\rm neb}_\lambda \,\max\!\left(0,\ 1 - \frac{\texttt{reprocessing\_excess}}{\texttt{lyc\_emit\_fraction}}\right),
+\qquad \lambda < 911.76\ {\rm Å}
+$$
+
+i.e. the energy of the diffuse Lyman continuum is reduced by the excess $E_4 - E_{\rm abs}$, and the emission at
+$\lambda \ge 911.76$ Å is left untouched. The diagnostics below are computed on the raw columns, before this
+rescaling.
 
 **Transmission.** The fraction of the incident SED that crosses the cloud,
 
@@ -233,7 +255,7 @@ photons, so a photon budget would never close. $\epsilon$ is `NaN` if the refere
 The reference $I_2^{\star}$ is the **stellar** incident energy. With `CMB z_CMB` the incident column also holds
 $4\pi\nu B_\nu(T_{\rm CMB})$, which in many models carries more energy than the SED: referred to the whole $I_2$,
 the imbalance would measure the CMB, which balances itself, and stay blind to a double-counted stellar
-component. The split at $10\,\mu$m (`STELLAR_MAX_A`) is exact enough for this: below it the CMB of every
+component. The split at $10\,\mu$m (`CONST.Stellar_Max_A`) is exact enough for this: below it the CMB of every
 $z_{\rm CMB} \le 12$ carries $\sim 3\times10^{-14}$ of its energy, above it the SSP nodes carry at most $1.3\%$ of
 theirs. The weight of the CMB is stored as
 
@@ -243,6 +265,30 @@ $$
 
 In the models where it is large, the print precision of CLOUDY ($3$ decimals) sets the floor of $\epsilon$:
 the grid validation grades the energy budget only below a threshold of this ratio.
+
+**Reprocessing budget.** `reprocessing_budget` compares the energy the cloud emits with the energy it absorbs,
+over the full grid:
+
+$$
+E_n = \int {\rm col}_n\, d\ln\lambda,
+\qquad
+E_{\rm abs} = E_2 - E_3
+$$
+
+$$
+\texttt{reprocessing\_excess} = \frac{E_4 - E_{\rm abs}}{E_{\rm abs}},
+\qquad
+\texttt{absorbed\_fraction} = \frac{E_{\rm abs}}{E_2},
+\qquad
+\texttt{lyc\_emit\_fraction} = \frac{E_4(\lambda < 911.76\ {\rm Å})}{E_{\rm abs}}
+$$
+
+`reprocessing_excess` is signed: it is $0$ for a cloud that re-emits exactly what it absorbs, and positive when
+it emits more, as with the double-counted diffuse Lyman continuum of `sphere`. `absorbed_fraction` is the share
+of the incident energy (SED and CMB) absorbed by the cloud, and `lyc_emit_fraction` the diffuse Lyman continuum
+emitted, before its rescaling, in units of the absorbed energy. If $E_{\rm abs} \le 0$ the three values are
+`NaN`, $0$, `NaN`. They are stored as attributes, and the first and the last set the rescaling of the nebular
+continuum above.
 
 !!! warning "The CMB in the per-$M_\odot$ outputs"
     The CMB is a field per unit area that does not scale with the stellar mass, while $s_k$ scales everything per
@@ -259,14 +305,20 @@ the grid validation grades the energy budget only below a threshold of this rati
     high $z$ and intermediate $U n_{\rm H}$, and 33–37% of the far-IR energy (above 50 µm) at $z \approx 9$–10
     with $n_{\rm H} \approx 1$–3 cm⁻³. How to subtract it (da Cunha et al. 2013) is an open modelling decision.
 
-**Dust mass.** `integrate_grain_abundance` integrates the dust mass density $\rho_d$ (the `total` column of
-`save grain abundance`, in ${\rm g\,cm^{-3}}$) over the depth $r$ of the zones:
+**Dust mass.** `integrate_grain_abundance` sums the dust mass density $\rho_{d,k}$ of each zone (the `total`
+column of `save grain abundance`, in ${\rm g\,cm^{-3}}$) times the zone thickness $\Delta r_k$:
 
 $$
-\Sigma_d = \int \rho_d\, dr \quad [{\rm g\,cm^{-2}}],
+\Sigma_d = \sum_k \rho_{d,k}\, \Delta r_k \quad [{\rm g\,cm^{-2}}],
 \qquad
 M_d = \frac{\Sigma_d\, s_k}{M_\odot} \quad [M_\odot\ {\rm per}\ M_\odot\ {\rm of\ SSP\ formed}]
 $$
+
+The first column of the file is the depth of the **middle** of each zone, $r_k$. `zone_edges` rebuilds the zone
+boundaries from it, starting at the illuminated face: $e_0 = 0$, $e_{k+1} = 2 r_k - e_k$, so that
+$\Delta r_k = e_{k+1} - e_k$ and the last edge is the thickness of the cloud. Non-increasing edges, i.e. depths
+that are not the middles of the zones, raise `ValueError`. Unlike a trapezoidal integral over $r_k$, the sum
+covers the whole cloud, the half-zones at the two faces included.
 
 The file is validated strictly: its header must start with `#Depth` and end with `total`, it must contain at
 least two zones, and the depth must be strictly increasing. A non-increasing depth means that several iterations
@@ -275,9 +327,24 @@ were concatenated, i.e. the deck lost its `last` keyword, and the integral would
 **Lines.** `parse_cloudy_linelist` reads the `column` format of `save line list`, one line per row: label,
 wavelength with its unit, intensity. The label is rebuilt by joining its tokens with a single space, so the
 CLOUDY label `H  1` is stored as `H 1`. The wavelength is converted to Å (`m` for µm: $\times 10^4$; `c` for cm:
-$\times 10^8$; `A` or no unit: $\times 1$). A row starting with `iteration` restarts the list, so only the last
-iteration is kept. The intensities, `absolute` and `emergent`, are multiplied by $s_k$. The lines follow the order
-of `hii_lines.dat`, i.e. of the master list (see [Line list](line_list.md)).
+$\times 10^8$; `A` or no unit: $\times 1$); a trailing `?` after the wavelength (e.g.
+`1234.5A?`) is accepted and dropped. A negative intensity raises `ValueError`. A row starting with `iteration` restarts the
+list, so only the last iteration is kept. The intensities, `absolute` and `emergent`, are multiplied by $s_k$.
+The lines follow the order of `hii_lines.dat`, i.e. of the master list (see [Line list](line_list.md)).
+
+**Continuum pumping of the resonance blends.** When the run saved `hii_<job_id>.pump` (see
+[Line list](line_list.md#pumped-resonance-blends)), `remove_pumping` removes from each pumped blend the share
+due to continuum pumping, before the scaling by $s_k$. The pump file lists each blend (`blnd`), then its
+components and their `Pump` entries, all as **intrinsic** intensities. For each blend $b$:
+
+$$
+F_b^{\rm emergent} \to F_b^{\rm emergent} \left(1 - \frac{\sum_c I_c^{\rm Pump}}{\sum_c I_c}\right)
+$$
+
+where $c$ runs over its components, $I_c$ is the intrinsic intensity of the component and $I_c^{\rm Pump}$ that
+of its `Pump` entry. The blend of `hii_lines.dat` is matched to the one of the pump file by the label `blnd` and
+the wavelength rounded to $0.1$ Å. The other lines, and the blends with zero intrinsic intensity, are left as
+they are. Without the pump file, the blends are stored as CLOUDY computes them, pumping included.
 
 CLOUDY prints the line wavelengths in **air** above 2000 Å (far-IR and radio lines included) and in vacuum
 below, while the continuum mesh is in vacuum. The printed values are stored as they are, since they identify the
@@ -298,9 +365,17 @@ the centre of each cell of its mesh, interpolating linearly in log-log, with $0$
 (`cont_ffun.cpp`, `cont_setintensity.cpp`). With the keyword `extrapolate`, CLOUDY instead extends the reddest
 segment as a power law to the low-energy limit of the code: that extension is not part of the stored SED.
 
-**Grain emission.** The `total` column of `save continuum grain`, multiplied by $s_k$, is kept as a diagnostic
-of the dust emission. Its wavelength column must coincide with that of the continuum (`parse_cloudy_cong(...,
-wave_ref=wave)`), so the stored array is on `continuum/wave_grid`.
+**Grain emission.** `save continuum grain` gives the grain emissivity of the **last zone** of the cloud, in the
+optically thin limit [${\rm erg\,cm^{-3}\,s^{-1}}$]. Its `total` column is multiplied by the thickness of the
+cloud (the last edge of `zone_edges`, in cm), which turns it into a per-${\rm cm^2}$ emission, and then by $s_k$:
+
+$$
+L^{\rm grain}_\lambda = j^{\rm grain}_{\lambda,\,\rm last}\ \Delta R\ s_k
+$$
+
+This is exact only for a uniform grain temperature across the cloud, so the array is kept as a **diagnostic** of
+the dust emission and never added to the SED. Its wavelength column must coincide with that of the continuum
+(`parse_cloudy_cong(..., wave_ref=wave)`), so the stored array is on `continuum/wave_grid`.
 
 ---
 
@@ -310,7 +385,6 @@ wave_ref=wave)`), so the stored array is on `continuum/wave_grid`.
 
 ```text
 00042_003_02.h5
-├── attrs: units_schema                    # 'cloudia.hii.v2'
 ├── units/                                 # attrs: unit of every member of grid_point_*
 ├── descriptions/                          # attrs: description of every member of grid_point_*
 ├── continuum/wave_grid                    # shared
@@ -334,8 +408,8 @@ wave_ref=wave)`), so the stored array is on `continuum/wave_grid`.
         └── fluxes
 ```
 
-**Units.** The units are written in the fragment itself, from the tables `ROOT_UNITS` and `POINT_UNITS` of the
-parser (unit strings in the astropy *generic* syntax: `Msun` is `solMass`, `''` dimensionless or flag, `dex(X)`
+**Units.** The units are written in the fragment itself, from the tables `Root_Units_HII` and
+`Points_Units_HII` of `galapy.internal.constants` (unit strings in the astropy *generic* syntax: `Msun` is `solMass`, `''` dimensionless or flag, `dex(X)`
 the log10 of a quantity in X):
 
 - each **root** dataset carries the attributes `units`, `description` and, for the wavelengths,
@@ -344,8 +418,9 @@ the log10 of a quantity in X):
   the root groups `units` and `descriptions`, keyed by attribute name or by dataset path relative to the group
   (e.g. `continuum/transmission`). Writing them once avoids repeating the same strings in every model of the
   corpus;
-- the root attribute `units_schema` versions the tables. `check_point_units` refuses to write a fragment with a
-  member missing from them, and `galapy-merge-h5` refuses to merge fragments with different units.
+- `check_point_units` refuses to write a fragment with a member missing from `Points_Units_HII`, or with an
+  entry of the table that was not written, and `galapy-merge-h5` refuses to merge fragments with a different
+  legend or different root attributes.
 
 The five **root** datasets depend only on the CLOUDY version, the deck template, `hii_lines.dat` and the
 `galapy-sed-cloudy-extract` run (SSP library and wavelength cuts, the same for every node), so they are identical
@@ -364,11 +439,11 @@ can be merged without collisions. Its datasets are:
 
 | Dataset | Type | Units | Description |
 | :--- | :--- | :--- | :--- |
-| `continuum/nebular_emission_per_Msun` | `float32[n_λ]` | `erg s-1 Msun-1` ($\nu L_\nu$) | $({\rm col}_4 - {\rm col}_9)\, s_k$ |
-| `continuum/grain_diag_per_Msun` | `float32[n_λ]` | `erg s-1 Msun-1` ($\nu L_\nu$) | Grain emission $\times\, s_k$ (diagnostic) |
+| `continuum/nebular_emission_per_Msun` | `float32[n_λ]` | `erg s-1 Msun-1` ($\nu L_\nu$) | $({\rm col}_4 - {\rm col}_9)\, s_k$, line-dominated cells interpolated, $\lambda < 911.76$ Å rescaled to the energy budget |
+| `continuum/grain_diag_per_Msun` | `float32[n_λ]` | `erg s-1 Msun-1` ($\nu L_\nu$) | Grain emissivity of the last zone $\times$ thickness $\times\, s_k$ (diagnostic) |
 | `continuum/transmission` | `float32[n_λ]` | `''` | $T(\lambda) = {\rm col}_3 / {\rm col}_2$ |
 | `incident/sed_per_Msun` | `float32[n_sed]` | `erg s-1 Msun-1` ($\nu L_\nu$) | Incident stellar SED of the table SED file, on `incident/wave_grid` |
-| `lines_emergent/fluxes` | `float32[n_lines]` | `erg s-1 Msun-1` | Emergent line **luminosities** |
+| `lines_emergent/fluxes` | `float32[n_lines]` | `erg s-1 Msun-1` | Emergent line **luminosities**, resonance blends without continuum pumping |
 | `f_esc_meas` | scalar | `''` | Measured ionizing escape fraction (photons) |
 | `T_fuv_hii` | scalar | `''` | FUV energy transmittance of the ionized layer |
 | `N_fuv_hii` | scalar | `''` | FUV emission of the ionized layer, in units of the incident energy |
@@ -392,6 +467,9 @@ and its attributes:
 | `f_esc_meas` | `float` | `''` | Same value as the dataset, for quick filtering. |
 | `energy_balance_rel` | `float` | `''` | The energy-budget mismatch $\epsilon$, over the stellar incident energy. |
 | `cmb_incident_ratio` | `float` | `''` | Incident energy of the CMB over the stellar one. |
+| `reprocessing_excess` | `float` | `''` | $(E_4 - E_{\rm abs}) / E_{\rm abs}$: emitted over absorbed energy, minus 1 (signed). |
+| `absorbed_fraction` | `float` | `''` | $E_{\rm abs} / E_2$: share of the incident energy (SED and CMB) absorbed by the cloud. |
+| `lyc_emit_fraction` | `float` | `''` | $E_4(\lambda < 911.76\ {\rm Å}) / E_{\rm abs}$, before the rescaling of the Lyman continuum. |
 | `sed_support_A` | `float[2]` | `Angstrom` | $(\lambda_{\min}, \lambda_{\max})$ where the incident field (SED and CMB) is non-zero. |
 
 ### 2. Atomic writing
@@ -420,9 +498,11 @@ The messages of the parser checks are prefixed with `[parse_one/hii]`. No error 
 | `ValueError: ... not strictly monotonic` | Corrupted continuum. |
 | `ValueError: ... columns, expected columns: 4` | The grain continuum does not have the expected layout. |
 | `ValueError: ... wavelength column differs from the continuum mesh` | The grain continuum is not on the mesh of the continuum (e.g. a different `units` on its save). |
-| `ValueError: ... units table out of date` | A quantity is written without its units in `POINT_UNITS` (a development error). |
+| `ValueError: ... units table out of date` | A quantity is written without its units in `CONST.Points_Units_HII`, or an entry of the table is not written (a development error). |
 | `ValueError: ... expected header '#Depth<TAB>...<TAB>total'` | The grain abundance format changed. |
 | `ValueError: ... depth not strictly increasing` | Several iterations were saved: the `last` keyword is missing from the deck. |
+| `ValueError: ... zone edges not increasing` | The depth column of the grain abundance is not the middle of the zones. |
+| `ValueError: ... negative line intensity` | A negative intensity in the line list or in the pump list. |
 | `ValueError: ... no lines extracted` | Empty line list. |
 
 ---
@@ -464,6 +544,11 @@ The messages of the parser checks are prefixed with `[parse_one/hii]`. No error 
       show_root_heading: true
       show_source: false
 
+::: galapy.spectroscopy.utils.hii.parse_one_hii.remove_pumping
+    options:
+      show_root_heading: true
+      show_source: false
+
 ::: galapy.spectroscopy.utils.hii.parse_one_hii.staged_sed
     options:
       show_root_heading: true
@@ -475,6 +560,11 @@ The messages of the parser checks are prefixed with `[parse_one/hii]`. No error 
       show_source: false
 
 ::: galapy.spectroscopy.utils.hii.parse_one_hii.integrate_grain_abundance
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.hii.parse_one_hii.zone_edges
     options:
       show_root_heading: true
       show_source: false
@@ -495,6 +585,11 @@ The messages of the parser checks are prefixed with `[parse_one/hii]`. No error 
       show_source: false
 
 ::: galapy.spectroscopy.utils.hii.parse_one_hii.energy_balance
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.hii.parse_one_hii.reprocessing_budget
     options:
       show_root_heading: true
       show_source: false
@@ -550,10 +645,10 @@ with h5py.File('data/hii/parsed/00042_003_02.h5', 'r') as f:
     wave_sed = f['incident/wave_grid'][:]             # its own grid, not continuum/wave_grid
     L_inc = g['incident/sed_per_Msun'][:]
     print(f"f_esc: target {g.attrs['f_esc_target']:.3f}, measured {g.attrs['f_esc_meas']:.3f}")
+    print(f"reprocessing excess {g.attrs['reprocessing_excess']:.3e}, absorbed {g.attrs['absorbed_fraction']:.3f}")
 
     # units: of the root datasets on the datasets, of the grid_point members in the root legend
-    print(f.attrs['units_schema'], f['continuum/wave_grid'].attrs['units'],
-          f['continuum/wave_grid'].attrs['wavelength_medium'])
+    print(f['continuum/wave_grid'].attrs['units'], f['continuum/wave_grid'].attrs['wavelength_medium'])
     units = dict(f['units'].attrs)
     print(units['continuum/nebular_emission_per_Msun'], units['dust_mass_per_Msun'], units['tau_SSP'])
     print(f['descriptions'].attrs['energy_balance_rel'])

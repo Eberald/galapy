@@ -79,6 +79,19 @@ This file lists all exported nodes in a JSON array of objects. It is the input o
 `Z_star` as a mass fraction, `Qh_unit` in photons ${\rm s^{-1}}\,M_\odot^{-1}$ (ionizing photons below the Lyman limit,
 `CONST.LymanA` = 911.6 Å, of the written `.sed` file).
 
+`Qh_unit` is computed by `cloudy_sed_QH` the way CLOUDY reads the table: the $\nu L_\nu$ of the `.sed` file is
+interpolated **linearly in log-log** on a fine logarithmic grid (20000 points) from its bluest wavelength up to
+the threshold, and the photon rate
+
+$$
+Q_H = \frac{1}{hc} \int_{\lambda < \lambda_{\rm thr}} \nu L_\nu\, d\lambda
+$$
+
+is integrated with the trapezoidal rule on that grid (`_q_h`). Integrating the coarse table points directly
+would instead interpolate linearly in $\nu L_\nu$ between them, and differ from the rate CLOUDY sees. Values
+$\le 0$ are floored at $10^{-300}$ before taking the logarithm. `cloudy_sed_QH_reference`, the same rate
+computed from the raw SSP cube, uses the same integrator.
+
 Example:
 ```json
 [
