@@ -53,7 +53,8 @@ SECTORS = {
         name='hii',
         saves=('.con', '.con_grain', '.lines', '.dusa', '.grain_temp'),
         linelist='hii_lines.dat',
-        parse_module='galapy.spectroscopy.utils.hii.parse_one_hii'),
+        parse_module='galapy.spectroscopy.utils.hii.parse_one_hii',
+        extra_lists=('hii_pump.dat',)),
     'pdr': Sector(
         name='pdr',
         saves=('.con', '.con_grain', '.lines', '.dusa', '.pdr', '.heat', '.cool'),
