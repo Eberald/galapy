@@ -137,6 +137,11 @@ Points_Units_HII = {
                                'energy imbalance over the STELLAR incident energy'),
     'cmb_incident_ratio': ('', 'E2(lambda >= 10 um) / E2(lambda < 10 um): incident energy of the CMB '
                                'over the stellar one'),
+    'reprocessing_excess': ('', '(E4 - E_abs) / E_abs, E_abs = E2 - E3, E_n = int col_n dln(lambda): emitted over '
+                                'absorbed energy, minus 1 (signed)'),
+    'absorbed_fraction': ('', 'E_abs / E2: share of the incident energy (SED and CMB) absorbed by the cloud'),
+    'lyc_emit_fraction': ('', 'E4(lambda < 911.76 A) / E_abs: diffuse Lyman continuum emitted over the absorbed '
+                              'energy, before its rescaling (with sphere CLOUDY counts its inward half twice)'),
     'f_esc_meas': ('', 'escape fraction of the H-ionizing PHOTONS: int col3 dlambda / int col2 dlambda, '
                        'lambda < 911.6 A'),
     'sed_support_A': ('Angstrom', '(min, max) wavelength where the incident field (SED and CMB) is > 0: '

@@ -9,7 +9,7 @@ import re
 import sys
 import numpy as np
 
-from galapy.internal.constants import (M_Sun_G, LymanA, FUV_Lo_A, FUV_Hi_A, clight, Stellar_Max_A,
+from galapy.internal.constants import (M_Sun_G, LymanA, LyLimit, FUV_Lo_A, FUV_Hi_A, clight, Stellar_Max_A,
                                        Root_Units_HII, Points_Units_HII)
 
 def write_root_dataset(f, name, data, table=Root_Units_HII):
@@ -519,6 +519,45 @@ def _band_energy(wave_A, col, mask):
         return 0.0
     return float(abs(np.trapezoid(np.asarray(col, dtype=float)[mask], np.log(wave_A[mask]))))
 
+def reprocessing_budget(wave_A, col2_incident, col3_transmitted, col4_own, lyc_A=LyLimit):
+    """
+    Calculates the reprocessing budget based on the provided wavelength, incident flux, transmitted
+    flux, and own flux values.
+
+    This function computes several properties related to the energy budget of reprocessing in a system
+    using integration over the natural logarithm of the input wavelength values. It determines the
+    absorbed energy fraction, reprocessed fraction, and the fraction of ionizing radiation that gets
+    reprocessed.
+
+    Parameters:
+    wave_A : numpy.ndarray
+        Array of wavelengths in angstrom (Å).
+    col2_incident : numpy.ndarray
+        Array of incident flux values corresponding to the wavelengths.
+    col3_transmitted : numpy.ndarray
+        Array of transmitted flux values corresponding to the wavelengths.
+    col4_own : numpy.ndarray
+        Array of emitted flux values from the system corresponding to the wavelengths.
+    lyc_A : float, optional
+        Lyman limit wavelength in angstrom (Å). Defaults to LyLimit.
+
+    Returns:
+    tuple
+        A tuple of three elements:
+        - The fraction of reprocessed energy relative to absorbed energy (float). Returns nan if the
+          absorbed energy is not positive.
+        - The fraction of absorbed energy relative to the incident energy (float).
+        - The fraction of reprocessed ionizing radiation (float).
+    """
+    lnl = np.log(wave_A)
+    E2, E3, E4 = (abs(np.trapezoid(c, lnl)) for c in (col2_incident, col3_transmitted, col4_own))
+    lyc = wave_A < lyc_A
+    E4_lyc = abs(np.trapezoid(col4_own[lyc], lnl[lyc])) if np.count_nonzero(lyc) > 1 else 0.0
+    E_abs = E2 - E3
+    if not E_abs > 0:
+        return float('nan'), 0.0, float('nan')
+    return float((E4 - E_abs) / E_abs), float(E_abs / E2), float(E4_lyc / E_abs)
+
 
 def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own, split_A=None):
     """
@@ -772,6 +811,9 @@ def main(argv=None):
     cong = parse_cloudy_cong(f"{pre}.con_grain", wave_ref=wave)
     # emission CLOUD with no emission lines
     nebular = col4 - col9
+    # energy budget `sphere` counts twice the inward half of the diffuse Lyman continuum:
+    # scaled to the energy left by the emission at lambda >= 911.76 A
+    excess, absorbed_fraction, lyc_frac = reprocessing_budget(wave, col2, col3, col4)
     # Transmission
     transmission = support_safe_ratio(col2, col3)
     lam_support = wave[col2 > 0]
@@ -783,35 +825,38 @@ def main(argv=None):
 
     with atomic_h5(out) as f:
         # units: root attribute + legend of the grid_point members, attributes of the root datasets
-        write_units_legend(f)
-        write_root_dataset(f, 'continuum/wave_grid', wave.astype('f4'))
-        write_root_dataset(f, 'line_names', line_data['names'].astype('S'))
-        write_root_dataset(f, 'lines_emergent/wavelengths_rest', line_data['wavelengths'].astype('f4'))
-        write_root_dataset(f, 'lines_emergent/wavelengths_rest_vacuum',
+        write_units_legend(f)  # groups 'units'/'descriptions': legend of the grid_point members
+        write_root_dataset(f, 'continuum/wave_grid', wave.astype('f4'))  # CLOUDY continuum wavelengths [A]
+        write_root_dataset(f, 'line_names', line_data['names'].astype('S'))  # CLOUDY emission-line labels
+        write_root_dataset(f, 'lines_emergent/wavelengths_rest', line_data['wavelengths'].astype('f4'))  # line rest wavelengths, air [A]
+        write_root_dataset(f, 'lines_emergent/wavelengths_rest_vacuum',  # line rest wavelengths, vacuum [A]
                            air_to_vacuum_A(line_data['wavelengths']).astype('f4'))
-        write_root_dataset(f, 'incident/wave_grid', sed_wave.astype('f4'))
-        g = f.create_group(f"grid_point_{job_id}")
-        g.attrs.update({k: float(p[k]) for k in
+        write_root_dataset(f, 'incident/wave_grid', sed_wave.astype('f4'))  # wavelengths of the input table SED [A]
+        g = f.create_group(f"grid_point_{job_id}")  # one group per grid model (job)
+        g.attrs.update({k: float(p[k]) for k in  # grid parameters of this model (from hii_grid_spec.h5)
                         ('logU', 'lognH_HII', 'z_CMB', 'log_zeta_O',
                          'xi_d', 'f_esc_target', 'F_star', 'tau_SSP', 'Z_star')})
-        g.attrs['not_converged'] = bool(not_converged)  # DD-4
-        g.attrs['cloudy_warnings'] = bool(cloudy_warnings)
-        g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4, split_A=Stellar_Max_A)
-        g.attrs['cmb_incident_ratio'] = cmb_incident_ratio(wave, col2)
+        g.attrs['not_converged'] = bool(not_converged)  # DD-4  # flag: CLOUDY run did not converge
+        g.attrs['cloudy_warnings'] = bool(cloudy_warnings)  # flag: CLOUDY exited with warnings
+        g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4, split_A=Stellar_Max_A)  # |inc - (trans + diffuse)| / stellar incident energy
+        g.attrs['cmb_incident_ratio'] = cmb_incident_ratio(wave, col2)  # CMB / stellar incident energy
+        g.attrs['reprocessing_excess'] = excess  # (diffuse - absorbed) / absorbed energy
+        g.attrs['absorbed_fraction'] = absorbed_fraction  # absorbed / incident energy
+        g.attrs['lyc_emit_fraction'] = lyc_frac  # diffuse LyC (< 912 A) / absorbed energy
         f_esc_meas = fesc(wave, col2, col3)
-        g.attrs['f_esc_meas'] = float(f_esc_meas)
-        g.create_dataset('f_esc_meas', data=f_esc_meas)
+        g.attrs['f_esc_meas'] = float(f_esc_meas)  # measured LyC photon escape fraction (attribute)
+        g.create_dataset('f_esc_meas', data=f_esc_meas)  # same value, as a scalar dataset
         T_fuv, N_fuv = fuv_transmittance_hii(wave, col2, col3, col4)
-        g.create_dataset('T_fuv_hii', data=T_fuv)
-        g.create_dataset('N_fuv_hii', data=N_fuv)
-        g.create_dataset('continuum/nebular_emission_per_Msun', data=(nebular * s_k).astype('f4'))
-        g.create_dataset('continuum/grain_diag_per_Msun', data=(cong * thickness * s_k).astype('f4'))
-        g.create_dataset('continuum/transmission', data=transmission.astype('f4'))
-        g.create_dataset('incident/sed_per_Msun', data=sed_nuLnu.astype('f4'))
-        g.attrs['sed_support_A'] = sed_support
-        g.create_dataset('lines_emergent/fluxes', data=(line_data['fluxes'] * s_k).astype('f4'))
-        g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / M_Sun_G)
-        g.create_dataset('s_k', data=s_k)
+        g.create_dataset('T_fuv_hii', data=T_fuv)  # FUV (6-13.6 eV) transmitted / incident energy
+        g.create_dataset('N_fuv_hii', data=N_fuv)  # FUV nebular emission / incident energy
+        g.create_dataset('continuum/nebular_emission_per_Msun', data=(nebular * s_k).astype('f4'))  # diffuse continuum without lines, nuLnu per Msun
+        g.create_dataset('continuum/grain_diag_per_Msun', data=(cong * thickness * s_k).astype('f4'))  # diagnostic grain emission (last zone x thickness), per Msun
+        g.create_dataset('continuum/transmission', data=transmission.astype('f4'))  # transmitted / incident ratio per wavelength
+        g.create_dataset('incident/sed_per_Msun', data=sed_nuLnu.astype('f4'))  # input stellar SED, nuLnu per Msun
+        g.attrs['sed_support_A'] = sed_support  # (min, max) wavelength [A] where incident > 0
+        g.create_dataset('lines_emergent/fluxes', data=(line_data['fluxes'] * s_k).astype('f4'))  # emergent line luminosities per Msun
+        g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / M_Sun_G)  # dust mass [Msun] per Msun of SSP
+        g.create_dataset('s_k', data=s_k)  # geometric factor per cm^2 -> per Msun [cm^2 Msun^-1]
         # inside atomic_h5: a member written without its units leaves no fragment
         check_point_units(g)
     print(f"[parse_one/hii] {job_id} -> {out}")
