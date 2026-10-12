@@ -240,7 +240,7 @@ def _q_h(wavelength_A, nuLnu, lyman_A = CONST.LyLimit, n_fine=20000) -> float:
         return 0.0 #because not EUV
 
     lam = np.geomspace(w[0], min(lyman_A, w[-1]), n_fine) #generating the integration domain
-    fine = np.exp(np.interp(np.log(lam). np.log(w), np.log(f))) #interpolating between points
+    fine = np.exp(np.interp(np.log(lam),  np.log(w), np.log(f))) #interpolating between points
 
     return float(np.trapezoid(fine, lam * 1e-8) / (CONST.hP["erg*s"] * CONST.clight["cm/s"]))
 
