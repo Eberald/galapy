@@ -849,6 +849,11 @@ def main(argv=None):
     cong = parse_cloudy_cong(f"{pre}.con_grain", wave_ref=wave)
     # emission CLOUD with no emission lines
     nebular = col4 - col9
+    # cells where a line dominates: col4 - col9 below the 4-digit print precision -> interpolated
+    hole = (col9 > 0) & (nebular <= 1e-3 * col4)
+    if hole.any():
+        good = ~hole & (nebular > 0)
+        ebular[hole] = np.exp(np.interp(np.log(wave[hole]), np.log(wave[good])[::-1], np.log(nebular[good])[::-1]))
     # energy budget `sphere` counts twice the inward half of the diffuse Lyman continuum:
     # scaled to the energy left by the emission at lambda >= 911.76 A
     excess, absorbed_fraction, lyc_frac = reprocessing_budget(wave, col2, col3, col4)
