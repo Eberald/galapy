@@ -251,10 +251,8 @@ def test_QH_roundtrip(tmp_path, spectrum):
     """
     lam, y = spectrum
     HC = CONST.hP["erg*s"] * CONST.clight["cm/s"]
-    m = lam < CONST.LymanA
-    order = np.argsort(lam[m])
-    ref = float(np.trapezoid((y[m] * lam[m] * CONST.Lsun)[order],
-                             lam[m][order] * 1e-8) / HC)
+    # nu*L_nu = 1e11 Lsun lambda^-3 (lambda in A) below 1.5e6 A: Q_H in closed form up to the H threshold
+    ref = 1e3 * CONST.Lsun / HC * (lam.min() ** -2 - CONST.LyLimit ** -2) / 2.0
     got = spc.cloudy_sed_QH(spc.write_cloudy_sed(lam, y, tmp_path / 'rt.sed'))
     assert abs(got - ref) / ref < 1e-6
 
