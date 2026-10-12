@@ -86,6 +86,8 @@ def validate(entries, official):
     """
     errs = []
     for e in entries:
+        if e.get('verified') == 'line_labels':  # label checked on the 'save line labels' stack
+            continue
         key = (str(e['label']).strip().lower().replace(' ', ''), str(e['wl']))
         if key not in official:
             errs.append(f"  {e['name']:16s} label={e['label']!r} wl={e['wl']} "
