@@ -852,6 +852,8 @@ def main(argv=None):
     # energy budget `sphere` counts twice the inward half of the diffuse Lyman continuum:
     # scaled to the energy left by the emission at lambda >= 911.76 A
     excess, absorbed_fraction, lyc_frac = reprocessing_budget(wave, col2, col3, col4)
+    if excess > 0 and lyc_frac > 0:
+        nebular[wave < LyLimit] *= max(0.0, 1.0 - excess / lyc_frac)
     # Transmission
     transmission = support_safe_ratio(col2, col3)
     lam_support = wave[col2 > 0]
