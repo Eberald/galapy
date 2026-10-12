@@ -195,7 +195,7 @@ def parse_cloudy_linelist(path):
                     or lacks any valid data entries.
     """
     names, waves, fluxes = [], [], []
-    unit_re = re.compile(r'^([0-9.eE+-]+)\s*([AaMmCc]?)$')  # es. 6562.80A, 157.6m, 3727
+    unit_re = re.compile(r'^([0-9.eE+-]+)\s*([AaMmCc]?)\??$')  # es. 6562.80A, 157.6m, 3727, 1234.5A?
     scale = {'': 1.0, 'A': 1.0, 'M': 1e4, 'C': 1e8}  # conversion to Angstroms
 
     for raw in pathlib.Path(path).read_text().splitlines():
@@ -212,6 +212,8 @@ def parse_cloudy_linelist(path):
             raise ValueError(f"[parse_one/hii] {path}: parse not possible for line: {raw!r}")
 
         flux = float(parts[-1])
+        if flux < 0:
+            raise ValueError(f"[parse_one/hii] {path}: negative line intensity in: {raw!r}")
         m = unit_re.match(parts[-2])  # wavelength part
         if not m:
             raise ValueError(f"[parse_one/hii] {path}: lambda with not recognized unit in: {raw!r}")
@@ -456,7 +458,7 @@ def integrate_grain_abundance(path):
     if len(depth) < 2:
         raise ValueError(f"[parse_one/hii] {p}: only one zone in the file, column integral undefined.")
 
-    return float(np.trapezoid(rho_d, depth))    # dust surface density [g cm^-2]
+    return float(np.sum(rho_d * np.diff(zone_edges(depth))))  # dust surface density [g cm^-2], sum over zones
 
 
 def fesc(wave_A, col2_incident, col3_transmitted):
