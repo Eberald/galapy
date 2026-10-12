@@ -856,7 +856,7 @@ def main(argv=None):
         nebular[wave < LyLimit] *= max(0.0, 1.0 - excess / lyc_frac)
     # Transmission
     transmission = support_safe_ratio(col2, col3)
-    lam_support = wave[col2 > 0]
+    lam_support = wave.astype('f4')[col2 > 0]  # same values as the stored continuum/wave_grid
     sed_support = (float(lam_support.min()), float(lam_support.max()))
     line_data = parse_cloudy_linelist(f"{pre}.lines")
     if pathlib.Path(f"{pre}.pump").is_file():  # continuum pumping of the resonance blends
