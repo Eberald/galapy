@@ -93,6 +93,43 @@ def sed_from_csp(csp, age, sfh) -> tuple:
     ftau = np.ones((len(il), csp.t.size))
     return csp.l, csp.core.emission(il, np.ascontiguousarray(ftau.ravel()))
 
+def _lyman_edge_nodes(wavelength_A, nuFnu, edge_A=CONST.LyLimit, eps_A=0.01) -> tuple:
+    """
+    Identifies nodes crossing the Lyman edge wavelength, and appends them for interpolation.
+
+    Parameters:
+    wavelength_A: array-like
+        Array of wavelengths in Angstroms.
+    nuFnu: array-like
+        Array of flux values corresponding to the given wavelengths.
+    edge_A: float, optional
+        Wavelength of the edge in Angstroms. Defaults to the Lyman limit.
+    eps_A: float, optional
+        Small offset in Angstroms used to create a range around the edge. Defaults to 0.01.
+
+    Returns:
+    tuple
+        A tuple containing an updated array of wavelengths and an updated array of flux values,
+        with entries added at edge_A - eps_A and edge_A + eps_A based on the nearest blue and red
+        flux values.
+
+    Raises:
+    ValueError
+        If wavelengths or flux arrays cannot be converted to NumPy arrays.
+
+    Notes:
+    The function examines whether the spectral energy distribution (SED) crosses the specified edge
+    wavelength and appends two additional points for interpolation. If no crossing occurs, the
+    original arrays are returned unchanged.
+    """
+    w, f = np.asarray(wavelength_A, dtype=float), np.asarray(nuFnu, dtype=float)
+    blue, red = w < edge_A - eps_A, w > edge_A + eps_A
+    if not (blue.any() and red.any()):      # SED not crossing the edge (e.g. truncate_lyman)
+        return w, f
+    ib = np.flatnonzero(blue)[np.argmax(w[blue])]
+    ir = np.flatnonzero(red)[np.argmin(w[red])]
+    return np.append(w, [edge_A - eps_A, edge_A + eps_A]), np.append(f, [f[ib], f[ir]])
+
 
 # =============== WRITER ===============
 def write_cloudy_sed(wavelength_A,
@@ -147,6 +184,7 @@ def write_cloudy_sed(wavelength_A,
             raise ValueError(f'lambda_min_A={lambda_min_A} is too big for the SED (no points left after cut)')
         wavelength_A, nuFnu = wavelength_A[mask], nuFnu[mask]
 
+    wavelength_A, nuFnu = _lyman_edge_nodes(wavelength_A, nuFnu)
     nuFnu = np.maximum(nuFnu, 1e-300)  # cut null fluxes
     wavelength_A = np.array([float(f'{w:.6e}') for w in wavelength_A])  # written values on files
     order = np.argsort(wavelength_A, kind='stable')  # monotonic sort
@@ -297,7 +335,8 @@ def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LyLimit) -> float:
     """
     l, _t, _Z, L = cube
     wavelength_A = np.asarray(l, dtype=float)
-    return _q_h(wavelength_A, np.asarray(L[:, it, iz], dtype=float) * wavelength_A * CONST.Lsun, lyman_A)
+    w, f = _lyman_edge_nodes(wavelength_A, np.asarray(L[:, it, iz], dtype=float) * wavelength_A * CONST.Lsun)
+    return _q_h(w, f, lyman_A)
 
 
 # =============== EXTRACTION SCRIPTS ===============
