@@ -77,6 +77,7 @@ nav:
           - "Abundances and Zeta_Z map" : abundances.md
           - "Line list": line_list.md
           - "hii and pdr h5 file": merge_grid.md
+          - "Validate grid data": validate_grid.md
           - HII region:
             - "Sampling and input files generation" : gen_hii.md
             - "Running CLOUDY": run_hii.md

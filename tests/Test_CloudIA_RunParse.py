@@ -524,6 +524,16 @@ def test_validate_grid_reads_the_units_of_the_corpus(hii, fake_cloudy, tmp_path)
     assert checks['units_legend']['status'] == 'PASS', checks['units_legend']['detail']
 
 
+@pytest.mark.unit
+def test_validate_grid_defaults(monkeypatch, tmp_path):
+    from galapy.spectroscopy.utils import validate_grid
+    monkeypatch.chdir(tmp_path)
+    ret = validate_grid.main(['--sector', 'hii'])
+    assert ret == 1
+    assert (tmp_path / 'data' / 'validation' / 'report_hii.json').exists()
+    assert (tmp_path / 'data' / 'validation' / 'report_hii.md').exists()
+
+
 #======================================================== parse done manually
 @pytest.mark.unit
 def test_parse_one_refuses_unsuccessful_workdirs(hii, fake_cloudy):
