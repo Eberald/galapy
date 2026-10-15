@@ -868,6 +868,9 @@ def main(argv=None):
     line_data = parse_cloudy_linelist(f"{pre}.lines")
     if pathlib.Path(f"{pre}.pump").is_file():  # continuum pumping of the resonance blends
         remove_pumping(line_data, f"{pre}.pump")
+    elif (wd / 'hii_pump.dat').is_file():  # the deck asked for the pump save: its absence is an error
+        raise FileNotFoundError(f"[parse_one/hii] {pre}.pump absent but hii_pump.dat staged: the deck "
+                                f"asked for it, the resonance blends would stay pumped")
     Sigma_d = integrate_grain_abundance(f"{pre}.dusa")
     # .con_grain is the emissivity [erg cm-3 s-1] of the LAST zone: x thickness -> per cm2
     thickness = zone_edges(np.loadtxt(f"{pre}.dusa", comments='#', usecols=0, ndmin=1))[-1]
