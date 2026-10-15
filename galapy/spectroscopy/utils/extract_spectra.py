@@ -10,6 +10,7 @@ import argparse
 import os
 import json
 import numpy as np
+from tqdm import tqdm
 from galapy.CompositeStellarPopulation import (CSP, load_SSP_table, reshape_SSP_table)
 import galapy.internal.constants as CONST
 
@@ -389,24 +390,26 @@ def extract_ssp_seds(outdir, target_taus = taus,
 
     os.makedirs(outdir, exist_ok=True)
     metadata, n = [], 0
-    for it in selected_it:
-        for iz in selected_iz:
-            file_name = f"ssp_tau{t[it]:.3e}_Z{Z[iz]:.4f}.sed"
-            path = os.path.join(outdir, file_name)
-            to_cloudy_sed(path, cube = cube, it=it, iz=iz, lambda_min_A=truncate_lyman,
-                          lambda_max_A=truncate_red,extrapolate = extrapolate)
-            n += 1
-            if truncate_lyman is None:
-                metadata.append(
-                    {
-                        'tau_SSP' : float(t[it]),
-                        'Z_star' : float(Z[iz]),
-                        'sed_file' : file_name,
-                        'it' : it,
-                        'iz' : iz,
-                        'Qh_unit' : cloudy_sed_QH(path),
-                    }
-                )
+    with tqdm(total=len(selected_it) * len(selected_iz), desc='[extract_ssp]', unit='SED') as pbar:
+        for it in selected_it:
+            for iz in selected_iz:
+                file_name = f"ssp_tau{t[it]:.3e}_Z{Z[iz]:.4f}.sed"
+                path = os.path.join(outdir, file_name)
+                to_cloudy_sed(path, cube = cube, it=it, iz=iz, lambda_min_A=truncate_lyman,
+                              lambda_max_A=truncate_red,extrapolate = extrapolate)
+                n += 1
+                if truncate_lyman is None:
+                    metadata.append(
+                        {
+                            'tau_SSP' : float(t[it]),
+                            'Z_star' : float(Z[iz]),
+                            'sed_file' : file_name,
+                            'it' : it,
+                            'iz' : iz,
+                            'Qh_unit' : cloudy_sed_QH(path),
+                        }
+                    )
+                pbar.update(1)
 
     if truncate_lyman is None:
         with open(os.path.join(outdir, "ssp_metadata.json"), "w") as f:

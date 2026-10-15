@@ -5,6 +5,7 @@
 import argparse
 import pathlib
 import numpy as np
+from tqdm import tqdm
 
 
 import galapy.internal.constants as CONST
@@ -70,7 +71,7 @@ def build_jobs(sample, names, ssp_meta):
     """
     idx = {n: i for i, n in enumerate(names)}
     jobs = []
-    for j, row in enumerate(sample):
+    for j, row in enumerate(tqdm(sample, desc='[lhs_hii] build jobs', unit='sample')):
         logU = float(row[idx['logU']])
         lognH = float(row[idx['lognH_HII']])
         log_zeta_O = float(row[idx['log_zeta_O']])
@@ -113,6 +114,7 @@ def main():
     if charter['sector'] != 'hii' :
         raise ValueError('[lhs_hii] charter not right sector, expected hii')
 
+    print("[lhs_hii] sampling LHS (random-cd)...")
     sample, names = CORE.sample_lhs(charter)
     ssp_meta = CORE.read_ssp_meta(args.ssp_meta)
     jobs = build_jobs(sample, names, ssp_meta)

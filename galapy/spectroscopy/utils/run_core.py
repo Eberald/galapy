@@ -19,6 +19,8 @@ import traceback
 # imports a tool that automatically sets up a class to store data, make possible immutable data (avoid runtime mod.)
 from dataclasses import dataclass
 
+from tqdm import tqdm
+
 from galapy.spectroscopy.utils import CLOUDY_REQUIRED, cloudy_banner, require_cloudy
 
 # for wildcard import (public interface)
@@ -742,7 +744,11 @@ def main(argv=None, sector_name='hii', runs_default=None, parse_inputs=()):
     print(f'[{sector_name}] {len(jobs)} job, {args.jobs} processes, mode={mode}, work={work}'
           + (f', frags={frags}' if parse else ''), file=sys.stderr)
 
+    pbar = tqdm(total=len(jobs), desc=f'[{sector_name}] {mode}', unit='job', file=sys.stderr)
+    n_bad = 0
+
     def _echo(r):
+        nonlocal n_bad
         mark = {'ok': ' ', 'warning': 'W', 'skipped': '-', 'failed': '!', 'timeout': 'T',
                 'incomplete': '?'}[r['status']]
         conv = '' if r['converged'] is not False else '  [NOT CONVERGED]'
@@ -752,11 +758,19 @@ def main(argv=None, sector_name='hii', runs_default=None, parse_inputs=()):
             ptxt += f" ({p['error']})"
         elif r['status'] == 'failed' and r.get('error'):
             ptxt += f"  ({r['error']})"
-        print(f"  [{mark}] {r['job_id']}  {r['seconds']:6.1f}s{conv}{ptxt}", file=sys.stderr)
+        # pbar.write instead of print: the job lines scroll above the bar without breaking it
+        pbar.write(f"  [{mark}] {r['job_id']}  {r['seconds']:6.1f}s{conv}{ptxt}", file=sys.stderr)
+        n_bad += (r['status'] in ('failed', 'timeout', 'incomplete')
+                  or (p is not None and p['status'] == 'failed'))
+        pbar.set_postfix(failed=n_bad)
+        pbar.update(1)
 
-    results = run_all(jobs, runs, work, sector_name, inst.exe if inst else None, args.timeout,
-                      nproc=args.jobs, linelist_dir=args.linelists, resume=args.resume,
-                      parse=parse, run=not args.parse_only, on_result=_echo)
+    try:
+        results = run_all(jobs, runs, work, sector_name, inst.exe if inst else None, args.timeout,
+                          nproc=args.jobs, linelist_dir=args.linelists, resume=args.resume,
+                          parse=parse, run=not args.parse_only, on_result=_echo)
+    finally:
+        pbar.close()  # also on Ctrl-C: the summary below does not end up glued to the bar
 
     extra = {'mode': mode}
     if parse:

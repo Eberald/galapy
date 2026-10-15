@@ -8,6 +8,7 @@ import sys
 
 import h5py
 import numpy as np
+from tqdm import tqdm
 
 from galapy.internal.constants import Units_Legend, Root_Shared_HII
 
@@ -57,7 +58,7 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
             out.attrs['ssp_lib'] = ssp_lib
             ref = None
             n_pts = 0
-            for fp in frags:
+            for fp in tqdm(frags, desc='[merge]', unit='frag', file=sys.stderr):
                 with h5py.File(fp, 'r') as fr:
                     absent = [d for d in Root_Shared_HII if d not in fr]
                     if absent:

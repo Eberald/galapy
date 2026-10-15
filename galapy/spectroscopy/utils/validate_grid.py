@@ -32,6 +32,7 @@ from dataclasses import dataclass
 
 import h5py
 import numpy as np
+from tqdm import tqdm
 
 import galapy.internal.constants as CONST
 from galapy.spectroscopy.utils import CLOUDY_REQUIRED
@@ -1403,9 +1404,10 @@ def run_checks(ctx, strict=False):
     Executes predefined checks based on the provided context and returns the results.
     """
     results = []
-    for spec in CHECKS:
-        if ctx.sector not in spec.sectors:
-            continue
+    specs = [spec for spec in CHECKS if ctx.sector in spec.sectors]
+    pbar = tqdm(specs, desc=f'[validate {ctx.sector}]', unit='check', file=sys.stderr)
+    for spec in pbar:
+        pbar.set_postfix_str(spec.name)  # the check running now: the rw-* ones read every workdir
         try:
             status, detail = spec.function(ctx)
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed

@@ -10,6 +10,7 @@ import sys
 import h5py
 import numpy as np
 from jinja2 import StrictUndefined, Template
+from tqdm import tqdm
 
 import galapy.internal.constants as CONST
 from galapy.spectroscopy.utils.physics.abundances import format_cloudy_float
@@ -154,7 +155,7 @@ def main():
     # rendering deck, accumulate seds in set (no duplicates)
     sed_dir = pathlib.Path(args.sed_dir)
     seds_needed = set()
-    for job in jobs:
+    for job in tqdm(jobs, desc='[gen_input] decks', unit='deck', file=sys.stderr):
         deck_path = out_dir / f"hii_{job['job_id']}.in"
         deck_path.write_text(render_one(tmpl, job))
         seds_needed.add(job['sed_file'])
