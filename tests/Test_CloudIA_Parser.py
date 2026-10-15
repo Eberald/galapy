@@ -12,7 +12,7 @@ from galapy.spectroscopy.utils.hii.parse_one_hii import (fesc, fuv_transmittance
                                                          parse_cloudy_cong, parse_table_sed, Stellar_Max_A,
                                                          Root_Units_HII, Points_Units_HII)
 from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed
-from galapy.internal.constants import LymanA, FUV_Lo_A, FUV_Hi_A, clight, Lsun
+from galapy.internal.constants import LymanA, LyLimit, FUV_Lo_A, FUV_Hi_A, clight, Lsun
 
 C_CGS = clight['cm/s']
 
@@ -204,8 +204,13 @@ def test_table_sed_round_trip_of_the_written_file(tmp_path):
     L_lambda = 1e-3 * (lam / 1e3) ** -2.2                 # Lsun A^-1 per Msun
     wave, nuLnu = parse_table_sed(write_cloudy_sed(lam, L_lambda, tmp_path / 'n.sed'))
     assert np.all(np.diff(wave) > 0)
-    np.testing.assert_allclose(wave, lam[::-1], rtol=1e-6)
-    np.testing.assert_allclose(nuLnu, (L_lambda * lam * Lsun)[::-1], rtol=1e-6)
+    nufnu = L_lambda * lam * Lsun                         # the writer adds 2 nodes bracketing the Lyman edge,
+    blue, red = lam < LyLimit, lam > LyLimit              # copying the flux of the nearest blue/red node
+    exp_w = np.append(lam, [LyLimit - 0.01, LyLimit + 0.01])
+    exp_f = np.append(nufnu, [nufnu[blue][np.argmax(lam[blue])], nufnu[red][np.argmin(lam[red])]])
+    order = np.argsort(exp_w)
+    np.testing.assert_allclose(wave, exp_w[order], rtol=1e-6)
+    np.testing.assert_allclose(nuLnu, exp_f[order], rtol=1e-6)
     wave_e, nuLnu_e = parse_table_sed(write_cloudy_sed(lam, L_lambda, tmp_path / 'e.sed', extrapolate=True))
     assert np.array_equal(wave_e, wave) and np.array_equal(nuLnu_e, nuLnu)
 
