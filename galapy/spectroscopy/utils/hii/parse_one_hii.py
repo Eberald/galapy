@@ -145,8 +145,9 @@ def parse_cloudy_cong(path, wave_ref=None):
     """Parses the CONG file to extract the total contribution of dust components.
 
     This function extracts the last column that represents the total contribution from
-    dust grains (graphite, silicates, and overall total) in an optically-thin limit, in
-    nuFnu [erg cm^-2 s^-1] per cm^2 of the illuminated face, like the continuum.
+    dust grains (graphite, silicates, and overall total) in an optically-thin limit.
+    Unlike the continuum, it is the emissivity nu*4pi*j_nu [erg cm^-3 s^-1] of the LAST
+    zone only (gv.GrainEmission, per unit volume): x thickness -> per cm^2.
 
     Args:
         path (str): The file path of the CONG diagnostic file.
@@ -717,6 +718,33 @@ def s_k_factor(Qh_unit_node, logU, lognH):
     """
     return Qh_unit_node / (10.0**logU * 10.0**lognH * clight['cm/s'])
 
+
+def as_float32(name, values):
+    """
+    Casts to float32 an output stored per Msun, refusing finite values out of its range.
+
+    A plain astype('f4') turns them into inf with only a RuntimeWarning: a wrong unit or
+    s_k would be written to the grid silently.
+
+    Args:
+        name (str): Name of the dataset, for the error message.
+        values (numpy.ndarray): The values to cast.
+
+    Returns:
+        numpy.ndarray: The values as float32.
+
+    Raises:
+        ValueError: If a finite value overflows float32.
+    """
+    values = np.asarray(values, dtype=float)
+    with np.errstate(over='ignore'):
+        out = values.astype('f4')
+    overflow = np.isfinite(values) & ~np.isfinite(out)
+    if overflow.any():
+        raise ValueError(f"[parse_one/hii] {name}: {overflow.sum()} values out of the float32 range "
+                         f"(max |value| = {np.abs(values[overflow]).max():.3e}): check units and s_k")
+    return out
+
 @functools.lru_cache(maxsize=None)
 def spec_index(spec_path):
     """
@@ -875,6 +903,10 @@ def main(argv=None):
     Sigma_d = integrate_grain_abundance(f"{pre}.dusa")
     # .con_grain is the emissivity [erg cm-3 s-1] of the LAST zone: x thickness -> per cm2
     thickness = zone_edges(np.loadtxt(f"{pre}.dusa", comments='#', usecols=0, ndmin=1))[-1]
+    # per Msun outputs in float32: checked BEFORE opening the output, an overflow leaves no file
+    nebular_per_Msun = as_float32('continuum/nebular_emission_per_Msun', nebular * s_k)
+    grain_per_Msun = as_float32('continuum/grain_diag_per_Msun', cong * thickness * s_k)
+    lines_per_Msun = as_float32('lines_emergent/fluxes', line_data['fluxes'] * s_k)
 
     with atomic_h5(out) as f:
         # units: root attribute + legend of the grid_point members, attributes of the root datasets
@@ -902,12 +934,12 @@ def main(argv=None):
         T_fuv, N_fuv = fuv_transmittance_hii(wave, col2, col3, col4)
         g.create_dataset('T_fuv_hii', data=T_fuv)  # FUV (6-13.6 eV) transmitted / incident energy
         g.create_dataset('N_fuv_hii', data=N_fuv)  # FUV nebular emission / incident energy
-        g.create_dataset('continuum/nebular_emission_per_Msun', data=(nebular * s_k).astype('f4'))  # diffuse continuum without lines, nuLnu per Msun
-        g.create_dataset('continuum/grain_diag_per_Msun', data=(cong * thickness * s_k).astype('f4'))  # diagnostic grain emission (last zone x thickness), per Msun
+        g.create_dataset('continuum/nebular_emission_per_Msun', data=nebular_per_Msun)  # diffuse continuum without lines, nuLnu per Msun
+        g.create_dataset('continuum/grain_diag_per_Msun', data=grain_per_Msun)  # diagnostic grain emission (last zone x thickness), per Msun
         g.create_dataset('continuum/transmission', data=transmission.astype('f4'))  # transmitted / incident ratio per wavelength
         g.create_dataset('incident/sed_per_Msun', data=sed_nuLnu.astype('f4'))  # input stellar SED, nuLnu per Msun
         g.attrs['sed_support_A'] = sed_support  # (min, max) wavelength [A] where incident > 0
-        g.create_dataset('lines_emergent/fluxes', data=(line_data['fluxes'] * s_k).astype('f4'))  # emergent line luminosities per Msun
+        g.create_dataset('lines_emergent/fluxes', data=lines_per_Msun)  # emergent line luminosities per Msun
         g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / M_Sun_G)  # dust mass [Msun] per Msun of SSP
         g.create_dataset('s_k', data=s_k)  # geometric factor per cm^2 -> per Msun [cm^2 Msun^-1]
         # inside atomic_h5: a member written without its units leaves no fragment

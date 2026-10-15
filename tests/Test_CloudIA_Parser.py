@@ -9,7 +9,7 @@ import pytest
 # HII parser
 from galapy.spectroscopy.utils.hii.parse_one_hii import (fesc, fuv_transmittance_hii, s_k_factor, support_safe_ratio,
                                                          energy_balance, cmb_incident_ratio, air_to_vacuum_A,
-                                                         parse_cloudy_cong, parse_table_sed, Stellar_Max_A,
+                                                         parse_cloudy_cong, parse_table_sed, Stellar_Max_A, as_float32,
                                                          Root_Units_HII, Points_Units_HII)
 from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed, _lyman_edge_nodes
 from galapy.internal.constants import LymanA, LyLimit, FUV_Lo_A, FUV_Hi_A, clight, Lsun
@@ -181,6 +181,14 @@ def test_cong_must_share_the_continuum_mesh(tmp_path):
         parse_cloudy_cong(path, wave_ref=wave * (1.0 + 1e-3))
     with pytest.raises(ValueError, match='continuum mesh'):
         parse_cloudy_cong(path, wave_ref=wave[1:])
+
+
+@pytest.mark.unit
+def test_as_float32_refuses_overflow():
+    out = as_float32('x', np.array([0.0, 1e36, np.inf]))
+    assert out.dtype == np.float32 and out[1] == pytest.approx(1e36, rel=1e-6) and np.isinf(out[2])
+    with pytest.raises(ValueError, match='float32 range'):
+        as_float32('continuum/grain_diag_per_Msun', np.array([1.0, 1e46]))
 
 
 @pytest.mark.unit

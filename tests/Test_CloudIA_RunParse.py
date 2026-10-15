@@ -48,7 +48,7 @@ col2 = np.where((w > 912) & (w < 5e5), 1e-3 * (w / 1e3) ** -1.2, 0.0)
 col3, col4, z = 0.6 * col2, 1e-5 * (w / 1e3) ** -0.5, np.zeros(n)
 np.savetxt(prefix + '.con', np.column_stack([w, col2, col3, col4, z, z, z, z, 0.1 * col4]),
            header='Cont nu\tincident\ttrans\tDiffOut\tnet trans\treflc\ttotal\treflin\toutlin')
-g = 1e-7 * np.exp(-(np.log10(w) - 5.0) ** 2)
+g = 1e-24 * np.exp(-(np.log10(w) - 5.0) ** 2)
 np.savetxt(prefix + '.con_grain', np.column_stack([w, 0.4 * g, 0.6 * g, g]),
            header='lambda\tgra\tsil\ttotal')
 open(prefix + '.lines', 'w').write(
