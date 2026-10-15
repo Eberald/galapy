@@ -336,3 +336,21 @@ def test_to_cloudy_sed_requires_a_source(tmp_path):
         spc.to_cloudy_sed(tmp_path / 'none.sed')
     with pytest.raises(ValueError):
         spc.to_cloudy_sed(tmp_path / 'none.sed', it=0, iz=0)
+
+@pytest.mark.unit
+def test_single_surviving_point_raises(tmp_path, spectrum):
+    """A cut that leaves one point would make CLOUDY abort ('less than two data pairs'): the
+    writer refuses it (A-4)."""
+    lam, y = spectrum
+    keep = lam[np.searchsorted(lam, 2.0e3)]
+    with pytest.raises(ValueError, match='at least two'):
+        spc.write_cloudy_sed(lam, y, tmp_path / 'one.sed', lambda_min_A=keep, lambda_max_A=keep)
+
+
+@pytest.mark.unit
+def test_QH_threshold_is_the_lyman_limit():
+    """The Q_H of the file (Qh_unit of the metadata, hence s_k) and the reference on the SSP
+    table integrate up to the same threshold, CONST.LyLimit (A-5)."""
+    import inspect
+    for f in (spc.cloudy_sed_QH, spc.cloudy_sed_QH_reference):
+        assert inspect.signature(f).parameters['lyman_A'].default == CONST.LyLimit

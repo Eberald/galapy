@@ -171,3 +171,10 @@ def test_shared_chemistry_is_reachable_from_generators():
     """
     from galapy.spectroscopy.utils.physics.abundances import (
         Chemistry, build_zeta_map, grain_scale_from_xi_d, format_cloudy_float)
+
+@pytest.mark.unit
+def test_all_is_the_lazy_registry():
+    """__all__ names exactly what _LAZY can import (A-2): a name in __all__ without a lazy
+    entry makes `from galapy.spectroscopy import *` fail with AttributeError."""
+    import galapy.spectroscopy as gs
+    assert set(gs.__all__) == set(gs._LAZY)

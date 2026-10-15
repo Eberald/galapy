@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import pytest
+import signal
 
 from galapy.spectroscopy.utils import CloudyNotFound
 from galapy.spectroscopy.utils import run_core as rc
@@ -572,6 +573,7 @@ def test_missing_cloudy_aborts_before_any_work(tmp_path, runs, monkeypatch, caps
     rcode = rc.main(['--runs', str(d), '--index', '0'], 'hii')
     err = capsys.readouterr().err
     assert rcode == 1
+    assert 'galapy-install-cloudy' in err
     assert not (d / 'work' / ids[0]).exists()
 
 
@@ -641,3 +643,45 @@ def test_sector_drivers_are_import_safe():
     for mod in DRIVERS:
         m = importlib.import_module(mod)
         assert hasattr(m, 'main')
+
+@pytest.mark.unit
+def test_staging_error_fails_only_that_job(tmp_path, runs, test_cloudy):
+    """Un deck che nomina un .sed assente fallisce IL SUO job (staging), gli altri proseguono."""
+    d, ids, ll = runs
+    (d / f'hii_{ids[1]}.in').write_text(TEST_INPUT.replace('ssp_003_02.sed', 'missing.sed'))
+    res = rc.run_all(ids, d, tmp_path / 'work', 'hii', str(test_cloudy), 60, nproc=2,
+                     linelist_dir=ll)
+    st = {r['job_id']: r for r in res}
+    assert st[ids[1]]['status'] == 'failed' and 'stage_job' in st[ids[1]]['error']
+    assert all(st[j]['status'] == 'ok' for j in ids if j != ids[1])
+
+
+@pytest.mark.unit
+def test_killed_worker_does_not_lose_the_manifest(tmp_path, runs, monkeypatch):
+    """Un worker ucciso rompe il pool: il manifest esiste comunque e il job e' 'failed'."""
+    exe = tmp_path / 'cloudy_killer'
+    exe.write_text(CLOUDY_TEST.replace(
+        "prefix = sys.argv[sys.argv.index('-r') + 1] #take element after -r",
+        "prefix = sys.argv[sys.argv.index('-r') + 1]\n"
+        "if prefix.endswith('j001'):\n"
+        "    import signal; os.kill(os.getppid(), signal.SIGKILL)"))
+    exe.chmod(exe.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv('CLOUDY_EXE', str(exe))
+    d, ids, ll = runs
+    work = tmp_path / 'work'
+    rcode = rc.main(['--runs', str(d), '--work', str(work), '--linelists', str(ll),
+                     '--jobs', '2'], 'hii')
+    assert rcode == 1
+    doc = json.loads((work / 'run_manifest.json').read_text())
+    st = {r['job_id']: r for r in doc['jobs']}
+    assert st['j001']['status'] == 'failed' and 'pool' in st['j001']['error']
+
+
+@pytest.mark.unit
+def test_missing_parse_input_aborts_before_any_work(tmp_path, runs, test_cloudy, capsys):
+    """Gli input-file del parser si verificano UNA volta, prima di montare qualunque workdir."""
+    d, ids, ll = runs
+    rcode = rc.main(['--runs', str(d), '--linelists', str(ll), '--spec', str(tmp_path / 'nope.h5')],
+                    'hii', parse_inputs=(('--spec', 'x.h5', 'job spec'),))
+    assert rcode == 2 and 'parser inputs absent' in capsys.readouterr().err
+    assert not (d / 'work').exists()

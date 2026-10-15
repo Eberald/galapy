@@ -902,8 +902,8 @@ def check_oiii_doublet(ctx):
 def check_dust_mass_scaling(ctx):
     """Dust mass per solar mass against the truncated Stromgren scaling.
 
-    M_dust / M_SSP ~ (1 - f_esc) (Z/Z_GC) g(xi_d) Q_H / n_H, constant fitted (median residual);
-    Z/Z_GC and g from the chemistry module. The residual trend with log U is reported.
+    M_dust / M_SSP ~ (1 - f_esc) xi_d m_Z(zeta_O) Q_H / n_H, constant fitted (median residual);
+    m_Z (metal mass per H) from the chemistry module, as the grain_scale of the deck. The residual trend with log U is reported.
 
     Pass: >= 90% of the models within 0.2 dex.
     """
@@ -915,15 +915,14 @@ def check_dust_mass_scaling(ctx):
         chemistry = _chemistry()
     except Exception as exc:  # noqa: BLE001 - any failure means "not available"
         return SKIP, {'reason': f'chemistry module unavailable: {_reason(exc)}'}
-    from galapy.spectroscopy.utils.physics.abundances import grain_scale_from_xi_d
     lookup = {(_scan_key(m['tau_SSP']), _scan_key(m['Z_star'])): float(m['Qh_unit']) for m in ctx.ssp_meta}
     q_h = np.array([lookup.get((_scan_key(t), _scan_key(z)), np.nan)
                     for t, z in zip(table.param('tau_SSP'), table.param('Z_star'))])
-    z_factor = np.array([chemistry.metallicity_from_zeta(v) for v in table.param('log_zeta_O')]) / chemistry.Z_GC
-    g_factor = np.array([grain_scale_from_xi_d(v) for v in table.param('xi_d')])
+    # the dust mass of the deck: xi_d x metal mass per H (grain_scale of gen_lhs_hii)
+    dust_factor = table.param('xi_d') * np.array([chemistry.metal_mass_per_H(v) for v in table.param('log_zeta_O')])
     with np.errstate(divide='ignore', invalid='ignore'):
         residual = np.log10(table.scalars['dust_mass']) - (
-            np.log10((1.0 - table.param('f_esc')) * z_factor * g_factor * q_h) - table.param('lognH_HII'))
+                np.log10((1.0 - table.param('f_esc')) * dust_factor * q_h) - table.param('lognH_HII'))
     good = table.converged & np.isfinite(residual)
     if not good.any():
         return SKIP, {'reason': 'no converged model with dust_mass_per_Msun and a finite prediction'}

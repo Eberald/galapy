@@ -503,6 +503,9 @@ def test_merge_rejects_fragments_with_different_units(hii, fake_cloudy, tmp_path
     runs, ids, argv = hii
     assert run_hii_main(argv) == 0
     with h5py.File(runs / 'parsed' / f'{ids[which]}.h5', 'a') as f:
+        if alter == 'drop':
+            del f['units'].attrs['dust_mass_per_Msun']
+        else:
             f['units'].attrs['dust_mass_per_Msun'] = 'g g-1'
     out = tmp_path / 'hii_grid.h5'
     with pytest.raises(ValueError, match='units'):
@@ -611,3 +614,16 @@ def test_parse_one_rejects_the_sed_of_another_node(hii, fake_cloudy):
         phii.main([wd, *inputs, '--out', str(runs / 'manual')])
     meta.write_text(json.dumps([{**NODE, 'Qh_unit': 1e40, 'sed_file': 'ssp_003_02.sed'}]))
     assert phii.main([wd, *inputs, '--out', str(runs / 'manual')]) == 0
+
+@pytest.mark.unit
+def test_missing_pump_save_is_a_parse_failure(hii, fake_cloudy):
+    """The deck asks for the .pump save when hii_pump.dat is staged: a workdir without it fails
+    that parse, with no fragment, instead of keeping the resonance blends pumped (A-14)."""
+    runs, ids, argv = hii
+    ll = pathlib.Path(argv[argv.index('--linelists') + 1])
+    (ll / 'hii_pump.dat').write_text('blnd 1215.68A\nH  1 1215.67A\nH  1 Pump 1215.67A\n')
+    assert run_hii_main(argv + ['--job-id', ids[0]]) == 1
+    doc, st = _manifest(runs / 'work' / 'run_manifest.json')
+    assert st[ids[0]]['status'] == 'ok' and st[ids[0]]['parse']['status'] == 'failed'
+    assert 'pump' in st[ids[0]]['parse']['error']
+    assert not (runs / 'parsed' / f'{ids[0]}.h5').exists()

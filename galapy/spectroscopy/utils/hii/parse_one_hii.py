@@ -767,6 +767,7 @@ def require_successful_run(wd):
     """
     Only a succesfull run of run_core is parsed. Returns not_converged (bool).
     """
+    wd = pathlib.Path(wd)
     flag = wd / 'converged.flag'
     if not flag.is_file():
         raise FileNotFoundError(f"[parse_one/hii] {flag}: absent -- convergence unknown (DD-4). "
@@ -782,7 +783,7 @@ def resolve_out(out, job_id):
     """
     --out is a DIRECTORY (an existing one, or a path without extension, like the default
     data/hii/parsed) -> <dir>/<job_id>.h5; otherwise it is the FILE to write (<id>.h5, or
-    <id>.h5.part as the Slurm script of v70 passes before its own `mv`). Parents are created.
+    <id>.h5.part as a job array may pass before its own `mv`). Parents are created.
     """
     out = pathlib.Path(out)
     if out.is_dir() or out.suffix == '':

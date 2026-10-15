@@ -11,7 +11,7 @@ from galapy.spectroscopy.utils.hii.parse_one_hii import (fesc, fuv_transmittance
                                                          energy_balance, cmb_incident_ratio, air_to_vacuum_A,
                                                          parse_cloudy_cong, parse_table_sed, Stellar_Max_A,
                                                          Root_Units_HII, Points_Units_HII)
-from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed
+from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed, _lyman_edge_nodes
 from galapy.internal.constants import LymanA, LyLimit, FUV_Lo_A, FUV_Hi_A, clight, Lsun
 
 C_CGS = clight['cm/s']
@@ -342,3 +342,10 @@ def test_transmission_dtype_and_shape_are_preserved():
     _w, col2, col3, _gap = _cols_with_gap(n=97)
     t = support_safe_ratio(col2, col3)
     assert t.shape == col3.shape and t.dtype == np.dtype(float)
+
+@pytest.mark.unit
+def test_require_successful_run_accepts_a_string(tmp_path):
+    """The public API takes a path as str or Path (A-7): the DD-4 message, never a TypeError."""
+    from galapy.spectroscopy.utils.hii.parse_one_hii import require_successful_run
+    with pytest.raises(FileNotFoundError, match='DD-4'):
+        require_successful_run(str(tmp_path))

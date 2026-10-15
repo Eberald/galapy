@@ -181,7 +181,8 @@ def write_cloudy_sed(wavelength_A,
         mask &= wavelength_A <= float(lambda_max_A)
     if not np.all(mask):
         if not np.any(mask):
-            raise ValueError(f'lambda_min_A={lambda_min_A} is too big for the SED (no points left after cut)')
+            raise ValueError(f'cut [{lambda_min_A}, {lambda_max_A}] A leaves no points '
+                             + f'(SED range {wavelength_A.min():.4g}-{wavelength_A.max():.4g} A)')
         wavelength_A, nuFnu = wavelength_A[mask], nuFnu[mask]
 
     wavelength_A, nuFnu = _lyman_edge_nodes(wavelength_A, nuFnu)
@@ -189,6 +190,8 @@ def write_cloudy_sed(wavelength_A,
     wavelength_A = np.array([float(f'{w:.6e}') for w in wavelength_A])  # written values on files
     order = np.argsort(wavelength_A, kind='stable')  # monotonic sort
     wavelength_A, nuFnu = wavelength_A[order], nuFnu[order]
+    if wavelength_A.size < 2:
+        raise ValueError('table SED requires at least two data pairs after the cut')
     order = np.concatenate(([True], np.diff(wavelength_A) > 0.0))  # strictly monotonic on files
     wavelength_A, nuFnu = wavelength_A[order], nuFnu[order]
 
@@ -283,7 +286,7 @@ def _q_h(wavelength_A, nuLnu, lyman_A = CONST.LyLimit, n_fine=20000) -> float:
     return float(np.trapezoid(fine, lam * 1e-8) / (CONST.hP["erg*s"] * CONST.clight["cm/s"]))
 
 
-def cloudy_sed_QH(sed_path, lyman_A=CONST.LymanA) -> float:
+def cloudy_sed_QH(sed_path, lyman_A=CONST.LyLimit) -> float:
     """
     Calculates the hydrogen ionizing photon emission rate (QH) from a spectral energy distribution (SED).
 

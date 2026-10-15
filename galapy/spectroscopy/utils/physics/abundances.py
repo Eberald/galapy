@@ -408,12 +408,12 @@ def grain_scale_from_xi_d(xi_d):
 
     This function computes the xi_d-dependent part of the grain factor g(xi_d) using
     the formula g(xi_d) = xi_d / XI_D_MW. It does not return the full argument for
-    'grains ISM', but only the component dependent on xi_d. The full grain factor
-    is given by:
+    'grains ISM', but only the component dependent on xi_d (the gauge). The argument of
+    'grains ISM' in the decks is
 
-        grain_fac = (Z(zeta_O) / Z_GC) * g(xi_d)
+        grain_scale = xi_d * metal_mass_per_H(zeta_O) / GRAIN_MASS_ISM_PER_H
 
-    Here, Z(zeta_O) derived using the Chemistry.metallicity_from_zeta() method.
+    computed by gen_lhs_hii / gen_lhs_pdr.
 
     Args:
         xi_d (float): Dust-to-metal mass ratio, xi_d (the dust-to-gas ratio is xi_d Z). Must be in the

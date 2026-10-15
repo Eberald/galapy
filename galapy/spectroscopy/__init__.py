@@ -1,11 +1,10 @@
-# galapy/CloudIA/__init__.py
 # Author: Enrico Veraldi
 # Nebular module CLOUDY-based for Galapy (CloudIA)
 
 __all__ = [
     'HIIEmulator',
     'PDREmulator',
-    'NebularCSB',
+    'NebularCSP',
     'HIINebularProcessor',
     'PDRNebularProcessor',
     'TwoSectorCombiner',
@@ -63,7 +62,7 @@ def __getattr__(name):
         module = importlib.import_module(target)
     except ImportError as e:
         missing = getattr(e, 'name', '') or ''
-        if missing.split('.')[0] in {'torch','gpytorch','scikit-learn','pyyaml'}:
+        if missing.split('.')[0] in {'torch', 'gpytorch', 'sklearn', 'yaml'}:
             raise ImportError(f"{_HINT} (missing: {missing})") from e
         raise
     obj = getattr(module, name)

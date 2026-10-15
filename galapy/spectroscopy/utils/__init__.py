@@ -133,7 +133,9 @@ def require_cloudy(check_version: bool = True) -> CloudyInstall:
     """
     det = detect_cloudy()
     if not det.found:
-        raise CloudyNotFound(f'Cloudy not found')
+        raise CloudyNotFound('Cloudy not found. Three ways out: (1) run inside the CloudIA container '
+                             '(ghcr.io/<user>/cloudia:c25.00); (2) galapy-install-cloudy; '
+                             '(3) install C25.00 by hand and export CLOUDY_EXE and CLOUDY_DATA_PATH')
     if check_version:
         banner = cloudy_banner(det.exe)
         if banner and CLOUDY_REQUIRED.lstrip('C') not in banner:
@@ -304,7 +306,7 @@ def ensure_cloudy(prefix: str = None,
         raise CloudyNotFound(
             f"'make' not found in PATH. Cloudy requires GNU Make to be compiled from source.\n"
             f"{hint}\n"
-            f"Then re-run: python -m galapy.spectroscopy.utils --install-cloudy"
+            f"Then re-run: galapy-install-cloudy"
         )
 
     # --- C++ compiler -------------------------------------------------------
@@ -332,7 +334,7 @@ def ensure_cloudy(prefix: str = None,
         raise CloudyNotFound(
             f"No C++ compiler (g++/c++/clang++) found in PATH. Cloudy is written in C++ and "
             f"requires a C++11-compatible, GCC/Clang-compatible compiler to be built.\n{hint}\n"
-            f"Then re-run: python -m galapy.spectroscopy.utils --install-cloudy"
+            f"Then re-run: galapy-install-cloudy"
         )
 
     if system == 'Windows':

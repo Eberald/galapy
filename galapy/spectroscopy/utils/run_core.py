@@ -529,7 +529,13 @@ def run_all(jobs, runs_dir, work_root, sector_name, exe, timeout, nproc=1,
     with _fut.ProcessPoolExecutor(max_workers=nproc) as pool:  # initialise pool
         futs = {pool.submit(run_job, j, *args): j for j in jobs}  # submit jobs
         for f in _fut.as_completed(futs):
-            r = f.result()
+            try:
+                r = f.result()
+            except Exception as exc:  # a dead worker breaks the pool: an outcome, not a crash
+                j = futs[f]
+                r = {'job_id': j, 'status': 'failed', 'converged': None, 'seconds': 0.0,
+                    'workdir': str(pathlib.Path(work_root) / j), 'parse': None,
+                    'error': f'{type(exc).__name__} in the pool: {exc}'}
             results.append(r)
             if on_result:
                 on_result(r)
@@ -596,6 +602,7 @@ def write_run_manifest(path, sector_name, inst, results, extra=None):
     }
     if extra:
         doc.update(extra)
+    pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(path).write_text(json.dumps(doc, indent=2))
     return doc
 

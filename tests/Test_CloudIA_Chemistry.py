@@ -9,7 +9,7 @@ import pytest
 import ast
 from jinja2 import Environment, StrictUndefined, Template, meta
 
-from galapy.internal.constants import (ATOMIC_WEIGHT, SOLAR_REFERENCES, XI_D_MW)
+from galapy.internal.constants import (ATOMIC_WEIGHT, SOLAR_REFERENCES, XI_D_MW, GRAIN_MASS_ISM_PER_H)
 from galapy.spectroscopy.utils.physics.abundances import (ZMAP_DEFAULT_GRID, Chemistry,
     ChemistryHashMismatch, build_zeta_map, format_cloudy_float,
     grain_scale_from_xi_d)
@@ -447,11 +447,9 @@ def _job_hii(lz=_LZ_DECK):
         'job_id': '00000_003_02',
         'lognH_HII': 2.5, 'logU': -2.5, 'z_CMB': 3.0, 'F_star': 0.5,
         'log_zeta_O': lz,
-        'delta_NO': CHEM.delta_O('N', lz), 'delta_CO': CHEM.delta_O('C', lz),
         'sed_file': 'ssp_003_02.sed', 'log_N_stop': 21.5,
         'element_scale_block': "\n".join(CHEM.element_scale_lines(lz)),
-        'grain_scale': (CHEM.metallicity_from_zeta(lz) / CHEM.Z_GC)
-                       * grain_scale_from_xi_d(XI_D_MW),
+        'grain_scale': XI_D_MW * CHEM.metal_mass_per_H(lz) / GRAIN_MASS_ISM_PER_H,
     }
 
 
@@ -554,17 +552,17 @@ def test_grain_fac_call_site_AST(modname):
     not used in the AST representation of the 'grain_fac' assignments.
     """
     import importlib
-    mod = importlib.import_module(modname)
-    tree = ast.parse(pathlib.Path(mod.__file__).read_text())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Assign) and any(
-                getattr(t, 'id', '') == 'grain_fac' or
-                (isinstance(t, ast.Subscript) and
-                 getattr(getattr(t, 'slice', None), 'value', None) == 'grain_fac')
-                for t in node.targets):
-            dump = ast.dump(node.value)
-            assert 'metallicity_from_zeta' in dump, (modname, dump)
-            assert 'Pow' not in dump, (modname, dump)
+    # the grain factor is computed by the job-spec generator (gen_lhs_<s>), not by the renderer
+    lhs = importlib.import_module(modname.replace('gen_input_', 'gen_lhs_'))
+    tree = ast.parse(pathlib.Path(lhs.__file__).read_text())
+    values = [v for n in ast.walk(tree) if isinstance(n, ast.Dict)
+                for k, v in zip(n.keys, n.values)
+                if isinstance(k, ast.Constant) and k.value == 'grain_scale']
+    assert values, f'{lhs.__name__}: no grain_scale key'
+    for v in values:
+        dump = ast.dump(v)
+        assert 'metal_mass_per_H' in dump and 'GRAIN_MASS_ISM_PER_H' in dump, dump
+        assert 'Pow' not in dump, dump
 
 
 @pytest.mark.unit
