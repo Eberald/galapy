@@ -367,26 +367,36 @@ def zone_edges(depth_mid):
     """
     Computes the edges of zones based on their midpoints.
 
-    This function takes an array of midpoint depths and calculates the edges of
-    the zones such that the midpoint of each zone corresponds to the input depths.
     Zone boundaries [cm] from the depth of the middle of each zone (column 1 of 'save grain abundance',
-    radius.depth_mid_zone): edge_0 = 0 (illuminated face), edge_k+1 = 2 depth_mid_k - edge_k.
-    The last edge is the thickness of the cloud.
+    radius.depth_mid_zone = depth - drad/2 of zone_startend.cpp, printed with %.5e by save_do.cpp).
+
+    The exact recurrence edge_k+1 = 2 depth_mid_k - edge_k is not used: it carries the print
+    rounding (relative 5e-6) with alternating sign from zone to zone, and deep in the cloud the
+    accumulated error exceeds the thin zones CLOUDY takes at the ionization front, so the edges
+    stop increasing (~4% of the HII pilot) or give wrong zone widths. Instead:
+        edge_0 = 0 (illuminated face, DEPTH_OFFSET = 1e-30),
+        edge_k = (depth_mid_k-1 + depth_mid_k) / 2 between two zones,
+        edge_N = 2 depth_mid_N-1 - edge_N-1 (last zone symmetric about its middle),
+    which only needs depth_mid strictly increasing. With one zone the edges [0, 2 depth_mid_0]
+    are exact (depth_mid_zone = drad/2 in the first zone). The last edge is the thickness of the cloud.
 
     Parameters:
-    depth_mid (np.ndarray): A 1D array of midpoint depths.
+    depth_mid (np.ndarray): A 1D array of midpoint depths, at least one zone.
 
     Returns:
     np.ndarray: A 1D array containing the calculated zone edges.
 
     Raises:
-    ValueError: If the calculated edges are not monotonically increasing.
+    ValueError: If there is no zone, or the midpoint depths are not positive and strictly increasing.
     """
-    edges = np.zeros(len(depth_mid) + 1)
-    for k, mid in enumerate(depth_mid):
-        edges[k + 1] = 2.0 * mid - edges[k]
-    if np.any(np.diff(edges) <= 0):
-        raise ValueError("[parse_one/hii] zone edges not increasing: depth is not the middle of the zones")
+    mid = np.atleast_1d(np.asarray(depth_mid, dtype=float))
+    if mid.size == 0:
+        raise ValueError("[parse_one/hii] no zone: zone edges undefined")
+    if mid[0] <= 0 or np.any(np.diff(mid) <= 0):
+        raise ValueError("[parse_one/hii] zone depths not positive and strictly increasing")
+    edges = np.zeros(mid.size + 1)
+    edges[1:-1] = 0.5 * (mid[:-1] + mid[1:])
+    edges[-1] = 2.0 * mid[-1] - edges[-2]
     return edges
 
 
@@ -418,6 +428,8 @@ def integrate_grain_abundance(path):
       may indicate changes in file format across versions or incorrect simulation runs.
     - Depth values in the file must be strictly monotonically increasing; otherwise,
       the file may contain concatenated iterations.
+    - A cloud of one zone (the stop reached in the first zone) is integrated exactly:
+      Sigma_d = rho_d * drad, with drad = 2 depth_mid_zone.
 
     Parameters:
         path (str): The file path to the grain abundance data.
@@ -431,8 +443,6 @@ def integrate_grain_abundance(path):
         ValueError: If the file contains no valid data rows.
         ValueError: If depth values are not strictly increasing, indicating a
                     problem with file content or simulation setup.
-        ValueError: If the file contains data for fewer than two zones, which
-                    renders column integrals undefined.
     """
     p = pathlib.Path(path)
     rows, header = [], None
@@ -456,8 +466,6 @@ def integrate_grain_abundance(path):
     if np.any(np.diff(depth) <= 0):
         raise ValueError(f"[parse_one/hii] {p}: depth not strictly increasing — "
                          f"concatenation of more then one iteration.")
-    if len(depth) < 2:
-        raise ValueError(f"[parse_one/hii] {p}: only one zone in the file, column integral undefined.")
 
     return float(np.sum(rho_d * np.diff(zone_edges(depth))))  # dust surface density [g cm^-2], sum over zones
 

@@ -10,6 +10,7 @@ import pytest
 from galapy.spectroscopy.utils.hii.parse_one_hii import (fesc, fuv_transmittance_hii, s_k_factor, support_safe_ratio,
                                                          energy_balance, cmb_incident_ratio, air_to_vacuum_A,
                                                          parse_cloudy_cong, parse_table_sed, Stellar_Max_A, as_float32,
+                                                         zone_edges, integrate_grain_abundance,
                                                          Root_Units_HII, Points_Units_HII)
 from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed, _lyman_edge_nodes
 from galapy.internal.constants import LymanA, LyLimit, FUV_Lo_A, FUV_Hi_A, clight, Lsun
@@ -168,6 +169,59 @@ def test_air_to_vacuum_is_identity_up_to_2000A():
 def test_air_to_vacuum_inverts_the_cloudy_print_rule():
     wl_vac = np.array([2500.0, 4862.68, 6564.61, 1.0e4, 1.5768e6, 2.0e8])   # optical to radio
     np.testing.assert_allclose(air_to_vacuum_A(_cloudy_print_air(wl_vac)), wl_vac, rtol=1e-7)
+
+
+#================================================= test zone edges and grain column
+def _cloudy_zoning(n=900, front=600, shrink=1e-3):
+    """dr of a CLOUDY-like zoning: growing zones, a sharp shrink at the ionization front."""
+    dr = 1e13 * 1.01 ** np.arange(n)
+    dr[front:] *= shrink
+    edges = np.concatenate([[0.0], np.cumsum(dr)])
+    return dr, edges, edges[1:] - dr / 2.0
+
+
+def _write_dusa(path, depth_mid, rho):
+    rows = ''.join(f' {d:.5e}\t{r / 2:.3e}\t{r / 2:.3e}\t{r:.3e}\n' for d, r in zip(depth_mid, rho))
+    path.write_text('#Depth\tgra01\tsil01\ttotal\n' + rows)
+
+
+@pytest.mark.unit
+def test_zone_edges_survive_the_print_precision_of_the_depth():
+    """depth_mid printed with %.5e (save_do.cpp): the 2*mid - edge recurrence broke on it."""
+    dr, edges, mid = _cloudy_zoning()
+    printed = np.array([float(f'{m:.5e}') for m in mid])
+    got = zone_edges(printed)
+    assert np.all(np.diff(got) > 0)
+    assert got[-1] == pytest.approx(edges[-1], rel=1e-4)
+
+
+@pytest.mark.unit
+def test_zone_edges_of_one_zone_are_exact():
+    assert zone_edges(np.array([2.5e14])) == pytest.approx([0.0, 5e14])
+
+
+@pytest.mark.unit
+def test_zone_edges_refuse_non_increasing_depth():
+    with pytest.raises(ValueError, match='strictly increasing'):
+        zone_edges(np.array([1.0, 3.0, 3.0]))
+    with pytest.raises(ValueError, match='no zone'):
+        zone_edges(np.array([]))
+
+
+@pytest.mark.unit
+def test_grain_column_of_a_printed_file(tmp_path):
+    dr, edges, mid = _cloudy_zoning()
+    rho = np.full(mid.size, 1e-25)
+    path = tmp_path / 'model.dusa'
+    _write_dusa(path, mid, rho)
+    assert integrate_grain_abundance(path) == pytest.approx(float(np.sum(rho * dr)), rel=1e-4)
+
+
+@pytest.mark.unit
+def test_grain_column_of_one_zone(tmp_path):
+    path = tmp_path / 'model.dusa'
+    _write_dusa(path, [2.5e14], [1e-25])
+    assert integrate_grain_abundance(path) == pytest.approx(1e-25 * 5e14, rel=1e-3)
 
 
 #================================================= test grain continuum and units

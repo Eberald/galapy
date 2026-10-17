@@ -366,7 +366,7 @@ def inspect_grain_abundance_file(path):
             'last_header_token': depth_headers[-1].split()[-1].lower() if depth_headers else None,
             'zones': len(numeric), 'unreadable_rows': len(rows) - len(numeric),
             'column_counts': sorted({len(r) for r in numeric}),
-            'depth_increasing': bool(depth.size >= 2 and np.all(np.diff(depth) > 0))}
+            'depth_increasing': bool(depth.size >= 1 and np.all(np.diff(depth) > 0))}
 
 # LINES in the CLOUDY outputs and input
 
@@ -1215,7 +1215,7 @@ def check_line_raster_closure(ctx):
 def check_grain_abundance_file(ctx):
     """The grain-abundance output holds one block of zones, and the parser integrates it.
 
-    One '#Depth ... total' header, rows of constant width, >= 2 zones, depth strictly increasing
+    One '#Depth ... total' header, rows of constant width, >= 1 zone, depth strictly increasing
     (a second block, i.e. a lost 'last', would double the dust mass); a positive integral.
 
     Pass: every file.
@@ -1232,7 +1232,7 @@ def check_grain_abundance_file(ctx):
         info, issues = inspect_grain_abundance_file(path), []
         if info['depth_headers'] != 1 or info['last_header_token'] != 'total':
             issues.append(f"{info['depth_headers']} '#Depth' headers, last column {info['last_header_token']!r}")
-        if info['zones'] < 2 or len(info['column_counts']) > 1 or info['unreadable_rows']:
+        if info['zones'] < 1 or len(info['column_counts']) > 1 or info['unreadable_rows']:
             issues.append(f"{info['zones']} zones, row widths {info['column_counts']}")
         if not info['depth_increasing']:
             issues.append('depth not strictly increasing: more than one block')
