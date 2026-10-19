@@ -411,3 +411,42 @@ def test_require_successful_run_accepts_a_string(tmp_path):
     from galapy.spectroscopy.utils.hii.parse_one_hii import require_successful_run
     with pytest.raises(FileNotFoundError, match='DD-4'):
         require_successful_run(str(tmp_path))
+
+_PUMP_SAVE = """#lineslist
+iteration 3
+blnd 2798.00A  \t2.0000e-06
+Mg 2 2795.53A  \t1.0000e-06
+Mg 2 Pump 2795.53A  \t4.0000e-07
+Mg 2 2802.71A  \t1.0000e-06
+Mg 2 Pump 2802.71A  \t2.0000e-07
+si 3 1892.03A  \t1.0000e-04
+si 3 1892.03A  \t1.0000e-04
+si 3 Pump 1892.03A  \t9.9000e-05
+O  3 1666.15A  \t1.0000e-14
+O  3 1666.15A  \t1.0000e-14
+O  3 Pump 1666.15A  \t1.5000e-14
+"""
+
+
+@pytest.mark.unit
+def test_pumping_is_removed_from_blends_and_single_lines(tmp_path):
+    """Groups of the pump save: a blend with its components, a single line as its own component.
+    Each listed flux is scaled by 1 - sum(Pump)/sum(components); a line without a group is untouched."""
+    from galapy.spectroscopy.utils.hii.parse_one_hii import remove_pumping
+    path = tmp_path / 'hii_x.pump'
+    path.write_text(_PUMP_SAVE)
+    data = {'names': ['blnd', 'si 3', 'H  1'], 'wavelengths': [2798.0, 1892.03, 4861.32],
+            'fluxes': np.array([1.5e-6, 8.0e-5, 1.0e-3])}
+    remove_pumping(data, str(path))
+    np.testing.assert_allclose(data['fluxes'], [1.5e-6 * (1 - 0.6e-6 / 2.0e-6), 8.0e-5 * 0.01, 1.0e-3])
+
+
+@pytest.mark.unit
+def test_fully_pumped_line_is_floored_at_zero(tmp_path):
+    """Print rounding can make the Pump entry exceed a fully pumped line: the flux is 0, never negative."""
+    from galapy.spectroscopy.utils.hii.parse_one_hii import remove_pumping
+    path = tmp_path / 'hii_x.pump'
+    path.write_text(_PUMP_SAVE)
+    data = {'names': ['O  3'], 'wavelengths': [1666.15], 'fluxes': np.array([1.0e-14])}
+    remove_pumping(data, str(path))
+    assert data['fluxes'][0] == 0.0

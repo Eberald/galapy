@@ -168,8 +168,8 @@ Points_Units_HII = {
                           'table SED file (on incident/wave_grid): no CMB, not scaled by s_k'),
     'lines_emergent/fluxes': (
         'erg s-1 Msun-1', 'emergent line LUMINOSITIES per Msun of SSP formed: CLOUDY absolute intensities '
-                         '(erg cm-2 s-1, into 4 pi) x s_k; contrast against the CMB (CLOUDY default); resonance '
-                          'blends without continuum pumping'),
+                         '(erg cm-2 s-1, into 4 pi) x s_k; contrast against the CMB (CLOUDY default); lines of '
+                          'the pump list (below 10 um) without continuum pumping'),
     'T_fuv_hii': ('', 'Habing band (6-13.6 eV) ENERGY transmittance: int col3 dln(lambda) / int col2 dln(lambda)'),
     'N_fuv_hii': ('', 'Habing band energy of the own emission (lines included) over the incident one: '
                       'int col4 dln(lambda) / int col2 dln(lambda)'),

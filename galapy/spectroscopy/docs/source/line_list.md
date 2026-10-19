@@ -4,7 +4,7 @@ CloudIA implements the module `utils/gen_linelist.py` to build the `.dat` files 
 command `save line list`. The module reads the **master line list** of a sector — a YAML file stored in the
 galapy-dataset — validates every entry against the **official CLOUDY LineLists**, and produces the fixed-format
 `.dat` files that each deck references at run time: the line list proper and, when the master list declares
-resonance blends pumped by the continuum, the companion *pump* list used to remove that pumping.
+lines pumped by the continuum, the companion *pump* list used to remove that pumping.
 
 !!! warning
     The master lists (`hii_full.yaml`, `pdr_full.yaml`) and the reference LineLists live in the galapy-dataset,
@@ -16,9 +16,9 @@ resonance blends pumped by the continuum, the companion *pump* list used to remo
 
 One master list per sector, under `Nebular/Configs/Lines` of the dataset:
 
-| Sector | Master list | Emitted files | Lines | Pumped blends |
+| Sector | Master list | Emitted files | Lines | Pumped lines |
 | :--- | :--- | :--- | :--- | :--- |
-| `hii` | `hii_full.yaml` (`CONST.HII_LINES_FILE`) | `hii_lines.dat`, `hii_pump.dat` | 72 | 4 |
+| `hii` | `hii_full.yaml` (`CONST.HII_LINES_FILE`) | `hii_lines.dat`, `hii_pump.dat` | 72 | 55 (13 blends, 42 single lines) |
 | `pdr` | `pdr_full.yaml` (`CONST.PDR_LINES_FILE`) | `pdr_lines.dat` (`pdr_pump.dat` if it declares a `pump` key) | 24 | 0 |
 
 The file carries the top-level key `lines`, holding one mapping per transition, and the optional key `pump`
@@ -55,21 +55,31 @@ must be recombined across the HII and PDR sectors.
 
 ### Pumped resonance blends
 
-The UV resonance doublets (N V 1240, Si IV 1397, C IV 1549, Mg II 2798) are also excited by **continuum
-pumping**: CLOUDY adds to their intensity the stellar continuum absorbed in the line and re-emitted in it. The
-grid stores these blends **without** the pumped share (see the description of `lines_emergent/fluxes` in
-[Parse HII](parse_hii.md#1-the-fragment-job_idh5)). The `pump` key lists, for each such blend, its components:
+Every line that CLOUDY transfers is also excited by **continuum pumping**: CLOUDY adds to its intensity the
+stellar continuum absorbed in the line and re-emitted in it, and reports that share as the `"<label> Pump"`
+entry. The share is large for the UV resonance doublets (N V 1240, Si IV 1397, C IV 1549, Mg II 2798) and, in old
+SSP nodes, for the UV intercombination lines (Si III] 1892, C III] 1909, C II] 2326: up to 99% at 70 Myr) and the
+He I lines from the metastable level (3889, 10830). It is stellar light scattered in the line, and the line-only
+column of the continuum never holds it. The grid stores these lines **without** the pumped share (see the
+description of `lines_emergent/fluxes` in [Parse HII](parse_hii.md#1-the-fragment-job_idh5)). The `pump` key
+lists every line of the master list below 10 μm that CLOUDY transfers (type `t` in `save line labels`): a blend
+with its components, a single line as its own component:
 
 ```yaml
 pump:
   NV_1240:   [{label: 'N  5', wl: '1238.82', unit: 'A'}, {label: 'N  5', wl: '1242.80', unit: 'A'}]
   CIV_1549:  [{label: 'C  4', wl: '1548.19', unit: 'A'}, {label: 'C  4', wl: '1550.77', unit: 'A'}]
+  SiIII]_1892: [{label: 'si 3', wl: '1892.03', unit: ''}]
 ```
 
-Each key must be the `name` of an entry of `lines` (the blend itself, e.g. `blnd 1240`); the components carry
+Beyond 10 μm the `Pump` entry of a fine-structure line is the excitation by the CMB, and at high redshift and
+low density it exceeds the line itself (×2 for [O III] 88 μm at $z = 10$): it is not a share of the emission,
+and the contrast against the CMB is applied at runtime, so the far-infrared lines carry no `pump` entry.
+
+Each key must be the `name` of an entry of `lines` (the blend itself, e.g. `blnd 1240`, or the line); the components carry
 `label`, `wl`, `unit` with the same conventions as `lines`. From them the generator writes the pump list (see
 [The emitted pump `.dat`](#2-the-emitted-pump-dat)), the parser uses its output to remove the pumped share of
-each blend (see [Parse HII](parse_hii.md#4-derived-quantities)).
+each line (see [Parse HII](parse_hii.md#4-derived-quantities)).
 
 ### The reference LineLists
 
@@ -132,9 +142,9 @@ For each entry not marked `verified: 'line_labels'`, the *(label, wl)* key is lo
 - duplicate *(label, wl)* pairs, which would make CLOUDY write the same column twice;
 - duplicate `name` aliases, which would collide in the parsed tables downstream.
 
-### 3. Pumped blends
+### 3. Pumped lines
 
-Every key of `pump` must be the `name` of an entry of `lines` — `pump: blend '<name>' not in lines`. The
+Every key of `pump` must be the `name` of an entry of `lines` — `pump: line '<name>' not in lines`. The
 components of the blends are not validated against the official LineLists.
 
 ### Failure mode
@@ -155,11 +165,11 @@ The unit mismatch means the official list writes the line without a unit (Angstr
 is either mistyped, or one of the lines that CLOUDY computes but the official lists omit: in that case mark it
 `verified: 'line_labels'` after checking it on `save line labels`.
 
-A successful run reports the number of validated lines and, when present, of the pumped blends:
+A successful run reports the number of validated lines and, when present, of the pumped lines:
 
 ```text
 [gen_line] 72 lines -> data/lines/hii_lines.dat all validated against CLOUDY official LineLists
-[gen_line] 4 pumped blends -> data/lines/hii_pump.dat
+[gen_line] 55 pumped lines -> data/lines/hii_pump.dat
 ```
 
 ---
@@ -185,9 +195,9 @@ already-parsed outputs.
 
 ### 2. The emitted pump `.dat`
 
-`emit_pump_dat` writes, for each blend of `pump`, the blend itself (as in `{sector}_lines.dat`), then each of its
-components followed by its `Pump` entry, the CLOUDY label `"<ion> Pump"` of the share of the line due to
-continuum pumping:
+`emit_pump_dat` writes, for each key of `pump`, the master-list entry itself (as in `{sector}_lines.dat`), then
+each of its components followed by its `Pump` entry, the CLOUDY label `"<ion> Pump"` of the share of the line due
+to continuum pumping. A single line is its own component, so it appears twice before its `Pump` entry:
 
 ```text
 blnd 1240
@@ -197,6 +207,9 @@ N  5 1242.80A
 "N  5 Pump" 1242.80A
 blnd 1549
 ...
+si 3 1892.03
+si 3 1892.03
+"si 3 Pump" 1892.03
 ```
 
 The file is named after the line list, `{sector}_pump.dat`, and written next to it only when the master list has

@@ -145,12 +145,13 @@ def emit_dat(entries):
 
 def emit_pump_dat(pump, entries):
     """
-    Generates the .dat of the resonance blends pumped by the continuum: each blend of the master
-    list, then its components and their 'Pump' entries (label '<ion> Pump').
+    Generates the .dat of the lines pumped by the continuum: each pumped entry of the master list (a
+    blend, or a single line that is its own component), then its components and their 'Pump' entries
+    (label '<ion> Pump').
 
     Args:
-        pump (dict[str, list[dict]]): master-list name of each blend -> its components ('label', 'wl', 'unit').
-        entries (list[dict]): entries of the master list, where the blends are looked up by 'name'.
+        pump (dict[str, list[dict]]): master-list name of each pumped line -> its components ('label', 'wl', 'unit').
+        entries (list[dict]): entries of the master list, where the pumped lines are looked up by 'name'.
 
     Returns:
         str: the .dat for 'save line list', one entry per line.
@@ -186,11 +187,11 @@ def main():
 
     spec = yaml.safe_load(pathlib.Path(yaml_path).read_text())
     entries = spec['lines']
-    pump = spec.get('pump') or {}  # resonance blends pumped by the continuum
+    pump = spec.get('pump') or {}  # lines pumped by the continuum (blends and single lines)
 
     official = load_official(official_paths)
     errs = validate(entries, official) + check_duplicates(entries)
-    errs += [f"  pump: blend {b!r} not in lines" for b in pump if b not in {e['name'] for e in entries}]
+    errs += [f"  pump: line {b!r} not in lines" for b in pump if b not in {e['name'] for e in entries}]
     if errs:
         print(f"[gen_line] {len(errs)} Wrong format in {yaml_path}:", file=sys.stderr)
         print('\n'.join(errs), file=sys.stderr)
@@ -205,7 +206,7 @@ def main():
     if pump:
         pump_path = out_dir / dat_name.replace('_lines', '_pump')
         pump_path.write_text(emit_pump_dat(pump, entries))
-        print(f"[gen_line] {len(pump)} pumped blends -> {pump_path}", file=sys.stderr)
+        print(f"[gen_line] {len(pump)} pumped lines -> {pump_path}", file=sys.stderr)
 
 
 if __name__ == '__main__':

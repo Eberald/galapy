@@ -50,7 +50,7 @@ Of the saves written by the deck, four are parsed, plus the pump list when prese
 | `hii_<job_id>.con` | Continuum: $\lambda$ plus the components below, in $\nu F_\nu$ [${\rm erg\,cm^{-2}\,s^{-1}}$] | `parse_cloudy_con` |
 | `hii_<job_id>.con_grain` | Grain emissivity of the last zone: $\lambda$, graphite, silicates, total | `parse_cloudy_cong` |
 | `hii_<job_id>.lines` | Emergent absolute line intensities [${\rm erg\,cm^{-2}\,s^{-1}}$] | `parse_cloudy_linelist` |
-| `hii_<job_id>.pump` | Intrinsic intensities of the pumped resonance blends, of their components and of their `Pump` entries (optional) | `remove_pumping` |
+| `hii_<job_id>.pump` | Intrinsic intensities of the pumped lines (blends and single lines), of their components and of their `Pump` entries (optional) | `remove_pumping` |
 | `hii_<job_id>.dusa` | Dust mass density per zone, and the depth of the zones | `integrate_grain_abundance`, `zone_edges` |
 | `SED/<sed_file>` | Incident stellar SED: $\lambda$ [Å], $\nu L_\nu$ [${\rm erg\,s^{-1}}$] per $1\,M_\odot$ of SSP | `parse_table_sed` |
 
@@ -332,19 +332,22 @@ $\times 10^8$; `A` or no unit: $\times 1$); a trailing `?` after the wavelength 
 list, so only the last iteration is kept. The intensities, `absolute` and `emergent`, are multiplied by $s_k$.
 The lines follow the order of `hii_lines.dat`, i.e. of the master list (see [Line list](line_list.md)).
 
-**Continuum pumping of the resonance blends.** When the run saved `hii_<job_id>.pump` (see
-[Line list](line_list.md#pumped-resonance-blends)), `remove_pumping` removes from each pumped blend the share
-due to continuum pumping, before the scaling by $s_k$. The pump file lists each blend (`blnd`), then its
-components and their `Pump` entries, all as **intrinsic** intensities. For each blend $b$:
+**Continuum pumping.** When the run saved `hii_<job_id>.pump` (see
+[Line list](line_list.md#pumped-resonance-blends)), `remove_pumping` removes from each pumped line the share due
+to continuum pumping, before the scaling by $s_k$. The pump file is a sequence of groups: the master-list entry (a
+blend, or the line itself), then each component and its `Pump` entry, all as **intrinsic** intensities. For each
+line $b$:
 
 $$
 F_b^{\rm emergent} \to F_b^{\rm emergent} \left(1 - \frac{\sum_c I_c^{\rm Pump}}{\sum_c I_c}\right)
 $$
 
-where $c$ runs over its components, $I_c$ is the intrinsic intensity of the component and $I_c^{\rm Pump}$ that
-of its `Pump` entry. The blend of `hii_lines.dat` is matched to the one of the pump file by the label `blnd` and
-the wavelength rounded to $0.1$ Å. The other lines, and the blends with zero intrinsic intensity, are left as
-they are. Without the pump file, the blends are stored as CLOUDY computes them, pumping included.
+where $c$ runs over its components (a single line is its own component), $I_c$ is the intrinsic intensity of the
+component and $I_c^{\rm Pump}$ that of its `Pump` entry; the factor is floored at 0, since the print rounding of a
+fully pumped line can make the `Pump` entry exceed it. A line of `hii_lines.dat` is matched to the head of a group
+by its label (case and inner spaces ignored) and the wavelength rounded to $0.1$ Å. The other lines, and those
+with zero intrinsic intensity, are left as they are. Without the pump file, the lines are stored as CLOUDY
+computes them, pumping included.
 
 CLOUDY prints the line wavelengths in **air** above 2000 Å (far-IR and radio lines included) and in vacuum
 below, while the continuum mesh is in vacuum. The printed values are stored as they are, since they identify the

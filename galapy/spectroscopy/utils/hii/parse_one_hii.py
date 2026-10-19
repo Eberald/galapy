@@ -237,11 +237,12 @@ def parse_cloudy_linelist(path):
 
 def remove_pumping(line_data, pump_path):
     """
-    Removes the effects of pumping from the provided line data by adjusting flux values
-    based on information from a specified pump file. This function identifies blended
-    lines ('blnd') in the pump data and calculates the contributions from regular and
-    'pump' components. The flux of each line in the `line_data` is then modified
-    proportionally to reduce the effect of pumping.
+    Removes the continuum pumping from the line fluxes, using the 'save line list' of the pump list
+    (gen_linelist: hii_pump.dat). The file is a sequence of groups, one per line of the master list
+    that CLOUDY transfers: the master-list entry (a blend 'blnd'/'Blnd', or the line itself), then a
+    pair (component, '<label> Pump') for each component (a single line is its own component). The
+    pumped part is stellar (or background) light scattered in the line: each flux of `line_data`
+    whose (label, wavelength) heads a group is scaled by 1 - sum(Pump) / sum(components), floored at 0.
 
     Parameters:
         line_data (dict): A dictionary containing information about spectral lines with
@@ -249,9 +250,7 @@ def remove_pumping(line_data, pump_path):
                           'names' (list[str]): The names of the lines.
                           'wavelengths' (list[float]): The corresponding wavelengths of the lines.
                           'fluxes' (list[float]): The corresponding flux values for the lines.
-        pump_path (str): A file path to the pump data file. Expected to contain information
-                         on blended lines ('blnd') and the corresponding flux values for
-                         pump components.
+        pump_path (str): A file path to the pump data file (groups as described above).
 
     Raises:
         KeyError: If the required keys ('names', 'wavelengths', 'fluxes') are not present
@@ -261,17 +260,21 @@ def remove_pumping(line_data, pump_path):
                     as improperly formatted wavelength or flux values.
     """
     pump = parse_cloudy_linelist(pump_path)
-    sums, blend = {}, None
-    for name, wl, flux in zip(pump['names'], pump['wavelengths'], pump['fluxes']):
-        if name.lower() == 'blnd':
-            blend = round(float(wl), 1)
-            sums[blend] = [0.0, 0.0]   # [sum(line), sum(Pump)] of its components
-        else:
-            sums[blend][name.endswith('Pump')] += flux
+    rows = list(zip(pump['names'], pump['wavelengths'], pump['fluxes']))
+    key = lambda name, wl: (' '.join(str(name).split()).lower(), round(float(wl), 1))
+    sums, i = {}, 0
+    while i < len(rows):
+        head = key(rows[i][0], rows[i][1])  # master-list entry of the group
+        line = pumped = 0.0
+        i += 1
+        while i + 1 < len(rows) and str(rows[i + 1][0]).endswith('Pump'):  # (component, its 'Pump')
+            line, pumped = line + rows[i][2], pumped + rows[i + 1][2]
+            i += 2
+        sums[head] = (line, pumped)
     for k, (name, wl) in enumerate(zip(line_data['names'], line_data['wavelengths'])):
-        line, pumped = sums.get(round(float(wl), 1), (0.0, 0.0)) if name.lower() == 'blnd' else (0.0, 0.0)
+        line, pumped = sums.get(key(name, wl), (0.0, 0.0))
         if line > 0:
-            line_data['fluxes'][k] *= 1.0 - pumped / line
+            line_data['fluxes'][k] *= max(1.0 - pumped / line, 0.0)  # print rounding of a fully pumped line
 
 
 def air_to_vacuum_A(wl_A):
@@ -903,11 +906,11 @@ def main(argv=None):
     lam_support = wave.astype('f4')[col2 > 0]  # same values as the stored continuum/wave_grid
     sed_support = (float(lam_support.min()), float(lam_support.max()))
     line_data = parse_cloudy_linelist(f"{pre}.lines")
-    if pathlib.Path(f"{pre}.pump").is_file():  # continuum pumping of the resonance blends
+    if pathlib.Path(f"{pre}.pump").is_file():  # continuum pumping of the lines of the pump list
         remove_pumping(line_data, f"{pre}.pump")
     elif (wd / 'hii_pump.dat').is_file():  # the deck asked for the pump save: its absence is an error
         raise FileNotFoundError(f"[parse_one/hii] {pre}.pump absent but hii_pump.dat staged: the deck "
-                                f"asked for it, the resonance blends would stay pumped")
+                                f"asked for it, the pumped lines would stay pumped")
     Sigma_d = integrate_grain_abundance(f"{pre}.dusa")
     # .con_grain is the emissivity [erg cm-3 s-1] of the LAST zone: x thickness -> per cm2
     thickness = zone_edges(np.loadtxt(f"{pre}.dusa", comments='#', usecols=0, ndmin=1))[-1]

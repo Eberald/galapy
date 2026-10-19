@@ -128,13 +128,13 @@ followed by the details of every check.
 | `oiii_doublet_ratio` | corpus | | [O III] 4959/5007 equals its atomic value. |
 | `dust_mass_scaling` | corpus | | The dust mass follows the Strömgren scaling. |
 | `old_node_ionizing_output` | SSP metadata | | Old SSP nodes emit no ionizing photons. |
-| `escape_fraction_coverage` | corpus | | The measured escape fraction covers its range and tracks the target. |
+| `escape_fraction_coverage` | corpus | | The measured escape fraction covers its range, and no cloud is cut at its face. |
 | `depletion(jk)_axis_coverage` | corpus | | The converged models still cover the depletion axis uniformly. |
-| `fuv_terms` | corpus | | The FUV transmitted to the PDR is grey across the Habing band. |
+| `fuv_terms` | corpus | | The tilt of the FUV transmitted to the PDR is inside the $\beta$ axis of the PDR grid. |
 | `transparency_outside_sed_support` | corpus | yes | The transmission is a physical transmission. |
 | `rw|cloudy_version_in_outputs` | raw | yes | Every model comes from the same CLOUDY version. |
 | `rw|abundance_echo` | raw | yes | CLOUDY used the intended gas-phase chemistry. |
-| `rw|line_raster_closure` | raw | | The line-only continuum holds exactly the listed line fluxes. |
+| `rw|line_raster_closure` | raw | | The line-only continuum holds at least the listed line fluxes (pumping removed). |
 | `rw|grain_abundance_file` | raw | yes | The dust mass is integrated over one cloud, once. |
 | `rw|incident_continuum_matches_sed` | raw | yes | CLOUDY was illuminated by the intended SED shape. |
 | `rw|line_list_complete` | raw | yes | Every requested line comes out of CLOUDY. |
@@ -327,9 +327,11 @@ above 1 would mean that emission leaked into the transmitted column, or that the
 the incident field is zero, outside the wavelength support of the SED (`sed_support_A`), $T$ carries no
 information and is set by convention to 1, the neutral value: GalaPy multiplies $T$ onto SEDs whose support can
 differ from that of the run, and any other value there would add or remove light that the cloud never saw. On
-the subsample of converged models, the check verifies both conditions bin by bin.
+the subsample of converged models, the check verifies both conditions bin by bin. The tolerance is the print
+precision of the `.con` file: four significant digits give a ratio good to ~$10^{-3}$, and where the incident
+field is all CMB (millimetre wavelengths) incident and transmitted coincide up to the last printed digit.
 
-- *Pass*: no bin off by more than $10^{-6}$, inside or outside the support.
+- *Pass*: no bin off by more than $10^{-3}$, inside or outside the support.
 
 ### 4. Atomic physics and nebular diagnostics
 
@@ -360,12 +362,14 @@ $$
 \frac{F_{4959}}{F_{5007}} = \frac{A_{4959}}{A_{5007}}\,\frac{\lambda_{5007}}{\lambda_{4959}} = 0.346
 $$
 
-with the atomic data of CLOUDY C25. Differential dust attenuation over 50 Å is negligible. Since nothing physical
-can move this ratio, the check is graded on the **worst** converged model, not on a median: any deviation means
-that a line was misidentified in the master list, mislabelled, blended with something else, or corrupted
-between CLOUDY and the corpus.
+with the atomic data of CLOUDY C25 (the intrinsic ratio of the runs is 0.34594). The corpus carries the
+**emergent** lines, and the dust inside the cloud absorbs 4959 slightly more than 5007: in the dustiest models
+(high $U$, high metallicity) the emergent ratio is lower by up to ~1%. Nothing else can move this ratio, so the
+check is graded on the **worst** converged model, not on a median: a deviation beyond the dust effect means that a
+line was misidentified in the master list, mislabelled, blended with something else, or corrupted between CLOUDY
+and the corpus.
 
-- *Pass*: worst model within 1% of 0.346.
+- *Pass*: worst model within 2% of 0.346.
 
 **`bpt_star_forming_locus`**. The Baldwin–Phillips–Terlevich diagram, $x = \log([{\rm N\,II}]\,6584/{\rm H}\alpha)$
 versus $y = \log([{\rm O\,III}]\,5007/{\rm H}\beta)$, separates gas photoionized by stars from gas ionized by
@@ -429,12 +433,18 @@ subtracting ${\rm col}_9$ from ${\rm col}_4$, which is correct only if ${\rm col
 the lines. For every listed line of every kept run, the energy of ${\rm col}_9$ is summed over $\pm 3$ bins
 around the line (energy of a cell: value times cell width in $\ln\lambda$) and divided by the sum of the listed
 fluxes of all the lines whose bins fall in the same window, to account for neighbouring lines that share it. The
-listed wavelengths are converted from air to vacuum before being placed on the mesh. The raster must hold at
-least the listed energy; it may hold more, because ${\rm col}_9$ also contains the lines that are not in the
-master list, so the upper side is graded only for strong lines, at least 10% of H$\beta$, for which unlisted
-weak lines are negligible.
+listed wavelengths are converted from air to vacuum before being placed on the mesh, and the continuum pumping
+of the resonance blends is removed from the listed fluxes as the parser does (`.pump`): the pumped part is
+stellar light scattered in the line, never in ${\rm col}_9$. The raster must hold at least the listed energy. It
+may hold more, for two reasons: ${\rm col}_9$ contains the lines that are not in the master list, and it is less
+attenuated by the dust inside the cloud than the emergent line list (for the hydrogen lines of a dusty model the
+raster sits within a few per cent of the **intrinsic** intensity). The upper side is therefore reported, for the
+lines above 10% of H$\beta$, and not graded. Beyond 10 μm ${\rm col}_9$ carries the lines net of the isotropic
+background (the CMB), the line list does not: at high redshift and low density the fine-structure lines differ
+by tens of per cent, so those wavelengths are not graded either. A deficit that remains points to continuum
+pumping of lines outside the `.pump` list (e.g. Si III] 1892 and C III] 1909 in old SSP nodes).
 
-- *Pass*: raster/listed $\ge 0.98$ for every line, and $\le 1.02$ for the lines above $0.1\,{\rm H}\beta$.
+- *Pass*: raster/listed $\ge 0.98$ for every line below 10 μm.
 
 ### 6. Dust and chemistry
 
@@ -461,8 +471,8 @@ mass) is not computed: it is fitted as the median residual, and the check grades
 tests at once the integration of the dust column, the normalisation $s_k$ and the grain scaling of the decks: a
 factor two from a duplicated block of zones, or a wrong $s_k$, would move whole groups of models off the relation.
 
-The relation is not exact. The cloud may stop at $T = 4000$ K before reaching $N_{\rm stop}$ (efficient cooling at
-high metallicity); at high $U$ dust competes with the gas for the ionizing photons and shrinks the ionized
+The relation is not exact. The cloud may stop at the ionization front (`stop pfrac`) or at the 1000 K floor before reaching
+$N_{\rm stop}$; at high $U$ dust competes with the gas for the ionizing photons and shrinks the ionized
 column; and $\alpha_B$ depends on the electron temperature, which varies with metallicity. Hence the loose
 tolerance, and the report of the rank correlation between the residual and $\log U$, which shows how much of
 the scatter is due to dust absorption.
@@ -520,10 +530,16 @@ not require them to be equal, but requires:
 - **coverage**: the measured values of the converged models, inside $[0, 0.9]$, must leave no empty interval
   wider than 0.1, edges included. Dust absorption systematically lowers $f_{\rm esc}^{\rm meas}$, and could leave
   the high-escape end of the range empty;
-- **monotonicity**: the Spearman rank correlation between target and measured values must exceed 0.9, i.e. the
-  target must still control the escape of the photons, even if not exactly.
+- **no cloud cut at its face**: no model may have $f_{\rm esc}^{\rm meas} > 0.99$. With
+  $N_{\rm stop} \ge 0.1\,N_S$ a cloud absorbs at least ~5% of the ionizing photons even in hot gas, so a measured
+  value above 0.99 means that the run stopped before building the ionized layer (as the former 4000 K stop did in
+  cold, metal-rich photoionized gas).
 
-- *Pass*: widest gap $\le 0.1$ and rank correlation $> 0.9$.
+The rank correlation between target and measured values is reported, not graded: the emulator reads the measured
+escape fraction, and the two depart for physical reasons (dust lowers $f_{\rm esc}^{\rm meas}$, hot gas raises it
+through $\alpha_B(T)$).
+
+- *Pass*: widest gap $\le 0.1$ and no model above 0.99.
 
 **`depletion(jk)_axis_coverage`**. The depletion strength $F_*$ is sampled uniformly, but the models that survive
 are only the converged ones: if the convergence failures depended on $F_*$ (e.g. strongly depleted or undepleted
@@ -539,8 +555,9 @@ number of models, which would overstate it by the number of nodes.
 
 **`fuv_terms`**. The HII region illuminates the photodissociation region behind it with the FUV it transmits. The
 PDR grid describes that field with a scalar, $G_0$, scaled by the FUV transmittance $T_{\rm FUV}$ of the ionized
-layer and applied to the shape of the stellar spectrum. This is correct only if the transmission is **grey**
-across the Habing band. The check verifies:
+layer, and with the tilt $\beta$ of the stellar spectrum inside the Habing band, $(\nu/\nu_0)^\beta$ with
+$\beta \in [-2.5, 0]$. The tilt axis carries the reddening of the transmission up to
+$-2.5\,\log_{10}(2066/911.76) = 0.888$ dex between the band edges. The check verifies:
 
 - (a) **signs**: $0 < T_{\rm FUV} \le 1$ and $N_{\rm FUV} > 0$ for every converged model. The ionized layer cannot
   amplify the incident FUV, and always emits some FUV of its own (two-photon continuum, Ly$\alpha$);
@@ -557,10 +574,12 @@ across the Habing band. The check verifies:
   not the continuum shape. Dust extinction rises towards short wavelengths in the FUV, so a dusty ionized layer
   reddens the field it transmits.
 
-A tilt above 0.1 dex (26% between the two edges) is not a bug but a modelling decision: the scalar $G_0$ is then
-not enough, and the PDR grid needs an additional axis for the tilt of the incident FUV.
+The tilt grows with the attenuation of the band: on the 50000-model HII grid
+$\Delta_{\rm tilt} \simeq 0.945\,L + 0.055\,L^2$, with $L = -\log_{10} T_{\rm FUV}$ (scatter 0.01 dex), so
+every model with $T_{\rm FUV} < 0.78$ has a tilt above 0.1 dex. The check verifies that the $\beta$ axis of the
+PDR grid covers the tilt of the HII prior; the few models beyond the axis are clamped at $\beta = -2.5$.
 
-- *Pass*: (a) for every model, and $\max|\Delta_{\rm tilt}| < 0.1$ dex.
+- *Pass*: (a) for every model, and the 99th percentile of $|\Delta_{\rm tilt}|$ $< 0.888$ dex.
 
 ---
 
@@ -587,14 +606,14 @@ verdict can always be traced back to the numbers that produced it.
 | | Far-IR limit, window of the median ratio | $20\,\mu$m, $[0.1, 10]$ |
 | | Minimum passing fraction | $0.99$ |
 | `line_free_continua` | Spike excess, maximum flagged fraction | $0.10$, $0.01$ |
-| `rw|line_raster_closure` | Half window, maximum deviation, strong-line limit | $3$ bins, $0.02$, $0.1\,{\rm H}\beta$ |
-| `oiii_doublet_ratio` | Reference, maximum relative deviation | $0.346$, $0.01$ |
+| `rw|line_raster_closure` | Half window, maximum deficit, strong-line limit (reported), longest graded wavelength | $3$ bins, $0.02$, $0.1\,{\rm H}\beta$, 10 μm |
+| `oiii_doublet_ratio` | Reference, maximum relative deviation | $0.346$, $0.02$ |
 | `dust_mass_scaling` | Maximum residual, minimum fraction within it | $0.2$ dex, $0.9$ |
 | `old_node_ionizing_output` | Ages, maximum $Q_H$ ratio to the youngest node | $70$, $100$ Myr, $0.01$ |
-| `escape_fraction_coverage` | Range, maximum gap, minimum Spearman correlation | $[0, 0.9]$, $0.1$, $0.9$ |
+| `escape_fraction_coverage` | Range, maximum gap, measured value of a cloud cut at its face | $[0, 0.9]$, $0.1$, $0.99$ |
 | `depletion(jk)_axis_coverage` | Minimum KS $p$-value | $0.01$ |
-| `fuv_terms` | Minimum $T_{\rm FUV}$ for the tilt, maximum tilt | $10^{-2}$, $0.1$ dex |
-| `transparency_outside_sed_support` | Tolerance on $T$ | $10^{-6}$ |
+| `fuv_terms` | Minimum $T_{\rm FUV}$ for the tilt, maximum tilt (99th percentile) | $10^{-2}$, $0.888$ dex |
+| `transparency_outside_sed_support` | Tolerance on $T$ | $10^{-3}$ |
 | `rw|abundance_echo` | Elements, print step, He/H tolerance, pattern tolerance | $30$, $10^{-4}$ dex, $0.01$ dex, $10^{-3}$ dex |
 | `rw|incident_continuum_matches_sed` | Tolerance on the two shape numbers | $0.05$ |
 | `rw|runtime_per_model` | Budget | $5400$ core hours |

@@ -618,7 +618,7 @@ def test_parse_one_rejects_the_sed_of_another_node(hii, fake_cloudy):
 @pytest.mark.unit
 def test_missing_pump_save_is_a_parse_failure(hii, fake_cloudy):
     """The deck asks for the .pump save when hii_pump.dat is staged: a workdir without it fails
-    that parse, with no fragment, instead of keeping the resonance blends pumped (A-14)."""
+    that parse, with no fragment, instead of keeping the pumped lines pumped (A-14)."""
     runs, ids, argv = hii
     ll = pathlib.Path(argv[argv.index('--linelists') + 1])
     (ll / 'hii_pump.dat').write_text('blnd 1215.68A\nH  1 1215.67A\nH  1 Pump 1215.67A\n')

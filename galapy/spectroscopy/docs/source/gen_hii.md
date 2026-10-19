@@ -254,8 +254,12 @@ The `hii.in.j2` template maps the job fields onto the CLOUDY commands as follows
 | `log_N_stop` | `stop column density` |
 
 The physical configuration fixed by the template — identical for every job of the grid — is a closed spherical
-geometry (`sphere`), stopping either at the column density set by $f_{\rm esc}$ or
-at $T = 4000$ K, with `iterate to convergence`. The fiducial chemistry is read from `abundances "GC.abn"`, and
+geometry (`sphere`), stopping at the column density set by $f_{\rm esc}$, at the ionization front, where the
+ionized fraction of hydrogen falls below $10^{-3}$ (`stop pfrac -3`, the HII-region boundary of Theulé et al.
+2024), or at $T = 1000$ K, with `iterate to convergence`. There is no stop at 4000 K: photoionized gas at high
+metallicity can be colder than that and is still HII region. The 1000 K floor ends the dusty
+ionization-bounded clouds, behind whose front the ionized fraction settles at a few $10^{-3}$ and the `pfrac`
+stop never fires. The fiducial chemistry is read from `abundances "GC.abn"`, and
 then rescaled by the `metals` and `element scale factor` commands. The template also sets `turbulence 5 km/s`
 and the `cosmic rays background`, and switches off the continuum pumping of the H I Lyman lines
 (`database H-like Lyman pumping off`): the stellar SED already carries the photospheric Lyman absorption, and with
@@ -263,7 +267,7 @@ and the `cosmic rays background`, and switches off the continuum pumping of the 
 `no grain qheat` to save run time.
 
 Each deck saves the emergent continuum, the grain continuum, the line list (against `hii_lines.dat`), the
-intrinsic intensities of the pumped resonance blends (against `hii_pump.dat`, see
+intrinsic intensities of the pumped lines (against `hii_pump.dat`, see
 [Line list](line_list.md#pumped-resonance-blends)), the grain abundance and the grain temperature, all prefixed
 with `hii_{job_id}`.
 
