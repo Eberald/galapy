@@ -124,11 +124,17 @@ THRESHOLDS = {
 # Longest graded wavelength (10 um): beyond it col9 carries the lines net of the CMB (isotropic background), the
 # line list does not
     'closure.max_graded_A': 1.0e5,
+# Pumped fraction (10%) above which a window is reported, not graded: the removal of the pumping is exact only to
+# ~1-20% of the pumped part (pumped and collisional photons are not transferred alike; Si IV 1397, Si III] 1892 on
+# real runs), so only below 10% is that error within the 2% tolerance
+    'closure.max_pumped_fraction': 0.1,
 # Theoretical [O III] 4959/5007 ratio from C25 Einstein A-values;
     'oiii.reference': 0.346,
 # Maximum relative deviation from [O III] 0.346; detects corrupted atomic data. 2%: the EMERGENT ratio is
 # lowered by up to ~1% by the internal dust (4959 more absorbed than 5007), the intrinsic one is 0.3459
     'oiii.max_rel_dev': 0.02,
+# Minimum [O III] 5007 / H-beta graded: below, O++ is absent (old SSP) and the pumping-free remainder is print noise
+    'oiii.min_hbeta': 1e-3,
 # Maximum residual (dex) from Stromgren dust mass scaling; verifies physical dust mass integration
     'dust.max_abs_residual': 0.2,
 # Minimum fraction of models within Stromgren dust scaling; checks geometry and dust density consistency
@@ -894,13 +900,13 @@ def check_oiii_doublet(ctx):
     The lines are emergent: the internal dust absorbs 4959 slightly more than 5007 (up to ~1% in the
     dustiest models), while the intrinsic ratio is the atomic 0.3459.
 
-    Pass: within 2% of 0.346.
+    Pass: within 2% of 0.346, for the models with [O III] 5007 >= 1e-3 H-beta.
     """
     table = ctx.data
-    if _missing_lines(table, ('OIII_4959', 'OIII_5007')):
+    if _missing_lines(table, ('OIII_4959', 'OIII_5007', 'H_beta')):
         return SKIP, {'reason': '[O III] lines not in the master list'}
     weak, strong = line_flux(table, 'OIII_4959'), line_flux(table, 'OIII_5007')
-    good = table.converged & (weak > 0) & (strong > 0)
+    good = table.converged & (weak > 0) & (strong > 0) & (strong >= T['oiii.min_hbeta'] * line_flux(table, 'H_beta'))
     if not good.any():
         return SKIP, {'reason': 'no converged model with both lines'}
     deviation = np.abs(weak[good] / strong[good] / T['oiii.reference'] - 1.0)
@@ -1191,7 +1197,8 @@ def check_line_raster_closure(ctx):
     (the pumped part is scattered stellar light, never in col9). Graded below 10 um only: beyond,
     col9 carries the lines net of the CMB. The upper side is reported for strong lines but not
     graded: col9 is less attenuated by the internal dust than the emergent list, and holds unlisted
-    lines too.
+    lines too. Windows holding a line pumped above 10% (C IV, Si IV, Mg II, Si III] at any age) are
+    reported, not graded: the removal is exact only to ~1-20% of the pumped part.
 
     Pass: raster / listed >= 0.98 for every line below 10 um.
     """
@@ -1199,7 +1206,7 @@ def check_line_raster_closure(ctx):
     if not runs:
         return SKIP, dict(_NO_WORKDIRS)
     half, tolerance = int(T['closure.half_window_bins']), T['closure.max_rel_dev']
-    violations, evaluated, n_runs, above = [], 0, 0, 0
+    violations, evaluated, n_runs, above, pumped_windows = [], 0, 0, 0, 0
     for job, workdir in runs:
         con, lines = ctx.raw_file(job, workdir, '.con'), ctx.raw_file(job, workdir, '.lines')
         if not (con.is_file() and lines.is_file()):
@@ -1207,10 +1214,13 @@ def check_line_raster_closure(ctx):
         columns = parse_cloudy_con(str(con))                  # (lambda, col2, col3, col4, col9)
         wave, col9 = np.asarray(columns[0], float), np.asarray(columns[4], float)
         listed = parse_cloudy_linelist(str(lines))
+        raw_fluxes = np.array(listed['fluxes'], float)
         pump = ctx.raw_file(job, workdir, '.pump')
         if pump.is_file():  # continuum pumping of the pumped lines, removed as in the parser
             remove_pumping(listed, str(pump))
         names, fluxes = [_decode(n) for n in listed['names']], np.asarray(listed['fluxes'], float)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            pumped = np.where(raw_fluxes > 0, 1.0 - fluxes / raw_fluxes, 0.0) > T['closure.max_pumped_fraction']
         catalogue = LineCatalogue(names, np.asarray(listed['wavelengths'], float))
         k_hbeta = catalogue.find(*LINES['H_beta'])
         hbeta = fluxes[k_hbeta] if k_hbeta is not None else np.nan
@@ -1224,6 +1234,9 @@ def check_line_raster_closure(ctx):
             if b < half or b >= wave.size - half or fluxes[k] <= 0 or catalogue.wavelength[k] > T['closure.max_graded_A']:
                 continue
             window = np.abs(bins - b) <= half
+            if pumped[window].any():
+                pumped_windows += 1
+                continue
             ratio = float(energy[b - half:b + half + 1].sum()) / float(fluxes[window & (fluxes > 0)].sum())
             evaluated += 1
             if ratio < 1.0 - tolerance:
@@ -1233,9 +1246,9 @@ def check_line_raster_closure(ctx):
     if n_runs == 0:
         return SKIP, {'reason': 'no kept run with a continuum and a line-list output'}
     detail = {'runs': n_runs, 'lines_evaluated': evaluated, 'violations': violations[:20],
-              'strong_lines_above': above,
+              'strong_lines_above': above, 'pump_dominated_windows': pumped_windows,
               'summary': f'{len(violations)} closure violations over {evaluated} lines in {n_runs} runs '
-                         f'({above} strong lines above, not graded)'}
+                         f'({above} strong lines above, {pumped_windows} pump-dominated windows, not graded)'}
     return (PASS if not violations else FAIL), detail
 
 @check('rw-grain_abundance_file', blocking=True)
