@@ -934,6 +934,7 @@ def main(argv=None):
                          'xi_d', 'f_esc_target', 'F_star', 'tau_SSP', 'Z_star')})
         g.attrs['not_converged'] = bool(not_converged)  # DD-4  # flag: CLOUDY run did not converge
         g.attrs['cloudy_warnings'] = bool(cloudy_warnings)  # flag: CLOUDY exited with warnings
+        g.attrs['pumping_removed'] = pathlib.Path(f"{pre}.pump").is_file()  # flag: lines cleaned of pumping
         g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4, split_A=Stellar_Max_A)  # |inc - (trans + diffuse)| / stellar incident energy
         g.attrs['cmb_incident_ratio'] = cmb_incident_ratio(wave, col2)  # CMB / stellar incident energy
         g.attrs['reprocessing_excess'] = excess  # (diffuse - absorbed) / absorbed energy

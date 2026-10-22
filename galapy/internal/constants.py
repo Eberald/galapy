@@ -138,6 +138,7 @@ Points_Units_HII = {
     # flags and diagnostics
     'not_converged': ('', 'flag: CLOUDY did not converge'),
     'cloudy_warnings': ('', 'flag: CLOUDY ended with warnings'),
+    'pumping_removed': ('', 'flag: continuum pumping removed from the pumped lines (.pump read)'),
     'energy_balance_rel': ('', '|E2 - (E3 + E4)| / E2(lambda < 10 um), E_n = int col_n dln(lambda): '
                                'energy imbalance over the STELLAR incident energy'),
     'cmb_incident_ratio': ('', 'E2(lambda >= 10 um) / E2(lambda < 10 um): incident energy of the CMB '
