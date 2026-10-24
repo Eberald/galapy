@@ -194,7 +194,44 @@ def pca_decode(coeffs, components, pca_mean, mu, sd):
     log_field = z * np.asarray(sd) + np.asarray(mu)                           # de-normalization
     return np.power(10.0, log_field)
 
-def decode(prep, mean, var):
+def lines_to_ratio(ytil, ref, log_scale, floor=0.0):
+    """
+    Line targets in ratio form, from the log10 of the line fluxes.
+
+    The reference line (H-beta) becomes log10(L_ref) - log_scale, with log_scale = log10[Q_H (1 - f_esc)]
+    known analytically from the inputs: this removes the orders of magnitude due to the ionizing photons.
+    Every other line becomes log10(L_i / L_ref), floored at log10(floor) when floor > 0, so the GP does not
+    spend its capacity on lines far below the reference. Inverted by ratio_to_lines.
+
+    Parameters:
+        ytil (np.ndarray): log10 of the line fluxes, (N, n_lines).
+        ref (int): index of the reference line.
+        log_scale (np.ndarray): log10 of the analytic scale of the reference line, (N,).
+        floor (float): minimum of L_i / L_ref (0 = none).
+
+    Returns:
+        np.ndarray: the targets, (N, n_lines).
+    """
+    ytil = np.asarray(ytil, dtype=np.float64)
+    t = ytil - ytil[:, [ref]]
+    if floor > 0:
+        t = np.maximum(t, np.log10(floor))
+    t[:, ref] = ytil[:, ref] - np.asarray(log_scale, dtype=np.float64)
+    return t
+
+
+def ratio_to_lines(t, var_t, ref, log_scale):
+    """
+    Inverse of lines_to_ratio: mean and variance of log10 of the line fluxes from those of the targets.
+    The GPs of the lines are independent, so the variance of a line is its own plus that of the reference.
+    """
+    y_ref = t[:, ref] + np.asarray(log_scale, dtype=np.float64)
+    y, v = t + y_ref[:, None], var_t + var_t[:, [ref]]
+    y[:, ref], v[:, ref] = y_ref, var_t[:, ref]
+    return y, v
+
+
+def decode(prep, mean, var, log_scale=None):
     """
     Decode the Gaussian Process (GP) prediction from the transformed space of training
     (normalized, log10, PCA optionally) into mean and variance in physical units.
@@ -213,6 +250,8 @@ def decode(prep, mean, var):
             - 'offset' (float, optional): Offset value computed during training, if available.
         mean (torch.Tensor): Predicted mean by the GP in the transformed space.
         var (torch.Tensor): Predicted variance by the GP in the transformed space.
+        log_scale (array-like, optional): log10 of the analytic scale of the reference line, one per
+            input point. Required when prep['ratio'] is set (lines in ratio form, see lines_to_ratio).
 
     Returns:
         Tuple[np.ndarray, np.ndarray]: A tuple containing:
@@ -231,6 +270,15 @@ def decode(prep, mean, var):
             mu_z, var_z = mu_z * s[:, None], var_z * s ** 2
         y = pca_decode(mu_z, C, pca['mean'], prep['mu'], prep['sd'])    # (N, n_wl)
         var_z = var_z @ C ** 2                                          # (N, n_wl)
+    elif prep.get('ratio') is not None:
+        if log_scale is None:
+            raise ValueError("[svgp] lines in ratio form: decode needs log_scale (log10 Q_H (1 - f_esc))")
+        sd = np.asarray(prep['sd'])
+        ylog, vlog = ratio_to_lines(mu_z.T * sd + np.asarray(prep['mu']), var_z * sd ** 2,
+                                    prep['ratio']['ref'], log_scale)
+        y = np.power(10.0, ylog)
+        off = float(prep.get('offset', 0.0))
+        return y - off, np.log(10.0) * y * np.sqrt(vlog)
     else:
         y = np.power(10.0, mu_z.T * np.asarray(prep['sd']) + np.asarray(prep['mu']))    # (N, d)
 

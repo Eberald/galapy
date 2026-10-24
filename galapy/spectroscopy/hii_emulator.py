@@ -6,6 +6,43 @@ import torch
 
 from galapy.spectroscopy.svgp import (BatchedSVGPS, load_artifacts, predictive_cache, fast_predict, decode)
 
+ONE_MINUS_FESC_FLOOR = 1e-4     # floor of (1 - f_esc) in the scale of the reference line: f_esc -> 1 is not log(0)
+
+
+def qh_unit_lookup(qh_nodes, input_keys, theta_batch):
+    """
+    Q_H of a 1 Msun SSP for each row of theta_batch (physical inputs, tau_SSP and Z_star in log10):
+    nearest node in tau, linear interpolation in Z_star. See HIIEmulator.Qh_unit_lookup.
+    """
+    th = np.atleast_2d(np.asarray(theta_batch, dtype=float))
+    q = qh_nodes
+    lt = th[:, input_keys.index('tau_SSP')]                         # take column of tau_SSP
+    it = np.abs(lt[:, None] - q['log_tau'][None, :]).argmin(1)      # take nearest node
+    if np.any(np.abs(q['log_tau'][it] - lt) > 1e-4):
+        raise ValueError(f"[hii-emulator] log10 tau_SSP {lt} out of nodes range {q['log_tau']}")
+    Zn = q['Z']
+    Z = np.clip(10.0 ** th[:, input_keys.index('Z_star')], Zn[0], Zn[-1])              # clip Zstar to valid range
+    hi = np.clip(np.searchsorted(Zn, Z), 1, len(Zn) - 1)                                 # two nodes Zstar used for interpolation
+    w = (Z - Zn[hi - 1]) / (Zn[hi] - Zn[hi - 1])                                         # weight of interpolation
+    w = np.where(np.isclose(w, 0.0), 0.0, np.where(np.isclose(w, 1.0), 1.0, w))          # attach the weight
+    lo_q, hi_q = q['Qh'][it, hi - 1], q['Qh'][it, hi]                                    # two values of Qh used for interpolation
+    out = np.where(w == 0.0, lo_q, np.where(w == 1.0, hi_q, (1.0 - w) * lo_q + w * hi_q))  # interpolation
+    if not np.all(np.isfinite(out)):
+        raise ValueError("[hii-emulator] Q_H, unit absent for the requested node: corpus does not cover the 48 nodes"
+                         "(tau_SSP, Z_star)")
+    return out
+
+
+def line_log_scale(qh_nodes, input_keys, theta_batch):
+    """
+    log10[Q_H (1 - f_esc)]: the analytic scale of H-beta, removed from the lines in ratio form
+    (see galapy.spectroscopy.svgp.lines_to_ratio). Same function at training and at inference.
+    """
+    th = np.atleast_2d(np.asarray(theta_batch, dtype=float))
+    one_m_fesc = np.clip(1.0 - th[:, input_keys.index('f_esc_meas')], ONE_MINUS_FESC_FLOOR, None)
+    return np.log10(qh_unit_lookup(qh_nodes, input_keys, th)) + np.log10(one_m_fesc)
+
+
 class HIIEmulator:
     """
     Emulator HII:
@@ -120,24 +157,16 @@ class HIIEmulator:
             ValueError: If log10 tau_SSP is out of the valid range of nodes.
             ValueError: If QH unit values are absent or not finite for the requested nodes.
         """
-        th = np.asarray(theta_batch, dtype=float)                       # loading input parameters
-        q = self.qh_nodes
-        lt = th[:, self.input_keys.index('tau_SSP')]                    # take column of tau_SSP
-        it = np.abs(lt[:, None] - q['log_tau'][None, :]).argmin(1)      # take nearest node
-        if np.any(np.abs(q['log_tau'][it] - lt) > 1e-4):
-            raise ValueError(f"[hii-emulator] log10 tau_SSP {lt} out of nodes range {q['log_tau']}")
-        Zn = q['Z']
-        Z = np.clip(10.0 ** th[:, self.input_keys.index('Z_star')], Zn[0], Zn[-1])              # clip Zstar to valid range
-        hi = np.clip(np.searchsorted(Zn,Z), 1, len(Zn)-1)                                # two nodes Zstar used for interpolation
-        w = (Z - Zn[hi - 1]) / (Zn[hi] - Zn[hi - 1])                                            # weight of interpolation
-        w = np.where(np.isclose(w, 0.0), 0.0, np.where(np.isclose(w, 1.0), 1.0, w))      # attach the weight
-        lo_q, hi_q = q['Qh'][it, hi - 1], q['Qh'][it, hi]                                       # two values of Qh used for interpolation
-        out = np.where(w == 0.0, lo_q, np.where(w == 1.0, hi_q, (1.0 - w) * lo_q + w * hi_q))   # interpolation
-        if not np.all(np.isfinite(out)):
-            raise ValueError("[hii-emulator] Q_H, unit absent for the requested node: corpus does not cover the 48 nodes"
-                             "(tau_SSP, Z_star)")
+        return qh_unit_lookup(self.qh_nodes, self.input_keys, theta_batch)
 
-        return out
+    def log_scale(self, name, theta_batch):
+        """
+        log10 of the analytic scale that decode needs for family `name` (lines in ratio form), None for the
+        other families and for old artifacts with absolute line targets.
+        """
+        if self.prep.get(name, {}).get('ratio') is None:
+            return None
+        return line_log_scale(self.qh_nodes, self.input_keys, theta_batch)
 
     def predict_batch(self, theta_batch):
         """
@@ -159,7 +188,8 @@ class HIIEmulator:
         out = {}
         with torch.no_grad():                                                               # eval mode on families
             for name, (_attr, key) in self.WIRING.items():
-                out[key] = decode(self.prep[name], *fast_predict(self.cache[name], x))
+                out[key] = decode(self.prep[name], *fast_predict(self.cache[name], x),
+                                  log_scale=self.log_scale(name, theta_batch))
 
         for key in ('dust_mass_cloud',):                                # dust mass is a scalar, not vector. remove
             out[key] = (out[key][0][:,0], out[key][1][:,0])             # useless dimension (mean, std)

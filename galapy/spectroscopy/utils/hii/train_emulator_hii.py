@@ -13,7 +13,8 @@ from sklearn.decomposition import PCA
 from tqdm import tqdm
 
 from galapy.internal.constants import clight
-from galapy.spectroscopy.svgp import BatchedSVGPS
+from galapy.spectroscopy.svgp import BatchedSVGPS, lines_to_ratio
+from galapy.spectroscopy.hii_emulator import line_log_scale
 from galapy.spectroscopy.utils.validate_emulator import (holdout_split, encode_targets,
 holdout_scores, write_holdout, log_targets,
 build_frozen_gate_set)
@@ -27,6 +28,8 @@ LOG_FLOOR = 1e-35   # avoid -inf on null fluxes
 REL_FLOOR = 1e-10   # default floor of the vector families, relative to the peak of each model
 SD_FLOOR = 0.01     # minimum sd (dex) of the z-score: near-constant column otherwise blow numerical noise up to unit variance and inflate the PCA rank
 VECTOR_FAMS = ('lines', 'cont', 'grain', 'trans')   # families that get the relative floor
+RATIO_REF = ('h 1', 4862.7)  # reference line of the ratio form (species, vacuum wavelength in Angstrom): H-beta
+RATIO_FLOOR = 1e-4  # default floor of L_i / H-beta in the ratio form (the gates grade lines above 1e-3 H-beta)
 FUV_N_OFFSET = 1e-6 # N_FUV >=0, can be zero and in this case we add a small offset to avoid log(0)
 
 AXES_DOMINANT = tuple(INPUT_KEYS.index(k) for k in AXES_DOMINANT_KEYS)
@@ -249,7 +252,8 @@ def allocate_pca_budget(k_var, cap):
         rest -= 1
     return out
 
-def preprocess_targets(Y, do_pca, var_target=0.9999, k_granted=None, offset=0.0, rel_floor=0.0):
+def preprocess_targets(Y, do_pca, var_target=0.9999, k_granted=None, offset=0.0, rel_floor=0.0,
+                       ratio_ref=None, ratio_floor=0.0, log_scale=None):
     """
     Transforms the physical targets (e.g., continuum, lines, scalars) of a family into a format suitable
     for training Sparse Variational Gaussian Processes (SVGP). The transformation includes logarithmic
@@ -266,6 +270,10 @@ def preprocess_targets(Y, do_pca, var_target=0.9999, k_granted=None, offset=0.0,
         offset (float): Offset to be added to the input targets before transformation. Default is 0.0.
         rel_floor (float): Floor relative to the peak of each model before the log10. Default is 0.0
             (absolute LOG_FLOOR only).
+        ratio_ref (Optional[int]): lines only (no PCA). Index of the reference line (H-beta): the targets
+            become the ratio form of galapy.spectroscopy.svgp.lines_to_ratio. None = log10 of the fluxes.
+        ratio_floor (float): minimum of L_i / L_ref in the ratio form (0 = none).
+        log_scale (Optional[np.ndarray]): log10 Q_H (1 - f_esc) of each model, required with ratio_ref.
 
     Returns:
         Tuple[Any, Dict[str, Any]]: A tuple where the first element is the transformed targets (z-scored
@@ -279,8 +287,15 @@ def preprocess_targets(Y, do_pca, var_target=0.9999, k_granted=None, offset=0.0,
     Y = np.asarray(Y, dtype=np.float64) + offset # [N_models times n_outputs] put in array and add offset
     if not do_pca:
         ytil = log_targets(Y, rel_floor=rel_floor)
+        ratio = None
+        if ratio_ref is not None:
+            if log_scale is None:
+                raise ValueError("[hii-train] ratio form of the lines needs log_scale")
+            ytil = lines_to_ratio(ytil, ratio_ref, log_scale, ratio_floor)
+            ratio = {'ref': int(ratio_ref), 'floor': float(ratio_floor), 'scale': 'log10 Q_H (1 - f_esc)'}
         mu, sd = ytil.mean(0), np.maximum(ytil.std(0), SD_FLOOR)
-        return (ytil - mu) / sd, {'mu': mu, 'sd': sd, 'offset': offset, 'rel_floor': rel_floor, 'pca': None}
+        return (ytil - mu) / sd, {'mu': mu, 'sd': sd, 'offset': offset, 'rel_floor': rel_floor,
+                                  'ratio': ratio, 'pca': None}
 
     fit, z, mu, sd, k_var = pca_rank(Y, var_target, rel_floor)
     k = int(k_granted) if k_granted else k_var
@@ -490,11 +505,16 @@ def main():
     ap.add_argument('--rel-floor', type=float, default=REL_FLOOR, help='floor of the lines and '
                     'continuum families before the log10, relative to the peak of each model: zeros '
                     'go there instead of 1e-35 (0 disables it) (default: %(default)g)')
+    ap.add_argument('--line-targets', choices=('ratio', 'absolute'), default='ratio',
+                    help='targets of the lines family: ratio = H-beta / [Q_H (1 - f_esc)] and the other '
+                         'lines as ratios to H-beta; absolute = log10 of the fluxes (default: ratio)')
+    ap.add_argument('--ratio-floor', type=float, default=RATIO_FLOOR, help='minimum of L_i / H-beta '
+                    'with --line-targets ratio (0 disables it) (default: %(default)g)')
     ap.add_argument('--size-budget-mib', type=int, default=100, help='maximum size budget in MiB'
                                                                      ' (default: 100)')
     ap.add_argument('--epochs', type=int, default=200, help='number of epochs to train (default: 200)')
     ap.add_argument('--batch-size', type=int, default=1024, help='batch size (default: 1024)')
-    ap.add_argument('--lr', type=float, default=1e-3, help='learning rate (default: 1e-3)')
+    ap.add_argument('--lr', type=float, default=5e-3, help='learning rate (default: 5e-3)')
     ap.add_argument('--seed', type=int, default=42, help='random seed (default: 42)')
     ap.add_argument('--holdout-frac', type=float, default=0.1, help='fraction of data to hold out for validation (default: 0.1)')
     ap.add_argument('--holdout-seed', type=int, default=42, help='random seed for holdout split (default: 42)')
@@ -515,6 +535,17 @@ def main():
     tr = ~te
     print(f"[hii-train] holdout: {int(te.sum())} models of {len({k.split('_')[2] for k in np.asarray(meta['keys'])[te]})}"
           f" clouds, training: {int(tr.sum())}")
+
+    # lines in ratio form: index of H-beta and the analytic scale log10 Q_H (1 - f_esc) of every model
+    ratio_ref, log_scale = None, None
+    if args.line_targets == 'ratio':
+        names = [' '.join(str(n).split()).casefold() for n in meta['lines_names']]
+        cand = [i for i, (n, w) in enumerate(zip(names, np.asarray(meta['lines_vacuum'], float)))
+                if n == RATIO_REF[0] and abs(w - RATIO_REF[1]) < 2.0]
+        if len(cand) != 1:
+            raise ValueError(f"[hii-train] reference line {RATIO_REF} not found once in the line list ({cand})")
+        ratio_ref = cand[0]
+        log_scale = line_log_scale(meta['qh_unit_nodes'], list(INPUT_KEYS), X)
 
     xmu, xsd = X[tr].mean(0), X[tr].std(0)
     xsd = np.where(xsd > 0, xsd, 1.0)
@@ -540,6 +571,8 @@ def main():
           f"M {args.inducing} (PCA families) / {args.inducing_lines} (lines, scalars), seed {args.seed}")
     print(f"[hii-train] preprocessing: var-target {args.var_target:g}, max PCA comp {args.max_pca_components}, "
           f"rel-floor {args.rel_floor:g}, sd-floor {SD_FLOOR:g} dex, PCA scores whitened")
+    print(f"[hii-train] line targets: " + (f"ratio (H-beta / [Q_H (1 - f_esc)], other lines / H-beta, "
+          f"floor {args.ratio_floor:g})" if ratio_ref is not None else "absolute (log10 fluxes)"))
     print(f"[hii-train] PCA components: requested {k_var}, granted {k_granted}"
           + (" (cut by --max-pca-components)" if k_granted != k_var else ""))
 
@@ -555,9 +588,11 @@ def main():
 
     # training with k_granted
     for fam, do_pca, off in FAM:
+        lr_kw = ({'ratio_ref': ratio_ref, 'ratio_floor': args.ratio_floor, 'log_scale': log_scale[tr]}
+                 if fam == 'lines' and ratio_ref is not None else {})
         Yz, prep = preprocess_targets(Y[fam][tr], do_pca, args.var_target, k_granted.get(fam) if do_pca else None,
-                                      offset=off, rel_floor=rel[fam])
-        Yz_te = encode_targets(prep, Y[fam][te])
+                                      offset=off, rel_floor=rel[fam], **lr_kw)
+        Yz_te = encode_targets(prep, Y[fam][te], log_scale=log_scale[te] if lr_kw else None)
         M_fam = args.inducing if do_pca else args.inducing_lines
         tqdm.write(f"[hii-train] Training {fam}: {Yz.shape[1]} output, M={M_fam}"
                 + (f" (PCA {prep['pca']['n_components']} PC, "f"{prep['pca']['explained']:.4f} var)" if prep['pca'] else ""))
@@ -627,6 +662,8 @@ def main():
                 'var_target': args.var_target,
                 'rel_floor': args.rel_floor,
                 'sd_floor': SD_FLOOR,
+                'line_targets': args.line_targets,
+                'ratio_floor': args.ratio_floor if ratio_ref is not None else None,
                 'max_pca_components': args.max_pca_components,
                 'size_budget_mib': args.size_budget_mib,
                 'timing': {'gpu': torch.cuda.get_device_name(0) if device == 'cuda' else 'cpu',
