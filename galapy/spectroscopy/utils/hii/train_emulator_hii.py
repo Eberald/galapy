@@ -10,10 +10,13 @@ import h5py
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
-from sympy.codegen.ast import continue_
+from tqdm import tqdm
 
 from galapy.internal.constants import clight
 from galapy.spectroscopy.svgp import BatchedSVGPS
+from galapy.spectroscopy.utils.validate_emulator import (holdout_split, encode_targets,
+holdout_scores, write_holdout, log_targets,
+build_frozen_gate_set)
 
 # input free parameters of the training on HII
 INPUT_KEYS = ('logU', 'lognH_HII', 'log_zeta_O', 'z_CMB', 'xi_d', 'f_esc_meas', 'F_star', 'tau_SSP', 'Z_star')
@@ -21,11 +24,14 @@ LOG10_INPUTS = ('tau_SSP', 'Z_star')
 
 AXES_DOMINANT_KEYS = ('logU', 'lognH_HII', 'log_zeta_O') # axes that are dominant in the training, for PCA more impact
 LOG_FLOOR = 1e-35   # avoid -inf on null fluxes
+REL_FLOOR = 1e-10   # default floor of the vector families, relative to the peak of each model
+SD_FLOOR = 0.01     # minimum sd (dex) of the z-score: near-constant column otherwise blow numerical noise up to unit variance and inflate the PCA rank
+VECTOR_FAMS = ('lines', 'cont', 'grain', 'trans')   # families that get the relative floor
 FUV_N_OFFSET = 1e-6 # N_FUV >=0, can be zero and in this case we add a small offset to avoid log(0)
 
 AXES_DOMINANT = tuple(INPUT_KEYS.index(k) for k in AXES_DOMINANT_KEYS)
 
-def load_corpus(path):
+def load_corpus(path, keys=None):
     """
     Loads and processes a corpus file for use in the hii-train pipeline. This function validates the
     contents of the file, verifies conformity to expected formats and units, extracts metadata, and
@@ -57,14 +63,16 @@ def load_corpus(path):
     """
     # read mode
     with h5py.File(path, 'r') as f:
-        keys = sorted(k for k in f.keys() if k.startwith('grid_point_'))
+        # keys given: read only those grid points (the holdout, for validate_emulator)
+        if keys is None:
+            keys = sorted(k for k in f.keys() if k.startswith('grid_point_'))
         if not keys:
             raise ValueError(f"[hii-train] No grid points found in the corpus file '{path}', postprocessing missing")
 
         #check units
         from galapy.internal.constants import Points_Units_HII
-        units = {k: (v.decode() if isinstance(v, bytes) else v) for k,v in f['units'].attr.items()} if 'units' in f else {}
-        expected = {k: u for k, (u, -d) in Points_Units_HII.items() if u is not None}
+        units = {k: (v.decode() if isinstance(v, bytes) else v) for k,v in f['units'].attrs.items()} if 'units' in f else {}
+        expected = {k: u for k, (u, _d) in Points_Units_HII.items() if u is not None}
         if units != expected:
             raise ValueError(f"[hii-train] Units mismatch in the corpus file '{path}', expected {expected} but found {units}")
 
@@ -86,7 +94,7 @@ def load_corpus(path):
         #   - Y list per family
         #   - qh value of Q_H grouped per node
         #   - pumped, flags of pump lines
-        X, Y, qh, pumped = [], {fam: [] for fam in src}, {}, set()
+        X, Y, qh, pumped, used = [], {fam: [] for fam in src}, {}, set(), []
         for k in keys:
             g = f[k]
             # excluding not converged models
@@ -96,6 +104,7 @@ def load_corpus(path):
             if 'pumping_removed' not in g.attrs:
                 raise ValueError(f"[hii-train] {path}: {k} without pumping removed")
             pumped.add(bool(g.attrs['pumping_removed']))
+            used.append(k)   # key of each row of X: links the row to its cloud (holdout_split)
 
             X.append([np.log10(g.attrs[a]) if a in LOG10_INPUTS else g.attrs[a] for a in INPUT_KEYS])
             for fam, dset in src.items():
@@ -122,7 +131,8 @@ def load_corpus(path):
              'units': units,
              'n_used': len(X),
              'pumping_removed': pumped == {True},
-             'qh_unit_nodes': qh_table(qh)})
+             'qh_unit_nodes': qh_table(qh),
+             'keys': used})
 
 def qh_table(qh):
     """
@@ -157,7 +167,7 @@ def qh_table(qh):
         Q[taus.index(t), Zs.index(z)] = v.mean()
     return {'log_tau': np.log10(taus), 'Z': np.asarray(Zs), 'Qh': Q}
 
-def pca_rank(Y, var_target=0.995):
+def pca_rank(Y, var_target=0.9999, rel_floor=0.0):
     """
     Transforms the input data by applying a logarithmic scale, normalizes
     each column, performs Principal Component Analysis (PCA), and determines
@@ -167,9 +177,11 @@ def pca_rank(Y, var_target=0.995):
     Y : numpy.ndarray
         A 2-dimensional array of input data with rows as observations
         and columns as features.
-    var_target : float, default 0.995
+    var_target : float, default 0.9999
         The target proportion of variance to be explained by the selected
         principal components. Must be a value between 0 and 1.
+    rel_floor : float, default 0.0
+        Floor relative to the peak of each model before the log10 (see log_targets).
 
     Returns:
     tuple
@@ -185,9 +197,8 @@ def pca_rank(Y, var_target=0.995):
             The minimum number of principal components required to explain
             at least the specified target variance.
     """
-    ytil = np.log10(np.maximum(Y, LOG_FLOOR))
-    mu, sd = ytil.mean(0), ytil.std(0)
-    sd = np.where(sd > 0, sd, 1.0)  # non dividing per zero
+    ytil = log_targets(Y, rel_floor=rel_floor)
+    mu, sd = ytil.mean(0), np.maximum(ytil.std(0), SD_FLOOR)
     z = (ytil - mu) / sd  # z-score
     fit = PCA().fit(z)    # compute PCA
     k_var = int(np.searchsorted(np.cumsum(fit.explained_variance_ratio_), var_target) + 1)
@@ -238,7 +249,7 @@ def allocate_pca_budget(k_var, cap):
         rest -= 1
     return out
 
-def preprocess_targets(Y, do_pca, var_target=0.995, k_granted=None, offset=0.0):
+def preprocess_targets(Y, do_pca, var_target=0.9999, k_granted=None, offset=0.0, rel_floor=0.0):
     """
     Transforms the physical targets (e.g., continuum, lines, scalars) of a family into a format suitable
     for training Sparse Variational Gaussian Processes (SVGP). The transformation includes logarithmic
@@ -249,10 +260,12 @@ def preprocess_targets(Y, do_pca, var_target=0.995, k_granted=None, offset=0.0):
     Parameters:
         Y (np.ndarray): Input physical targets of shape (N_models, n_outputs).
         do_pca (bool): Flag indicating whether to apply PCA for dimensionality reduction.
-        var_target (float): Proportion of target variance to retain when applying PCA. Default is 0.995.
+        var_target (float): Proportion of target variance to retain when applying PCA. Default is 0.9999.
         k_granted (Optional[int]): Maximum number of PCA components to retain. If None, k is determined
             automatically based on var_target.
         offset (float): Offset to be added to the input targets before transformation. Default is 0.0.
+        rel_floor (float): Floor relative to the peak of each model before the log10. Default is 0.0
+            (absolute LOG_FLOOR only).
 
     Returns:
         Tuple[Any, Dict[str, Any]]: A tuple where the first element is the transformed targets (z-scored
@@ -264,20 +277,22 @@ def preprocess_targets(Y, do_pca, var_target=0.995, k_granted=None, offset=0.0):
     """
     # offset is zero for all families except N_FUV, saved in prepr and removed at runtime
     Y = np.asarray(Y, dtype=np.float64) + offset # [N_models times n_outputs] put in array and add offset
-    ytil = np.log10(np.maximum(Y, LOG_FLOOR))
-    mu, sd = ytil.mean(0), ytil.std(0)
-    sd = np.where(sd > 0, sd, 1.0)  # non dividing per zero
-    z = (ytil - mu) / sd
     if not do_pca:
-        return z, {'mu': mu, 'sd': sd, 'offset': offset, 'pca': None}
+        ytil = log_targets(Y, rel_floor=rel_floor)
+        mu, sd = ytil.mean(0), np.maximum(ytil.std(0), SD_FLOOR)
+        return (ytil - mu) / sd, {'mu': mu, 'sd': sd, 'offset': offset, 'rel_floor': rel_floor, 'pca': None}
 
-    fit, z, mu, sd, k_var = pca_rank(Y, var_target)
+    fit, z, mu, sd, k_var = pca_rank(Y, var_target, rel_floor)
     k = int(k_granted) if k_granted else k_var
     # components PCA ordered for decreasing variance, so we can truncate directly
     comp = fit.components_[:k]
-    return (z - fit.mean_) @ comp.T, {
-        'mu': mu, 'sd': sd, 'offset': offset, 'pca': {
-            'components': comp, 'mean': fit.mean_,
+    scores = (z - fit.mean_) @ comp.T
+    # whitening: every PC score to unit variance, the scale the GP starts from (outputscale and noise
+    # ~0.7). Raw scores have variance up to thousands and the hyperparameters cannot get there.
+    score_sd = np.maximum(scores.std(0), 1e-12)
+    return scores / score_sd, {
+        'mu': mu, 'sd': sd, 'offset': offset, 'rel_floor': rel_floor, 'pca': {
+            'components': comp, 'mean': fit.mean_, 'score_sd': score_sd,
             'n_components': k, 'n_components_var_target': k_var,
             'truncated_by_budget': k < k_var,
             'explained': float(fit.explained_variance_ratio_[:k].sum())
@@ -310,7 +325,8 @@ def init_inducing(Xz, n_out, M=512, seed=42):
     Z = torch.as_tensor(km.cluster_centers_, dtype=torch.float32)   # tensor [M x D]
     return Z.unsqueeze(0).repeat(n_out, 1, 1)                       # [n_out x M x D]
 
-def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42):
+def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_every=10,
+                 progress=None, cost=1.0):
     """
     Trains all Gaussian Processes (GPs) of a family together using a batched model composed of independent Stochastic Variational
     Gaussian Processes (SVGP). This function facilitates the simultaneous training of multiple output dimensions by leveraging
@@ -334,6 +350,10 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42):
             The computation device on which the training is conducted (e.g., "cpu" or "cuda").
         seed: int, optional
             The seed value for the random number generator to ensure reproducible results. Default is 42.
+        test: (Xz_test, Yz_test), optional
+            The holdout in the training space, scored every eval_every epochs (TE lines).
+        progress: tqdm, optional
+            Progress bar of the whole training, advanced by `cost` at each epoch.
 
     Returns:
         tuple:
@@ -361,7 +381,9 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42):
     ds = torch.utils.data.TensorDataset(Xt, Yt)
     loader = torch.utils.data.DataLoader(ds, batch_size=batch, shuffle=True) # mini batch of batch points
 
-    hist = [] #history
+    hist, test_hist = [], [] #history
+    # rmse_z of a constant predictor (the training mean, i.e. z = 0)
+    ref = float(np.sqrt(np.mean(np.asarray(test[1]) ** 2))) if test is not None else None
     import time
     epoch_times = []
     # training loop
@@ -378,10 +400,18 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42):
             tot += loss.item()
         hist.append(tot / max(len(loader), 1))
         epoch_times.append(time.perf_counter() - _t0)
-        if epoch % 20 == 0:
-            print(f"[hii-train] epoch {epoch: 4d} ELBO loss {hist[-1]: .4f}", flush=True)
+        if test is not None and ((epoch + 1) % eval_every == 0 or epoch == epochs - 1):
+            test_hist.append({'epoch': epoch+1, **holdout_scores(model, test[0], test[1], device)})
+            model.train()
+            tqdm.write(f"[hii-train] TE epoch {epoch + 1:4d}/{epochs}  rmse_z {test_hist[-1]['rmse_z']:.4f}"
+                       f" (constant predictor {ref:.4f}, good << it)  cov68 {test_hist[-1]['cov68']:.3f}"
+                       f" (calibrated 0.68)")
+        if epoch % 20 == 0 or epoch == epochs - 1:
+            tqdm.write(f"[hii-train] TR epoch {epoch + 1:4d}/{epochs}  ELBO loss {hist[-1]: .4f} (must decrease)")
+        if progress is not None:
+            progress.update(cost)
 
-    return model, likelihood, hist, epoch_times
+    return model, likelihood, hist, epoch_times, test_hist
 
 def _delta_m_budget(path, budget_mib):
     """
@@ -453,16 +483,22 @@ def main():
                                                               'families using PCA (default: 512)')
     ap.add_argument('--inducing-lines', type=int, default=256, help='number of inducing points'
                                                             'for the lines family and scalars (no PCA) (default: 256)')
-    ap.add_argument('--var-target', type=float, default=0.995, help='target variance explained'
-                                                                    ' by PCA components(default: 0.995)')
+    ap.add_argument('--var-target', type=float, default=0.9999, help='target variance explained'
+                                                                    ' by PCA components (default: 0.9999)')
     ap.add_argument('--max-pca-components', type=int, default=100, help="maximum number of "
                                                                         "PCA components to use (default=100)")
+    ap.add_argument('--rel-floor', type=float, default=REL_FLOOR, help='floor of the lines and '
+                    'continuum families before the log10, relative to the peak of each model: zeros '
+                    'go there instead of 1e-35 (0 disables it) (default: %(default)g)')
     ap.add_argument('--size-budget-mib', type=int, default=100, help='maximum size budget in MiB'
                                                                      ' (default: 100)')
     ap.add_argument('--epochs', type=int, default=200, help='number of epochs to train (default: 200)')
     ap.add_argument('--batch-size', type=int, default=1024, help='batch size (default: 1024)')
     ap.add_argument('--lr', type=float, default=1e-3, help='learning rate (default: 1e-3)')
     ap.add_argument('--seed', type=int, default=42, help='random seed (default: 42)')
+    ap.add_argument('--holdout-frac', type=float, default=0.1, help='fraction of data to hold out for validation (default: 0.1)')
+    ap.add_argument('--holdout-seed', type=int, default=42, help='random seed for holdout split (default: 42)')
+    ap.add_argument('--eval-every', type=int, default=10, help='evaluate model every n epochs (default: 10)')
     ap.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto', help='device '
                                                                                       'to use (default: auto)')
     args=ap.parse_args()
@@ -470,105 +506,149 @@ def main():
 
     pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     pathlib.Path(args.meta).parent.mkdir(parents=True, exist_ok=True)
-    device = (('cuda' if torch.cuda.is_avaiable() else 'cpu') if args.device == 'auto' else args.device)
+    device = (('cuda' if torch.cuda.is_available() else 'cpu') if args.device == 'auto' else args.device)
     X, Y, meta = load_corpus(args.corpus)
     print(f"[hii-train] {meta['n_used']} converged models, {X.shape[1]} input, device={device}")
 
-    xmu, xsd = X.mean(0), X.std(0)
+    # train-test
+    te = holdout_split(meta['keys'], X, AXES_DOMINANT, args.holdout_frac, args.holdout_seed)
+    tr = ~te
+    print(f"[hii-train] holdout: {int(te.sum())} models of {len({k.split('_')[2] for k in np.asarray(meta['keys'])[te]})}"
+          f" clouds, training: {int(tr.sum())}")
+
+    xmu, xsd = X[tr].mean(0), X[tr].std(0)
     xsd = np.where(xsd > 0, xsd, 1.0)
     Xz = (X - xmu) / xsd
 
-    trained, Yz_by_fam = {}, {}
+    trained, Yz_by_fam, Yz_te_by_fam = {}, {}, {}
     epoch_times = []
     models, extras = {}, {'x_mean': xmu, 'x_std': xsd, 'line_names': meta['lines_names'], 'lines_vacuum':
                          meta['lines_vacuum'], 'wave_grid': meta['wave_grid'], 'input_keys': list(INPUT_KEYS),
                          'log10_inputs': list(LOG10_INPUTS), 'qh_unit_nodes': meta['qh_unit_nodes'],
                          'pumping_removed': meta['pumping_removed'], 'ard_num_dims': X.shape[1],
-                         'n_inducing_lines': args.inducing, 'n_inducing_lines': args.inducing_lines}
+                         'n_inducing': args.inducing, 'n_inducing_lines': args.inducing_lines}
 
     # families of emulators (name, PCA, offset)
-    FAM = (('lines', False, 0.0), ('cont', True, 0,0), ('grain', True, 0.0), ('trans', True, 0.0),
+    FAM = (('lines', False, 0.0), ('cont', True, 0.0), ('grain', True, 0.0), ('trans', True, 0.0),
            ('dust', False, 0.0), ('fuv_t', False, 0.0), ('fuv_n', False, FUV_N_OFFSET))
 
     # computation of required PCA components for each family
-    k_var = {fam: pca_rank(Y[fam], args.var_target)[4] for fam, do_pca, _ in FAM if do_pca}
+    rel = {fam: (args.rel_floor if fam in VECTOR_FAMS else 0.0) for fam, _, _ in FAM}
+    k_var = {fam: pca_rank(Y[fam][tr], args.var_target, rel[fam])[4] for fam, do_pca, _ in FAM if do_pca}
     k_granted = allocate_pca_budget(k_var, args.max_pca_components)
-    if k_granted != k_var:
-        print(f"[hii-train] PCA max comp {args.max_pca_components}, requested {k_var}, granted {k_granted}")
+    print(f"[hii-train] settings: epochs {args.epochs}, batch {args.batch_size}, lr {args.lr:g}, "
+          f"M {args.inducing} (PCA families) / {args.inducing_lines} (lines, scalars), seed {args.seed}")
+    print(f"[hii-train] preprocessing: var-target {args.var_target:g}, max PCA comp {args.max_pca_components}, "
+          f"rel-floor {args.rel_floor:g}, sd-floor {SD_FLOOR:g} dex, PCA scores whitened")
+    print(f"[hii-train] PCA components: requested {k_var}, granted {k_granted}"
+          + (" (cut by --max-pca-components)" if k_granted != k_var else ""))
+
+    # one progress bar for the whole training
+    n_batches = -(-int(tr.sum()) // args.batch_size)
+    cost = {}
+    for fam, do_pca, _ in FAM:
+        d = k_granted[fam] if do_pca else Y[fam].shape[1]
+        M = args.inducing if do_pca else args.inducing_lines
+        cost[fam] = float(d * (M ** 3 + args.batch_size * M ** 2) * n_batches)
+    pbar = tqdm(total=args.epochs * sum(cost.values()), desc='[hii-train] training',
+                bar_format='{desc}: {percentage:3.0f}%|{bar:30}| {elapsed} elapsed, {remaining} left')
 
     # training with k_granted
     for fam, do_pca, off in FAM:
-        Yz, prep = preprocess_targets(Y[fam], do_pca, args.var_target, k_granted.get(fam) if do_pca else None, offset=off)
+        Yz, prep = preprocess_targets(Y[fam][tr], do_pca, args.var_target, k_granted.get(fam) if do_pca else None,
+                                      offset=off, rel_floor=rel[fam])
+        Yz_te = encode_targets(prep, Y[fam][te])
         M_fam = args.inducing if do_pca else args.inducing_lines
-        print(f"[hii-train] Training {fam}: {Yz.shape[1]} output, M={M_fam}"
+        tqdm.write(f"[hii-train] Training {fam}: {Yz.shape[1]} output, M={M_fam}"
                 + (f" (PCA {prep['pca']['n_components']} PC, "f"{prep['pca']['explained']:.4f} var)" if prep['pca'] else ""))
 
-        m, lik, hist, ep_t = train_family(Xz, Yz, M_fam, args.epochs, args.batch, args.lr, device, args.seed)
+        m, lik, hist, ep_t, te_hist = train_family(Xz[tr], Yz, M_fam, args.epochs, args.batch_size, args.lr, device, args.seed,
+                                                   test=(Xz[te], Yz_te), eval_every=args.eval_every,
+                                                   progress=pbar, cost=cost[fam])
         epoch_times.extend(ep_t)
         # dictionary of state on CPU
         models[fam] = {'model': {k: v.cpu() for k, v in m.state_dict().items()},
                        'likelihood': {k: v.cpu() for k, v in lik.state_dict().items()}}
         extras[f'{fam}_prep'] = prep
         extras[f'{fam}_elbo_history'] = hist
+        extras[f'{fam}_holdout_history'] = te_hist
         trained[fam] = (m,lik)
         Yz_by_fam[fam] = Yz
+        Yz_te_by_fam[fam] = Yz_te
+    pbar.close()
 
-        # split emulators file .pt per family
-        stem = str(args.out)[:3] if str(args.out).endswith('.pt') else str(args.out)
-        split = {'lines': ['lines'],
-                 'cont': ['cont'],
-                 'grain': ['grain'],
-                 'trans': ['trans'],
-                 'scalars': ['dust', 'fuv_t', 'fuv_n']}
+    # split emulators file .pt per family
+    stem = str(args.out)[:-3] if str(args.out).endswith('.pt') else str(args.out)
+    split = {'lines': ['lines'],
+             'cont': ['cont'],
+             'grain': ['grain'],
+             'trans': ['trans'],
+             'scalars': ['dust', 'fuv_t', 'fuv_n']}
 
-        assert sorted(f for fs in split.values() for f in fs) == sorted(models), ("[hii-train] incomplete split: "
-                                                                     "every trained family must finish on a file")
-        out_paths = {}
-        for part, fams in split.items():
-            out_paths[part] = f"{stem}_{part}.pt"
-            torch.save({'families': {f: models[f] for f in fams}, 'extras': extras}, out_paths[part])
+    assert sorted(f for fs in split.values() for f in fs) == sorted(models), ("[hii-train] incomplete split: "
+                                                                 "every trained family must finish on a file")
+    out_paths = {}
+    for part, fams in split.items():
+        out_paths[part] = f"{stem}_{part}.pt"
+        torch.save({'families': {f: models[f] for f in fams}, 'extras': extras}, out_paths[part])
 
-        assert_size_budget(list(out_paths.values()), args.size_busget_mib)
+    assert_size_budget(list(out_paths.values()), args.size_budget_mib)
 
-        # Part of emulator update (CloudIA AI AGENT, WIP)
-        try:
-            from galapy.spectroscopy.emulator_update import update_emulator
-        except ImportError:
-            print("[hii-train] emulator update not available (under development)")
+    holdout_path = write_holdout(f"{stem}_holdout.json", np.asarray(meta['keys'])[te], args.holdout_frac,
+                                 args.holdout_seed, AXES_DOMINANT_KEYS, corpus=args.corpus,
+                                 n_models = int(meta['n_used']))
+    build_frozen_gate_set(f"{stem}_gate_set_frozen.npz", Xz[te], np.concatenate([Yz_te_by_fam[f]
+                        for f in sorted(Yz_te_by_fam)], axis=1), np.concatenate([Y[f][te] for f in sorted(Y)], axis=1),
+                          axes_idx = AXES_DOMINANT, families = [(f, Yz_te_by_fam[f].shape[1]) for f in sorted(Yz_te_by_fam)])
 
-        # metadata production
-        pathlib.Path(args.meta).write_text(json.dumps({
-                    'n_models': int(meta['n_used']),
-                    'input_keys': list(INPUT_KEYS),
-                    'n_inducing': args.inducing,
-                    'n_inducing_lines': args.inducing_lines,
-                    'artifacts': out_paths,
-                    'delta_M_allowed': {p: _delta_m_budget(out_paths[p], args.size_budget_mib) for p in out_paths},
-                    'update_mode': 'base',
-                    'pumping_removed': meta['pumping_removed'],
-                    'var_target': args.var_target,
-                    'max_pca_components': args.max_pca_components,
-                    'size_budget_mib': args.size_budget_mib,
-                    'timing': {'gpu': torch.cuda.get_device_name(0) if device == 'cuda' else 'cpu',
-                                'torch': torch.__version__,
-                                'tf32': bool(getattr(torch.backends.cuda.matmul,'allow_tf32', False)),
-                                'batch': args.batch,
-                                'epochs_run': len(hist),
-                                's_per_epoch_median': float(np.median(epoch_times)),
-                                's_per_epoch_iqr': float(np.subtract(*np.percentile(epoch_times, [75, 25]))),
-                                'peak_vram_gib': (torch.cuda.max_memory_allocated() / 2 ** 30 if device == 'cuda' else None)},
-                    'epochs': args.epochs,
-                    'batch': args.batch, 'lr': args.lr,
-                    'seed': args.seed,
-                    'families': {k: (extras[f'{k}_prep']['pca']['n_components']
-                                     if extras[f'{k}_prep']['pca'] else int(Y[k].shape[1])) for k, _, _ in FAM},
-                    'final_elbo': {k: extras[f'{k}_elbo_history'][-1] for k, _, _ in FAM},
-                    }, indent = 2, default = str))
+    # Part of emulator update (CloudIA AI AGENT, WIP)
+    try:
+        from galapy.spectroscopy.emulator_update import update_emulator
+    except ImportError:
+        print("[hii-train] emulator update not available (under development)")
 
-        print(f"[hii-train] -> {args.out} | meta -> {args.meta}")
+    # metadata production
+    pathlib.Path(args.meta).write_text(json.dumps({
+                'n_models': int(meta['n_used']),
+                'holdout': {'file': holdout_path, 'gate_set': f"{stem}_gate_set_frozen.npz",
+                    'frac': args.holdout_frac, 'seed': args.holdout_seed,
+                    'n_train': int(tr.sum()), 'n_test': int(te.sum()),
+                    'final': {k: extras[f'{k}_holdout_history'][-1]
+                              for k, _, _ in FAM}},
+                'input_keys': list(INPUT_KEYS),
+                'x_min': X[tr].min(0).tolist(),
+                'x_max': X[tr].max(0).tolist(),
+                'n_inducing': args.inducing,
+                'n_inducing_lines': args.inducing_lines,
+                'artifacts': out_paths,
+                'delta_M_allowed': {p: _delta_m_budget(out_paths[p], args.size_budget_mib) for p in out_paths},
+                'update_mode': 'base',
+                'pumping_removed': meta['pumping_removed'],
+                'var_target': args.var_target,
+                'rel_floor': args.rel_floor,
+                'sd_floor': SD_FLOOR,
+                'max_pca_components': args.max_pca_components,
+                'size_budget_mib': args.size_budget_mib,
+                'timing': {'gpu': torch.cuda.get_device_name(0) if device == 'cuda' else 'cpu',
+                            'torch': torch.__version__,
+                            'tf32': bool(getattr(torch.backends.cuda.matmul,'allow_tf32', False)),
+                            'batch': args.batch_size,
+                            'epochs_run': len(hist),
+                            's_per_epoch_median': float(np.median(epoch_times)),
+                            's_per_epoch_iqr': float(np.subtract(*np.percentile(epoch_times, [75, 25]))),
+                            'peak_vram_gib': (torch.cuda.max_memory_allocated() / 2 ** 30 if device == 'cuda' else None)},
+                'epochs': args.epochs,
+                'batch': args.batch_size, 'lr': args.lr,
+                'seed': args.seed,
+                'families': {k: (extras[f'{k}_prep']['pca']['n_components']
+                                 if extras[f'{k}_prep']['pca'] else int(Y[k].shape[1])) for k, _, _ in FAM},
+                'final_elbo': {k: extras[f'{k}_elbo_history'][-1] for k, _, _ in FAM},
+                }, indent = 2, default = str))
 
-        if __name__ == '__main__':
-            main()
+    print(f"[hii-train] -> {args.out} | meta -> {args.meta}")
+
+if __name__ == '__main__':
+    main()
 
 
 

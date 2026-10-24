@@ -91,7 +91,7 @@ class HIIEmulator:
         self.x_std = torch.as_tensor(ex['x_std'], dtype=torch.float32, device=self.device)
 
         # common informations
-        self.input_keys = list(ex['input:keys'])
+        self.input_keys = list(ex['input_keys'])
         self.qh_nodes = ex['qh_unit_nodes']
         self.line_names = ex.get('line_names')
         self.line_wavelengths_rest = ex.get('lines_vacuum')

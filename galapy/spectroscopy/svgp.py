@@ -226,6 +226,9 @@ def decode(prep, mean, var):
     #case of pca or not, different decode
     if pca is not None:
         C = np.asarray(pca['components'])                               # (n_pc, n_wl)
+        if 'score_sd' in pca:                                           # undo the whitening of the scores
+            s = np.asarray(pca['score_sd'])
+            mu_z, var_z = mu_z * s[:, None], var_z * s ** 2
         y = pca_decode(mu_z, C, pca['mean'], prep['mu'], prep['sd'])    # (N, n_wl)
         var_z = var_z @ C ** 2                                          # (N, n_wl)
     else:
