@@ -1597,7 +1597,7 @@ def main(argv=None):
                                        indent=2))
         if args.markdown:
             _write(args.markdown, f"# Grid validation - {args.sector.upper()} - FAIL\n\nData `{args.data}`: not readable ({_reason(exc)}).\n")
-        print(f'{tag} FAIL - data not readable: {exc}', file=sys.stderr)
+        print(f'[grid-val] {tag} FAIL - data not readable: {exc}', file=sys.stderr)
         return 1
     ctx = Context(sector=args.sector, data=data, raw_workdirs=args.raw_workdirs,
                   max_spectra=args.max_spectra, seed=args.seed)
@@ -1619,10 +1619,10 @@ def main(argv=None):
     if args.markdown:
         _write(args.markdown, render_markdown(report))
     counts = {s: sum(r['status'] == s for r in results) for s in (PASS, PARTIAL, SKIP, FAIL, ERROR)}
-    print(f'{tag} {report["overall"]} - ' + ', '.join(f'{v} {k}' for k, v in counts.items() if v)
+    print(f'[grid-val] {tag} {report["overall"]} - ' + ', '.join(f'{v} {k}' for k, v in counts.items() if v)
           + (f' - blocking failures: {failed}' if failed else ''))
     for message in input_errors:
-        print(f'{tag} input not loaded: {message}', file=sys.stderr)
+        print(f'[grid-val] {tag} input not loaded: {message}', file=sys.stderr)
     return 1 if failed else 0
 
 

@@ -16,8 +16,8 @@ from galapy.internal.constants import clight
 from galapy.spectroscopy.svgp import BatchedSVGPS, lines_to_ratio
 from galapy.spectroscopy.hii_emulator import line_log_scale
 from galapy.spectroscopy.utils.validate_emulator import (holdout_split, encode_targets,
-holdout_scores, write_holdout, log_targets,
-build_frozen_gate_set)
+                            holdout_scores, write_holdout, log_targets,
+                            build_frozen_gate_set, calibration_scale, coverage_scores)
 
 # input free parameters of the training on HII
 INPUT_KEYS = ('logU', 'lognH_HII', 'log_zeta_O', 'z_CMB', 'xi_d', 'f_esc_meas', 'F_star', 'tau_SSP', 'Z_star')
@@ -25,11 +25,42 @@ LOG10_INPUTS = ('tau_SSP', 'Z_star')
 
 AXES_DOMINANT_KEYS = ('logU', 'lognH_HII', 'log_zeta_O') # axes that are dominant in the training, for PCA more impact
 LOG_FLOOR = 1e-35   # avoid -inf on null fluxes
-REL_FLOOR = 1e-10   # default floor of the vector families, relative to the peak of each model
+# Default floor of each vector family before the log10, relative to the peak of each model (row): values below
+# rel_floor * max(row) are set to it. The floor fixes the depth where a spectrum goes to ~0: in log
+# space a transition transparent -> opaque is a jump of -log10(rel_floor) dex, which a stationary GP kernel smooths
+# over, spilling error onto the cells near the jump. So the floor should be as HIGH as the physics allows:
+#   - trans: T = transmitted/incident <= 1, so T < 1e-5 is an opaque cloud, indistinguishable from 0. Floor 1e-5
+#     vs 1e-10 (holdout, 40 epochs): error below 912 A p50 0.20 -> 0.12 dex, p90 0.76 -> 0.49 dex, cells with
+#     |dT| > 0.1 35% -> 27%, nothing changes above 912 A.
+#   - cont, grain: the spectrum spans ~10 dex (free-free radio tail far below the peak), a higher floor clips
+#     cells that are needed (at 1e-5: 32% of the cells > 100 um, error p95 0.2 -> 2.3 dex), so they keep 1e-10
+#     (except below 912 A, see REL_FLOOR_LYC).
+#   - lines: with ratio targets the floor is ratio_floor (on L_i / H-beta), so no relative floor: it would be
+#     relative to the brightest line (Ly-alpha ~ 20-40 H-beta) and clip at ~2e-9 H-beta, above ratio_floor.
+#     With absolute targets they get REL_FLOOR_ABS_LINES.
+REL_FLOOR = {'lines': 0.0, 'cont': 1e-10, 'grain': 1e-10, 'trans': 1e-5}
+REL_FLOOR_ABS_LINES = 1e-10  # relative floor of the lines with --line-targets absolute
+# Floor that REPLACES rel_floor at the ionizing wavelengths (lambda < LYMAN_LIMIT_A) of the families on the
+# continuum wavelength grid. The Lyman break is where the transparent/opaque cliff lives, while the deep tails that
+# need the low floor (free-free radio) are all at lambda > 912 A, so the two regimes get separate floors:
+#   - cont, lyc 1e-5 + rest 1e-10 vs 1e-10 everywhere (holdout, 40 epochs): error below 912 A p50 0.39 -> 0.18 dex,
+#     p90 2.1 -> 0.83 dex, |err|/peak p95 0.078 -> 0.046; above 912 A unchanged (radio tail p95 0.21 -> 0.20 dex).
+#     Same gain below 912 A as a flat 1e-5, without its loss above (radio tail p95 2.3 dex).
+#   - grain: no ionizing floor. Below 912 A the grain emission is already < 1e-10 of the peak in every model (a
+#     constant column), so the ionizing floor changes nothing (identical holdout errors). A flat 1e-7 / 1e-5
+#     gains <= 10% at 1-100 um but loses on the weak cells (1e-5: 100 um - 1 cm p90 0.18 -> 0.48 dex): 1e-10.
+# Families not listed have no ionizing floor (their rel_floor holds at every wavelength).
+REL_FLOOR_LYC = {'cont': 1e-5}
+LYMAN_LIMIT_A = 911.76      # Lyman limit (vacuum, Angstrom): the wave grid is in Angstrom
+WAVE_FAMS = ('cont', 'grain', 'trans')  # families defined on the continuum wavelength grid
 SD_FLOOR = 0.01     # minimum sd (dex) of the z-score: near-constant column otherwise blow numerical noise up to unit variance and inflate the PCA rank
 VECTOR_FAMS = ('lines', 'cont', 'grain', 'trans')   # families that get the relative floor
 RATIO_REF = ('h 1', 4862.7)  # reference line of the ratio form (species, vacuum wavelength in Angstrom): H-beta
-RATIO_FLOOR = 1e-4  # default floor of L_i / H-beta in the ratio form (the gates grade lines above 1e-3 H-beta)
+RATIO_FLOOR = 1e-10  # default floor of L_i / H-beta in the ratio form: low enough that the weak lines are emulated
+# Post-hoc sigma calibration
+CALIB_FRAC = 0.05   # default fraction of the CLOUDS kept out of training to estimate the scale s_k of sigma
+CALIB_FAMS = ('cont', 'grain', 'trans')  # default families calibrated: the PCA ones, overconfident on the holdout
+SIGMA_SCALE_MIN = 1.0  # lower clip of s_k: the calibration only widens sigma, never shrinks it
 FUV_N_OFFSET = 1e-6 # N_FUV >=0, can be zero and in this case we add a small offset to avoid log(0)
 
 AXES_DOMINANT = tuple(INPUT_KEYS.index(k) for k in AXES_DOMINANT_KEYS)
@@ -170,6 +201,71 @@ def qh_table(qh):
         Q[taus.index(t), Zs.index(z)] = v.mean()
     return {'log_tau': np.log10(taus), 'Z': np.asarray(Zs), 'Qh': Q}
 
+def parse_rel_floor(items, line_targets='ratio'):
+    """
+    Relative floor of each vector family from the --rel-floor items.
+
+    Parameters:
+        items (list of str): 'FAM=VALUE' sets one family, a bare 'VALUE' sets all the vector families;
+            later items override earlier ones. Empty -> the defaults REL_FLOOR.
+        line_targets (str): 'ratio' or 'absolute'. With absolute line targets there is no ratio_floor, so the
+            default of the lines is REL_FLOOR_ABS_LINES instead of 0.
+
+    Returns:
+        dict: {family: rel_floor} for every family in VECTOR_FAMS.
+    """
+    rel = dict(REL_FLOOR)
+    if line_targets == 'absolute':
+        rel['lines'] = REL_FLOOR_ABS_LINES
+    return parse_family_values(items, rel, VECTOR_FAMS, '--rel-floor')
+
+
+def parse_rel_floor_lyc(items):
+    """
+    Ionizing floor (lambda < LYMAN_LIMIT_A) of each wavelength-grid family from the --rel-floor-lyc items,
+    same syntax as --rel-floor. 0 means no ionizing floor (rel_floor everywhere).
+
+    Returns:
+        dict: {family: floor} for every family in WAVE_FAMS (0.0 = none).
+    """
+    lyc = {f: REL_FLOOR_LYC.get(f, 0.0) for f in WAVE_FAMS}
+    return parse_family_values(items, lyc, WAVE_FAMS, '--rel-floor-lyc')
+
+
+def wavelength_floor(rel, lyc, wave):
+    """
+    Relative floor per column of a wavelength-grid family: lyc below LYMAN_LIMIT_A, rel above.
+    Returns the scalar rel when there is no ionizing floor (lyc = 0), so old behaviour and artifacts are unchanged.
+    log_targets accepts both: the array broadcasts on the columns (rel_floor * max of each row).
+    """
+    if not lyc:
+        return rel
+    return np.where(np.asarray(wave, dtype=np.float64) < LYMAN_LIMIT_A, lyc, rel)
+
+
+def parse_family_values(items, defaults, families, flag):
+    """
+    Update `defaults` ({family: value}) with the items of a CLI flag: 'FAM=VALUE' sets one family, a bare
+    'VALUE' sets all of `families`; later items override earlier ones. Values must be >= 0.
+    """
+    rel = dict(defaults)
+    for it in items:
+        fam, sep, val = it.rpartition('=')
+        try:
+            v = float(val)
+        except ValueError:
+            raise ValueError(f"[hii-train] {flag}: '{it}' is not FAM=VALUE or VALUE") from None
+        if v < 0:
+            raise ValueError(f"[hii-train] {flag}: negative floor in '{it}'")
+        if not sep:
+            rel.update({f: v for f in families})
+        elif fam in families:
+            rel[fam] = v
+        else:
+            raise ValueError(f"[hii-train] {flag}: unknown family '{fam}' (allowed: {families})")
+    return rel
+
+
 def pca_rank(Y, var_target=0.9999, rel_floor=0.0):
     """
     Transforms the input data by applying a logarithmic scale, normalizes
@@ -183,8 +279,9 @@ def pca_rank(Y, var_target=0.9999, rel_floor=0.0):
     var_target : float, default 0.9999
         The target proportion of variance to be explained by the selected
         principal components. Must be a value between 0 and 1.
-    rel_floor : float, default 0.0
-        Floor relative to the peak of each model before the log10 (see log_targets).
+    rel_floor : float or np.ndarray (n_columns,), default 0.0
+        Floor relative to the peak of each model before the log10 (see log_targets); an array gives one floor per
+        column (e.g. per wavelength, see wavelength_floor).
 
     Returns:
     tuple
@@ -268,8 +365,8 @@ def preprocess_targets(Y, do_pca, var_target=0.9999, k_granted=None, offset=0.0,
         k_granted (Optional[int]): Maximum number of PCA components to retain. If None, k is determined
             automatically based on var_target.
         offset (float): Offset to be added to the input targets before transformation. Default is 0.0.
-        rel_floor (float): Floor relative to the peak of each model before the log10. Default is 0.0
-            (absolute LOG_FLOOR only).
+        rel_floor (float or np.ndarray): Floor relative to the peak of each model before the log10, scalar or one
+            per column (see wavelength_floor). Default is 0.0 (absolute LOG_FLOOR only).
         ratio_ref (Optional[int]): lines only (no PCA). Index of the reference line (H-beta): the targets
             become the ratio form of galapy.spectroscopy.svgp.lines_to_ratio. None = log10 of the fluxes.
         ratio_floor (float): minimum of L_i / L_ref in the ratio form (0 = none).
@@ -502,9 +599,15 @@ def main():
                                                                     ' by PCA components (default: 0.9999)')
     ap.add_argument('--max-pca-components', type=int, default=100, help="maximum number of "
                                                                         "PCA components to use (default=100)")
-    ap.add_argument('--rel-floor', type=float, default=REL_FLOOR, help='floor of the lines and '
-                    'continuum families before the log10, relative to the peak of each model: zeros '
-                    'go there instead of 1e-35 (0 disables it) (default: %(default)g)')
+    ap.add_argument('--rel-floor', nargs='+', default=[], metavar='[FAM=]VALUE', help='floor of the vector '
+                    'families before the log10, relative to the peak of each model: zeros go there instead of '
+                    '1e-35 (0 disables it). FAM=VALUE sets one family (e.g. trans=1e-5 cont=1e-10), a bare VALUE '
+                    'sets all of them (default: ' + ' '.join(f'{k}={v:g}' for k, v in REL_FLOOR.items())
+                    + f', lines={REL_FLOOR_ABS_LINES:g} with --line-targets absolute)')
+    ap.add_argument('--rel-floor-lyc', nargs='+', default=[], metavar='[FAM=]VALUE', help='relative floor that '
+                    f'replaces --rel-floor below the Lyman limit ({LYMAN_LIMIT_A} A) for the families on the wavelength '
+                    f'grid {WAVE_FAMS}, same syntax as --rel-floor; 0 = none (default: '
+                    + ' '.join(f'{f}={REL_FLOOR_LYC.get(f, 0.0):g}' for f in WAVE_FAMS) + ')')
     ap.add_argument('--line-targets', choices=('ratio', 'absolute'), default='ratio',
                     help='targets of the lines family: ratio = H-beta / [Q_H (1 - f_esc)] and the other '
                          'lines as ratios to H-beta; absolute = log10 of the fluxes (default: ratio)')
@@ -519,6 +622,11 @@ def main():
     ap.add_argument('--holdout-frac', type=float, default=0.1, help='fraction of data to hold out for validation (default: 0.1)')
     ap.add_argument('--holdout-seed', type=int, default=42, help='random seed for holdout split (default: 42)')
     ap.add_argument('--eval-every', type=int, default=10, help='evaluate model every n epochs (default: 10)')
+    ap.add_argument('--calib-frac', type=float, default=CALIB_FRAC, help='fraction of the clouds kept out of '
+                    'training (and disjoint from the holdout) to calibrate the predictive sigma, one scale s_k '
+                    'per output; 0 disables the calibration (default: %(default)g)')
+    ap.add_argument('--calib-families', default=','.join(CALIB_FAMS), help='comma-separated families whose '
+                    'sigma is calibrated (default: %(default)s)')
     ap.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto', help='device '
                                                                                       'to use (default: auto)')
     args=ap.parse_args()
@@ -532,9 +640,21 @@ def main():
 
     # train-test
     te = holdout_split(meta['keys'], X, AXES_DOMINANT, args.holdout_frac, args.holdout_seed)
-    tr = ~te
-    print(f"[hii-train] holdout: {int(te.sum())} models of {len({k.split('_')[2] for k in np.asarray(meta['keys'])[te]})}"
-          f" clouds, training: {int(tr.sum())}")
+    # calibration set for sigma: a further fraction of the clouds,
+    # taken from the non-holdout ones with the same stratified split, so that it is unseen by the training
+    # (avoid the GP sigma on training points to be too optimistic) and disjoint from the holdout (which then stays an
+    # independent check of the calibrated sigma). --calib-frac is a fraction of ALL the clouds.
+    cal_fams = tuple(f for f in args.calib_families.split(',') if f) if args.calib_frac > 0 else ()
+    cal = np.zeros_like(te)
+    if cal_fams:
+        frac_rest = args.calib_frac / (1.0 - args.holdout_frac)
+        if not 0.0 < frac_rest < 1.0:
+            raise ValueError(f"[hii-train] --calib-frac {args.calib_frac} too large with --holdout-frac {args.holdout_frac}")
+        cal[~te] = holdout_split(np.asarray(meta['keys'])[~te], X[~te], AXES_DOMINANT, frac_rest, args.holdout_seed + 1)
+    tr = ~te & ~cal
+    n_clouds = lambda m: len({k.split('_')[2] for k in np.asarray(meta['keys'])[m]})
+    print(f"[hii-train] holdout: {int(te.sum())} models of {n_clouds(te)} clouds, calibration: {int(cal.sum())} models"
+          f" of {n_clouds(cal)} clouds, training: {int(tr.sum())}")
 
     # lines in ratio form: index of H-beta and the analytic scale log10 Q_H (1 - f_esc) of every model
     ratio_ref, log_scale = None, None
@@ -547,7 +667,9 @@ def main():
         ratio_ref = cand[0]
         log_scale = line_log_scale(meta['qh_unit_nodes'], list(INPUT_KEYS), X)
 
-    xmu, xsd = X[tr].mean(0), X[tr].std(0)
+    # input standardization on everything but the holdout: it uses only the input POSITIONS of the calibration
+    # set, never its targets, and keeps the holdout completely untouched
+    xmu, xsd = X[~te].mean(0), X[~te].std(0)
     xsd = np.where(xsd > 0, xsd, 1.0)
     Xz = (X - xmu) / xsd
 
@@ -562,15 +684,24 @@ def main():
     # families of emulators (name, PCA, offset)
     FAM = (('lines', False, 0.0), ('cont', True, 0.0), ('grain', True, 0.0), ('trans', True, 0.0),
            ('dust', False, 0.0), ('fuv_t', False, 0.0), ('fuv_n', False, FUV_N_OFFSET))
+    unknown = set(cal_fams) - {f for f, _, _ in FAM}
+    if unknown:
+        raise ValueError(f"[hii-train] --calib-families: unknown families {sorted(unknown)}")
 
     # computation of required PCA components for each family
-    rel = {fam: (args.rel_floor if fam in VECTOR_FAMS else 0.0) for fam, _, _ in FAM}
-    k_var = {fam: pca_rank(Y[fam][tr], args.var_target, rel[fam])[4] for fam, do_pca, _ in FAM if do_pca}
+    rel = parse_rel_floor(args.rel_floor, args.line_targets)
+    rel.update({fam: 0.0 for fam, _, _ in FAM if fam not in VECTOR_FAMS})
+    lyc = parse_rel_floor_lyc(args.rel_floor_lyc)
+    # floor actually applied: a per-wavelength array for the families with an ionizing floor, rel otherwise
+    floor = {fam: (wavelength_floor(rel[fam], lyc[fam], meta['wave_grid']) if fam in WAVE_FAMS else rel[fam])
+             for fam, _, _ in FAM}
+    k_var = {fam: pca_rank(Y[fam][tr], args.var_target, floor[fam])[4] for fam, do_pca, _ in FAM if do_pca}
     k_granted = allocate_pca_budget(k_var, args.max_pca_components)
     print(f"[hii-train] settings: epochs {args.epochs}, batch {args.batch_size}, lr {args.lr:g}, "
           f"M {args.inducing} (PCA families) / {args.inducing_lines} (lines, scalars), seed {args.seed}")
     print(f"[hii-train] preprocessing: var-target {args.var_target:g}, max PCA comp {args.max_pca_components}, "
-          f"rel-floor {args.rel_floor:g}, sd-floor {SD_FLOOR:g} dex, PCA scores whitened")
+          f"rel-floor {' '.join(f'{f}={rel[f]:g}' for f in VECTOR_FAMS)} (below {LYMAN_LIMIT_A} A: "
+          f"{' '.join(f'{f}={lyc[f]:g}' for f in WAVE_FAMS if lyc[f]) or 'none'}), sd-floor {SD_FLOOR:g} dex, PCA scores whitened")
     print(f"[hii-train] line targets: " + (f"ratio (H-beta / [Q_H (1 - f_esc)], other lines / H-beta, "
           f"floor {args.ratio_floor:g})" if ratio_ref is not None else "absolute (log10 fluxes)"))
     print(f"[hii-train] PCA components: requested {k_var}, granted {k_granted}"
@@ -591,7 +722,7 @@ def main():
         lr_kw = ({'ratio_ref': ratio_ref, 'ratio_floor': args.ratio_floor, 'log_scale': log_scale[tr]}
                  if fam == 'lines' and ratio_ref is not None else {})
         Yz, prep = preprocess_targets(Y[fam][tr], do_pca, args.var_target, k_granted.get(fam) if do_pca else None,
-                                      offset=off, rel_floor=rel[fam], **lr_kw)
+                                      offset=off, rel_floor=floor[fam], **lr_kw)
         Yz_te = encode_targets(prep, Y[fam][te], log_scale=log_scale[te] if lr_kw else None)
         M_fam = args.inducing if do_pca else args.inducing_lines
         tqdm.write(f"[hii-train] Training {fam}: {Yz.shape[1]} output, M={M_fam}"
@@ -601,6 +732,25 @@ def main():
                                                    test=(Xz[te], Yz_te), eval_every=args.eval_every,
                                                    progress=pbar, cost=cost[fam])
         epoch_times.extend(ep_t)
+
+        # post-hoc sigma calibration: s_k per output from the calibration clouds .
+        # Stored in the preprocessing, applied by fast_predict as var -> s_k^2 var.
+        # The holdout coverage is recorded before and after
+        if fam in cal_fams:
+            Yz_cal = encode_targets(prep, Y[fam][cal], log_scale=log_scale[cal] if lr_kw else None)
+            s = calibration_scale(m, Xz[cal], Yz_cal, device, s_min=SIGMA_SCALE_MIN)
+            prep['sigma_scale'] = s
+            before = coverage_scores(m, Xz[te], Yz_te, device=device)
+            after = coverage_scores(m, Xz[te], Yz_te, scale=s, device=device)
+            extras[f'{fam}_sigma_calibration'] = {
+                's_median': float(np.median(s)), 's_max': float(s.max()),
+                'n_clipped': int(np.sum(s <= SIGMA_SCALE_MIN)),
+                'holdout_cov68_before': before['cov68'], 'holdout_cov68_after': after['cov68'],
+                'holdout_out5_before': before['out5'], 'holdout_out5_after': after['out5']}
+            tqdm.write(f"[hii-train] sigma calibration {fam}: s_k median {np.median(s):.2f}, max {s.max():.2f}"
+                       f" | holdout cov68 {before['cov68']:.3f} -> {after['cov68']:.3f} (calibrated 0.68),"
+                       f" |r|>5 {before['out5']:.3f} -> {after['out5']:.3f}")
+
         # dictionary of state on CPU
         models[fam] = {'model': {k: v.cpu() for k, v in m.state_dict().items()},
                        'likelihood': {k: v.cpu() for k, v in lik.state_dict().items()}}
@@ -632,6 +782,10 @@ def main():
     holdout_path = write_holdout(f"{stem}_holdout.json", np.asarray(meta['keys'])[te], args.holdout_frac,
                                  args.holdout_seed, AXES_DOMINANT_KEYS, corpus=args.corpus,
                                  n_models = int(meta['n_used']))
+    # keys of the calibration clouds, same format as the holdout file (reproducibility of the s_k)
+    calib_path = (write_holdout(f"{stem}_calib.json", np.asarray(meta['keys'])[cal], args.calib_frac,
+                                args.holdout_seed + 1, AXES_DOMINANT_KEYS, corpus=args.corpus,
+                                n_models=int(meta['n_used'])) if cal.any() else None)
     build_frozen_gate_set(f"{stem}_gate_set_frozen.npz", Xz[te], np.concatenate([Yz_te_by_fam[f]
                         for f in sorted(Yz_te_by_fam)], axis=1), np.concatenate([Y[f][te] for f in sorted(Y)], axis=1),
                           axes_idx = AXES_DOMINANT, families = [(f, Yz_te_by_fam[f].shape[1]) for f in sorted(Yz_te_by_fam)])
@@ -650,6 +804,11 @@ def main():
                     'n_train': int(tr.sum()), 'n_test': int(te.sum()),
                     'final': {k: extras[f'{k}_holdout_history'][-1]
                               for k, _, _ in FAM}},
+                # holdout.final is the RAW sigma (during training); the calibrated one is below
+                'sigma_calibration': {'file': calib_path, 'frac': args.calib_frac, 'n_calib': int(cal.sum()),
+                    'families': list(cal_fams), 's_min': SIGMA_SCALE_MIN,
+                    'estimator': 'median|r| / 0.6745',
+                    'per_family': {f: extras[f'{f}_sigma_calibration'] for f in cal_fams}},
                 'input_keys': list(INPUT_KEYS),
                 'x_min': X[tr].min(0).tolist(),
                 'x_max': X[tr].max(0).tolist(),
@@ -660,7 +819,9 @@ def main():
                 'update_mode': 'base',
                 'pumping_removed': meta['pumping_removed'],
                 'var_target': args.var_target,
-                'rel_floor': args.rel_floor,
+                'rel_floor': {f: rel[f] for f in VECTOR_FAMS},
+                'rel_floor_lyc': {f: lyc[f] for f in WAVE_FAMS},
+                'lyman_limit_A': LYMAN_LIMIT_A,
                 'sd_floor': SD_FLOOR,
                 'line_targets': args.line_targets,
                 'ratio_floor': args.ratio_floor if ratio_ref is not None else None,

@@ -122,6 +122,12 @@ class HIIEmulator:
             # cache the predictions of the emulator
             self.cache[name] = {k: (v.to(self.device) if torch.is_tensor(v) else v) for k,v in predictive_cache(gp).items()}
             self.prep[name] = ex[f'{name}_prep']
+            # sigma calibration of the training (s_k per output):
+            # fast_predict multiplies the latent variance by s_k^2.
+            s = self.prep[name].get('sigma_scale')
+            if s is not None:
+                self.cache[name]['var_scale'] = torch.as_tensor(np.asarray(s) ** 2, dtype=torch.float32,
+                                                                device=self.device)
 
         # GP trained on (X - x_mean) / x_std, so needed for the correct rescale
         self.x_mean = torch.as_tensor(ex['x_mean'], dtype=torch.float32, device=self.device)

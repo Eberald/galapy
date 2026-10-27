@@ -144,13 +144,18 @@ def fast_predict(cache, x):
     compute the meand and variance of GP in new point x using quantities prepared from predictive cache
     (same as gp(x) of pytorch, but without passing from it so that we can be more fast putting quantities in
     cache)
-
     """
     ls = cache['lengthscale'].to(x.device)                                                  # put lengthscale in device
     s = 5.0 ** 0.5 * torch.cdist(x.unsqueeze(0) / ls, cache['Z'].to(x.device) / ls)         # distance ARD
     K = cache['outputscale'][:, None, None] * (1.0 + s + s * s / 3.0) * torch.exp(-s)       # kernel between x and Z
     mean = torch.einsum('dnm,dm->dn', K, cache['A']) + cache['c'][:, None]
     var = (cache['outputscale'][:, None] + cache['jitter'] + torch.einsum('dnm,dmk,dnk->dn', K, cache['Q'], K))
+    # Post-hoc sigma calibratio: when the artifact carries
+    # a scale s_k per output, the latent variance becomes s_k^2 var_k, i.e. sigma_k -> s_k sigma_k.
+    # The mean is untouched. Applied here, in the one place every prediction goes through
+    # (predict_batch, the validation gates), so the calibrated sigma is used consistently everywhere.
+    if 'var_scale' in cache:
+        var = var * cache['var_scale'][:, None]
     return mean, var.clamp_min(0.0)
 
 def pca_decode(coeffs, components, pca_mean, mu, sd):

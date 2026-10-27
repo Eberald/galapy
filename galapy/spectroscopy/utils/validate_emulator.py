@@ -1,25 +1,16 @@
 # Author: Enrico Veraldi
-"""Holdout e gate degli emulatori SVGP (HII: T-2.x, 2.5; PDR: T-3.6 e T-3.17, 3.6).
+# Holdout (validation) and emulators Gates
+"""
+This file:
+  1. Define the holdouts (split trainig/test). holdout_split, encode_targets, holdout_scores,
+     write_holdout and build_frozen_gate_set. Called by training files
+     (train_emulator_{hii,pdr}.py): holdout is the 10% (default) of the clouds
+  2. Use the holdout. Gate tests on the test data. Report
+     JSON + Markdown, state PASS / FAIL / SKIP / ERROR as in validate_grid.
 
-Due ruoli, una sola sede.
-  1. DEFINISCE l'holdout. holdout_split, encode_targets, holdout_scores,
-     write_holdout e build_frozen_gate_set li chiama il training
-     (train_emulator_{hii,pdr}.py): l'holdout e' il 10% delle NUBI, con tutti i loro
-     nodi, e il training non lo vede mai.
-  2. LO USA. I gate dell'emulatore addestrato girano sull'holdout scritto dal
-     training (<stem>_holdout.json, mai ricampionato qui) e sull'artefatto. Report
-     JSON + Markdown, stati PASS / FAIL / SKIP / ERROR come validate_grid.
+    galapy-validate-emulator --sector hii                 # default in data/
 
-    galapy-validate-emulator --sector hii                 # i default di data/
-    galapy-validate-emulator --sector hii --gates T-2.1,T-2.4
-    galapy-validate-emulator --sector hii --midnode-corpus data/products/hii_midnode.h5
-
-Restano fuori, perche' sono test di contratto e girano in CI senza artefatti di
-produzione: T-2.15 (a)-(b), in tests/Test_CloudIA_Emulators.py. Restano fuori anche
-i gate gia' verificati dal training: T-3.14 (budget, assert_size_budget) e T-3.16
-(tempi, blocco 'timing' del meta).
-
-Exit code: 1 se un gate bloccante e' FAIL o ERROR (con --strict anche SKIP).
+Exit code: 1 if a gate FAIL or ERROR (with --strict also SKIP return 1).
 """
 
 import argparse
@@ -34,85 +25,166 @@ import traceback
 import numpy as np
 
 PASS, FAIL, SKIP, ERROR = 'PASS', 'FAIL', 'SKIP', 'ERROR'
-LOG_FLOOR = 1e-35                    # lo stesso floor del preprocessing (2.4.4)
+LOG_FLOOR = 1e-35                    # ame floor of preprocessing in training emulator
 
 
-# =============================================================================
-# 1. HOLDOUT: lo definisce il training, lo rilegge la validazione
-# =============================================================================
+# HOLDOUT = defined by training, here readed by validation
 
 def cloud_id(key):
-    """La nube di un grid point: 'grid_point_<lhs>_<tau>_<Z>' -> '<lhs>' (1.4.4).
+    """
+    Extract the cloud identifier from a grid point identifier.
 
-    I 48 nodi di una nube condividono i 7 assi della nube: un nodo nel training e
-    uno nell'holdout della stessa nube renderebbero l'holdout ottimista, perche' a
-    runtime cambia la nube, non il nodo."""
+    This function takes a grid point identifier string formatted as
+    'grid_point_<lhs>_<tau>_<Z>' and extracts the '<lhs>' portion,
+    which represents the unique cloud identifier. The cloud identifier
+    is typically the second component in the underscore-separated string.
+
+    Parameters:
+    key: str
+        The grid point identifier string from which to extract the cloud
+        identifier. Must follow the specific format
+        'grid_point_<lhs>_<tau>_<Z>'.
+
+    Returns:
+    str
+        The extracted cloud identifier '<lhs>'.
+    """
     return str(key).split('_')[2]
 
 
 def holdout_split(keys, X, axes_idx, frac=0.1, seed=20240601):
-    """Maschera booleana dell'holdout, per NUBE e stratificata.
+    """
+    Performs a holdout split to validate the emulator by separating data per cloud
+    and distributing it uniformly.
 
-    Si tiene fuori una frazione `frac` delle nubi di ciascun ottante sui tre assi
-    dominanti (axes_idx: le coordinate di nube su cui la risposta varia di piu'),
-    cosi' l'holdout copre il cubo come il training. Deterministica: stessi
-    (keys, X, frac, seed) -> stessa maschera."""
+    This function allocates clouds to octants based on the primary axis and
+    performs a stratified sampling to extract the test set for model validation.
+    It ensures that the split is consistent and balanced based on the cloud
+    distribution across different axes.
+
+    Arguments:
+        keys: List of unique identifiers for each data point.
+        X: Numeric data array containing the feature values used for the split.
+        axes_idx: Indices of the relevant axes used for stratification.
+        frac: Proportion of the data to allocate to the holdout set. Must be a value
+              between 0 and 1 (exclusive).
+        seed: Random seed to ensure reproducibility of the split.
+
+    Returns:
+        A boolean array indicating the holdout membership for each data point in 'keys'.
+        True values correspond to the holdout set, and False values correspond to the
+        training set.
+
+    Raises:
+        ValueError: If the fraction 'frac' is not in the range (0, 1).
+        ValueError: If the corpus size is too small to accommodate the required holdout set.
+    """
     if not 0.0 < frac < 1.0:
-        raise ValueError(f"holdout_frac = {frac}: serve 0 < frac < 1")
+        raise ValueError(f"[emul-val] holdout_frac = {frac}: mandatory 0 < frac < 1")
     clouds = np.array([cloud_id(k) for k in keys])
     uniq, inv = np.unique(clouds, return_inverse=True)
+    # A = one row per cloud with the position on the axes (same cloud parameters, different others)
     A = np.zeros((uniq.size, len(axes_idx)))
     np.add.at(A, inv, np.asarray(X, float)[:, list(axes_idx)])
     A /= np.bincount(inv)[:, None]
+    # assing every cloud to a octant (octant because 3 main axes logn logU logzeta)
     octant = ((A > np.median(A, axis=0)) * (2 ** np.arange(len(axes_idx)))).sum(axis=1)
+    # stratified extraction
     rng = np.random.default_rng(seed)
     test = np.zeros(uniq.size, bool)
     for o in np.unique(octant):
         idx = np.flatnonzero(octant == o)
         test[rng.choice(idx, size=int(round(frac * idx.size)), replace=False)] = True
+    # limit
     if not test.any():
         test[rng.integers(uniq.size)] = True
     if test.all():
-        raise ValueError("l'holdout prenderebbe tutte le nubi: corpus troppo piccolo")
+        raise ValueError("[emul-val] corpus too small")
     return test[inv]
 
 
 def log_targets(Y, offset=0.0, rel_floor=0.0):
-    """log10(y + offset) con un floor. Con rel_floor > 0 il floor e' relativo a ogni
-    modello (riga): rel_floor * max della riga, cosi' gli zeri finiscono qualche dex
-    sotto il picco invece che a log10(LOG_FLOOR) = -35. Mai sotto LOG_FLOOR."""
+    """
+    Transforms target values to their logarithmic scale, preventing infinity by
+    applying an offset and managing minimum allowable values.
+
+    Parameters:
+    Y : array-like
+        Input array containing target values to be transformed. Values must be
+        convertible to float64.
+    offset : float, optional
+        A constant offset added to the input values to avoid taking the logarithm of zero.
+        Default is 0.0.
+    rel_floor : float or array-like, optional
+        Relative floor value(s), used to define a minimum cutoff based on a fraction of
+        the maximum value in each row of the input. If an array is provided, its shape
+        must be compatible with the rows of the input array. If set to 0, this feature
+        is disabled. Default is 0.0.
+
+    Returns:
+    array-like
+        Transformed array with the logarithm (base 10) of the input values. Values are
+        floored to the greater of `LOG_FLOOR` or a relative cutoff when `rel_floor` is
+        specified.
+
+    Raises:
+    ValueError
+        If `rel_floor` is specified as an array and its shape is not compatible with
+        the input array when `Y` is 2-dimensional.
+    """
     Y = np.asarray(Y, dtype=np.float64) + float(offset)
+    # minimum admitted value in log
     floor = LOG_FLOOR
-    if rel_floor and Y.ndim == 2:
+    rel_floor = np.asarray(rel_floor, dtype=np.float64)
+    # if rel floor is positive, use it as a relative floor for each row (e.g. per wavelength)
+    if np.any(rel_floor > 0) and Y.ndim == 2:
         floor = np.maximum(rel_floor * Y.max(axis=1, keepdims=True), LOG_FLOOR)
     return np.log10(np.maximum(Y, floor))
 
 
 def encode_targets(prep, Y, log_scale=None):
-    """Target fisici -> spazio del GP con il preprocessing GIA' stimato sul training
-    (2.4.4-2.4.5): log10(y + offset) con floor, forma a rapporti delle righe se prep['ratio']
-    (serve log_scale = log10 Q_H (1 - f_esc) di ogni modello), (y - mu)/sd, proiezione PCA."""
+    """
+    Converts physical values into a transformed format for emulator usage. The transformation
+    process involves applying logarithmic scaling to the physical values, optionally converting
+    them to ratios relative to Hb, normalizing the data, applying PCA transformations if specified,
+    and projecting onto the GP space.
+
+    Parameters:
+    prep (dict): Dictionary containing transformation settings such as offsets, relative floors,
+                 ratio configuration, normalization means and standard deviations, and optional
+                 PCA-related parameters.
+    Y (ndarray): Physical value data to be transformed.
+    log_scale (float, optional): Logarithmic scale factor used for ratio transformation.
+
+    Returns:
+    ndarray: Transformed data ready for emulator processing.
+
+    Raises:
+    ValueError: If ratio transformation is requested in `prep` and `log_scale` is not provided.
+    """
     from galapy.spectroscopy.svgp import lines_to_ratio
-    ytil = log_targets(Y, prep.get('offset', 0.0), prep.get('rel_floor', 0.0))
+    ytil = log_targets(Y, prep.get('offset', 0.0), prep.get('rel_floor', 0.0))   #log
+    # lines treatment
+    # if prep ratio exist, prediction is in ratio between lines and Hb
     if prep.get('ratio') is not None:
         if log_scale is None:
             raise ValueError("encode_targets: righe in forma a rapporti, serve log_scale")
         ytil = lines_to_ratio(ytil, prep['ratio']['ref'], log_scale, prep['ratio']['floor'])
+    # normalization
     z = (ytil - np.asarray(prep['mu'])) / np.asarray(prep['sd'])
     pca = prep['pca']
+    # optional pca
     if pca is None:
         return z
+    # if pca, whitening of scores, so that variance is 1 for each PCA comp
     s = (z - np.asarray(pca['mean'])) @ np.asarray(pca['components']).T
-    return s / np.asarray(pca['score_sd']) if 'score_sd' in pca else s   # old artifacts: no whitening
+    return s / np.asarray(pca['score_sd']) if 'score_sd' in pca else s
 
 
-def holdout_scores(model, Xz, Yz, device='cpu', chunk=1024):
-    """RMSE nello spazio del GP e copertura a 1 sigma (varianza latente, quella che
-    predict_batch propaga), medie sugli output. E' la misura che il training
-    registra ogni --eval-every epoche."""
+def latent_predict(model, Xz, device='cpu', chunk=1024):
+    """LATENT mean and variance of the GP (no likelihood noise, as in predict_batch), each (N, d),
+    on the already standardized input Xz."""
     import torch
-    if len(Xz) == 0:
-        return {'rmse_z': float('nan'), 'cov68': float('nan')}
     model.eval()
     mu, var = [], []
     with torch.no_grad():
@@ -120,9 +192,97 @@ def holdout_scores(model, Xz, Yz, device='cpu', chunk=1024):
             post = model(torch.as_tensor(Xz[i:i + chunk], dtype=torch.float32, device=device))
             mu.append(post.mean.cpu().numpy())
             var.append(post.variance.cpu().numpy())
-    r = np.asarray(Yz) - np.concatenate(mu, axis=1).T
-    sd = np.sqrt(np.concatenate(var, axis=1).T)
+    return np.concatenate(mu, axis=1).T, np.concatenate(var, axis=1).T
+
+
+def holdout_scores(model, Xz, Yz, device='cpu', chunk=1024):
+    """RMSE nello spazio del GP e copertura a 1 sigma (varianza latente, quella che
+    predict_batch propaga), medie sugli output. E' la misura che il training
+    registra ogni --eval-every epoche."""
+    if len(Xz) == 0:
+        return {'rmse_z': float('nan'), 'cov68': float('nan')}
+    mu, var = latent_predict(model, Xz, device, chunk)
+    r = np.asarray(Yz) - mu
+    sd = np.sqrt(var)
     return {'rmse_z': float(np.sqrt(np.mean(r ** 2))), 'cov68': float(np.mean(np.abs(r) <= sd))}
+
+
+# Median of |r| for r ~ N(0, 1): Phi^-1(0.75). Half of a standard normal lies within +-0.6745.
+MEDIAN_ABS_STD_NORMAL = 0.6744897501960817
+
+
+def calibration_scale(model, Xz, Yz, device='cpu', s_min=1.0, chunk=1024):
+    """
+    Post-hoc calibration of the predictive sigma of a GP family: one scale factor s_k per output.
+
+    Why
+    ---
+    The SVGP sigma is not guaranteed to be honest. On the HII holdout the PCA families (cont, grain,
+    trans) are overconfident: only ~40-50% of the true values fall within 1 sigma instead of 68%, and
+    the effect grows with the PCA index (the last, low-variance components are close to noise and the
+    GP cannot predict them, yet it still reports a small sigma). When the emulator sigma enters the
+    likelihood of a fit as model error, a sigma that is too small gives posteriors that are too narrow
+    and possibly biased. Rescaling sigma fixes the stated error without touching the mean.
+
+    Math
+    ----
+    For each calibration point i and output k (in the GP space: z-scored, whitened PCA scores),
+    the normalized residual is
+
+        r_ik = (y_ik - mu_ik) / sigma_ik .
+
+    If sigma is honest, r_k ~ N(0, 1). If instead the true error is s_k times the stated one,
+    r_k ~ N(0, s_k^2), and replacing sigma_k -> s_k sigma_k restores r_k / s_k ~ N(0, 1). For
+    r ~ N(0, s^2) the median of |r| is s * Phi^-1(0.75) = 0.6745 s, hence the estimator
+
+        s_k = median_i |r_ik| / 0.6745 .
+
+    By construction the corrected sigma then holds exactly 50% of the calibration points within
+    0.6745 sigma, and about 68% within 1 sigma when the residuals are roughly Gaussian. The median
+    is used instead of the maximum-likelihood estimate s_k^2 = mean_i r_ik^2 because the residuals
+    have heavy tails (a few % of points beyond 5 sigma): the mean of r^2 would be dominated by them
+    and would inflate sigma for every other point.
+
+    s_k is clipped from below at s_min (default 1): the calibration only ever WIDENS sigma. Outputs
+    with s_k < 1 are already conservative, and on the HII emulator that happens mostly where the
+    residual distribution is very peaked with heavy tails (lines, T_FUV) or where truth and
+    prediction both sit on a floor: shrinking sigma there would hide the outliers in the tails.
+
+    The variance is then multiplied by s_k^2 at prediction time (svgp.fast_predict, via
+    prep['sigma_scale']); the PCA decoding propagates it to physical units as before.
+
+    Limits
+    ------
+    - One number per output: if the GP is overconfident only in a region of the input space, there
+      it stays overconfident and elsewhere it becomes conservative. It corrects the average, not
+      the shape.
+    - It does not remove the tails: points beyond 5 sigma become fewer, not zero.
+    - The calibration points must be unseen by the training AND distinct from the holdout, or the
+      holdout coverage after calibration is 0.68 by construction and checks nothing.
+
+    Parameters:
+        model: trained BatchedSVGPS of the family (d outputs).
+        Xz (np.ndarray): standardized inputs of the calibration set, (N, D).
+        Yz (np.ndarray): targets of the calibration set in the GP space (encode_targets), (N, d).
+        s_min (float): lower clip of s_k (1 = never shrink sigma).
+
+    Returns:
+        np.ndarray: s_k, (d,).
+    """
+    mu, var = latent_predict(model, Xz, device, chunk)
+    r = (np.asarray(Yz) - mu) / np.sqrt(np.maximum(var, 1e-30))
+    s = np.median(np.abs(r), axis=0) / MEDIAN_ABS_STD_NORMAL
+    return np.maximum(s, s_min)
+
+
+def coverage_scores(model, Xz, Yz, scale=None, device='cpu', chunk=1024):
+    """cov68 (fraction with |r| <= 1) and fraction with |r| > 5 of the normalized residuals, averaged
+    over points and outputs. With `scale` (s_k) the sigma is the calibrated one, s_k sigma_k."""
+    mu, var = latent_predict(model, Xz, device, chunk)
+    r = (np.asarray(Yz) - mu) / np.sqrt(np.maximum(var, 1e-30))
+    if scale is not None:
+        r = r / np.asarray(scale)
+    return {'cov68': float(np.mean(np.abs(r) <= 1.0)), 'out5': float(np.mean(np.abs(r) > 5.0))}
 
 
 def write_holdout(path, keys, frac, seed, axes_keys, corpus=None, n_models=None):
@@ -481,7 +641,7 @@ def learning_curve(ctx):
             rkw = ({'ratio_ref': ratio['ref'], 'ratio_floor': ratio['floor'],
                     'log_scale': log_scale_of(ctx.emu, fam, X[sub])} if ratio else {})
             Yz, prep = T.preprocess_targets(Yf[sub], False, ctx.meta.get('var_target', 0.995),
-                                            rel_floor=ctx.meta.get('rel_floor', 0.0) if Yf.ndim == 2 else 0.0,
+                                            rel_floor=ctx.emu.prep[fam].get('rel_floor', 0.0) if Yf.ndim == 2 else 0.0,
                                             **rkw)
             m = T.train_family((X[sub] - mu) / sd, Yz, M, epochs, a.lc_batch, ctx.meta.get('lr', 1e-3),
                                'cpu', a.seed)[0]
