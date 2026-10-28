@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import galapy.internal.constants as CONST
+import galapy.internal.cloudy as CLOUDY
 import galapy.spectroscopy.utils.extract_spectra as spc
 
 
@@ -205,8 +206,8 @@ def test_red_truncation_applied(tmp_path, spectrum):
     """
     lam, y = spectrum
     w, _ = _read(spc.write_cloudy_sed(lam, y, tmp_path / 'r.sed',
-                                      lambda_max_A=CONST.SED_cut))
-    assert w.max() <= CONST.SED_cut
+                                      lambda_max_A=CLOUDY.SED_cut))
+    assert w.max() <= CLOUDY.SED_cut
 
 
 @pytest.mark.unit
@@ -218,9 +219,9 @@ def test_both_truncations_compose(tmp_path, spectrum):
     lam, y = spectrum
     w, _ = _read(spc.write_cloudy_sed(lam, y, tmp_path / 'c.sed',
                                       lambda_min_A=CONST.LyLimit,
-                                      lambda_max_A=CONST.SED_cut))
+                                      lambda_max_A=CLOUDY.SED_cut))
     assert w.min() >= CONST.LyLimit
-    assert w.max() <= CONST.SED_cut
+    assert w.max() <= CLOUDY.SED_cut
     assert np.all(np.diff(w) > 0)
 
 
@@ -232,10 +233,10 @@ def test_blue_cut_leaves_the_red_end_untouched(tmp_path, spectrum):
     """
     lam, y = spectrum
     wh, _ = _read(spc.write_cloudy_sed(lam, y, tmp_path / 'h.sed',
-                                       lambda_max_A=CONST.SED_cut))
+                                       lambda_max_A=CLOUDY.SED_cut))
     wp, _ = _read(spc.write_cloudy_sed(lam, y, tmp_path / 'p.sed',
                                        lambda_min_A=CONST.LyLimit,
-                                       lambda_max_A=CONST.SED_cut))
+                                       lambda_max_A=CLOUDY.SED_cut))
     assert wh.max() == wp.max()
     assert wp.min() > wh.min()
 
@@ -266,7 +267,7 @@ def test_QH_invariant_under_red_cut(tmp_path, spectrum):
     lam, y = spectrum
     q_full = spc.cloudy_sed_QH(spc.write_cloudy_sed(lam, y, tmp_path / 'q1.sed'))
     q_cut = spc.cloudy_sed_QH(spc.write_cloudy_sed(lam, y, tmp_path / 'q2.sed',
-                                                   lambda_max_A=CONST.SED_cut))
+                                                   lambda_max_A=CLOUDY.SED_cut))
     assert q_full == q_cut
 
 

@@ -10,7 +10,7 @@ import h5py
 import numpy as np
 from tqdm import tqdm
 
-from galapy.internal.constants import Units_Legend, Root_Shared_HII
+import galapy.internal.cloudy as CLOUDY
 
 
 def _same_attrs(a, b):
@@ -60,26 +60,26 @@ def merge(frag_dir, out_path, cloudy_version='C25.00', ssp_lib='parsec22.NT'):
             n_pts = 0
             for fp in tqdm(frags, desc='[merge]', unit='frag', file=sys.stderr):
                 with h5py.File(fp, 'r') as fr:
-                    absent = [d for d in Root_Shared_HII if d not in fr]
+                    absent = [d for d in CLOUDY.Root_Shared_HII if d not in fr]
                     if absent:
                         raise ValueError(
                             f"[merge] {fp}: fragment without {absent} (written by an older parser)")
                     if ref is None:
-                        if any(name not in fr for name in Units_Legend):
+                        if any(name not in fr for name in CLOUDY.Units_Legend):
                             raise ValueError(
                                 f"[merge] {fp}: fragment without units ")
-                        for name in Units_Legend:
+                        for name in CLOUDY.Units_Legend:
                             fr.copy(fr[name], out, name=name)
-                        for d in Root_Shared_HII:
+                        for d in CLOUDY.Root_Shared_HII:
                             out.create_dataset(d, data=fr[d][:])
                             out[d].attrs.update(fr[d].attrs)
-                        ref = {d: out[d][:] for d in Root_Shared_HII}
+                        ref = {d: out[d][:] for d in CLOUDY.Root_Shared_HII}
                     else:
-                        for name in Units_Legend:
+                        for name in CLOUDY.Units_Legend:
                             if name not in fr or not _same_attrs(fr[name].attrs, out[name].attrs):
                                 raise ValueError(
                                     f"[merge] {fp}: '{name}' (units) different from first fragment ")
-                        for d in Root_Shared_HII:
+                        for d in CLOUDY.Root_Shared_HII:
                             if not np.array_equal(fr[d][:], ref[d]) or not _same_attrs(fr[d].attrs, out[d].attrs):
                                 raise ValueError(
                                     f"[merge] {fp}: '{d}' different from first fragment ")

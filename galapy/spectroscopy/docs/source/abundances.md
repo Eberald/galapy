@@ -138,7 +138,7 @@ The parser of `GC.abn` is deliberately strict, because CLOUDY itself is:
 - lines starting with `#` are comments, a line starting with `*` terminates the table;
 - **empty lines are rejected** — CLOUDY aborts on them;
 - the `GRAINS` keyword is rejected, since grains are already handled by the template (double counting);
-- element names must belong to `galapy.internal.constants.CLOUDY_NAME`, and abundances must be positive;
+- element names must belong to `galapy.internal.cloudy.CLOUDY_NAME`, and abundances must be positive;
 - exactly **30 elements** are required; anything else means some element would be silently switched off.
 
 Abundances are normalised to hydrogen on read, so `fiducial['H'] == 1.0` always.
@@ -175,7 +175,7 @@ $$
 - $m_Z$ is the mass of the metals per H atom **before depletion** [g], returned by
   `Chemistry.metal_mass_per_H(log_zeta_O)` from the abundance pattern of $\zeta_O$ and the atomic weights $A_X$;
   $m_u = 1.66053906660\times10^{-24}$ g (`CONST.AMU_G`, CODATA 2018);
-- $m_{\rm ISM} = 1.4934\times10^{-26}$ g (`CONST.GRAIN_MASS_ISM_PER_H`) is the grain mass per H atom of
+- $m_{\rm ISM} = 1.4934\times10^{-26}$ g (`CLOUDY.GRAIN_MASS_ISM_PER_H`) is the grain mass per H atom of
   `grains ISM` at scale 1 in CLOUDY C25: the dust-to-gas ratio printed in the `.out` times the gas mass per H,
   divided by the grain scale, constant within $10^{-4}$.
 

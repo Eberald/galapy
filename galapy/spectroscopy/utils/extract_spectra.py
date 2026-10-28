@@ -13,10 +13,8 @@ import numpy as np
 from tqdm import tqdm
 from galapy.CompositeStellarPopulation import (CSP, load_SSP_table, reshape_SSP_table)
 import galapy.internal.constants as CONST
+import galapy.internal.cloudy as CLOUDY
 
-#=============== DEFAULTS TAUS AND METALLICITIES ===============
-taus = np.array([1e6,2e6,5e6,1e7,2e7,5e7,7e7,1e8])
-Z = np.array([0.0001,0.0005,0.0010,0.0040, 0.0080, 0.0200])
 #================ LOADING FUNCTIONS FOR SEDS ===================
 
 def load_ssp_cube(ssp_lib='parsec22.NT') -> tuple:
@@ -345,9 +343,9 @@ def cloudy_sed_QH_reference(cube, it, iz, lyman_A=CONST.LyLimit) -> float:
 
 # =============== EXTRACTION SCRIPTS ===============
 
-def extract_ssp_seds(outdir, target_taus = taus,
-                     target_Z  = Z,
-                     ssp_lib = "parsec22.NT", truncate_lyman=None, truncate_red=CONST.SED_cut,
+def extract_ssp_seds(outdir, target_taus = CLOUDY.SSP_TAUS,
+                     target_Z  = CLOUDY.SSP_Z,
+                     ssp_lib = "parsec22.NT", truncate_lyman=None, truncate_red=CLOUDY.SED_cut,
                      extrapolate=False) -> tuple:
     """
     Extracts SSP (Simple Stellar Population) SEDs (Spectral Energy Distributions) for given target
@@ -358,15 +356,15 @@ def extract_ssp_seds(outdir, target_taus = taus,
     Parameters:
         outdir (str): Path to the output directory where the SED files and metadata will be saved.
         target_taus (list[float], optional): List of target stellar age values (in years) for which SEDs should be extracted.
-            Default: taus.
+            Default: CLOUDY.SSP_TAUS.
         target_Z (list[float], optional): List of target stellar metallicities (mass fractions) for which SEDs
-            should be extracted. Default: Z.
+            should be extracted. Default: CLOUDY.SSP_Z.
         ssp_lib (str, optional): Name of the SSP library to load the cube from.
             Default: "parsec22.NT".
         truncate_lyman (float, optional): Minimum wavelength (in Angstroms) to include in the SED.
             If None, the SED is not truncated. Default: None.
         truncate_red (float, optional): Maximum wavelength (in Angstroms) to include in the SED.
-            If None, the SED is not truncated on the red side. Default: CONST.SED_cut.
+            If None, the SED is not truncated on the red side. Default: CLOUDY.SED_cut.
         extrapolate (bool, optional): If True, CLOUDY extrapolates the SED to the low-energy limit of the code.
             Default: False.
 
@@ -449,8 +447,8 @@ def main():
     ap.add_argument('-o','--out', default='data/cloudy_seds/', help='output directory .sed (default data/cloudy_seds)')
     ap.add_argument('-l','--truncate-lyman', type=float, default=None,
                     help='cut lambda')
-    ap.add_argument('-r','--truncate-red', type=float, default=CONST.SED_cut,
-                    help=f'cut synchrotron: lambda <= value (A). Default {CONST.SED_cut:.3e}')
+    ap.add_argument('-r','--truncate-red', type=float, default=CLOUDY.SED_cut,
+                    help=f'cut synchrotron: lambda <= value (A). Default {CLOUDY.SED_cut:.3e}')
     ap.add_argument('-t','--tau', type=float, nargs='+', default=None,
                     help='SSP ages in years (e.g., --tau 1e6 2e6 5e6)')
     ap.add_argument('--Z', type=float, nargs='+', default=None,
@@ -459,8 +457,8 @@ def main():
                     help='put extrapolate flag for make CLOUDY extrapolate low energy regime')
     args = ap.parse_args()
     
-    target_taus = np.array(args.tau) if args.tau is not None else taus
-    target_Z = np.array(args.Z) if args.Z is not None else Z
+    target_taus = np.array(args.tau) if args.tau is not None else CLOUDY.SSP_TAUS
+    target_Z = np.array(args.Z) if args.Z is not None else CLOUDY.SSP_Z
     n, _meta = extract_ssp_seds(args.out, target_taus=target_taus, target_Z=target_Z,
                                 ssp_lib=args.ssp_lib, truncate_lyman=args.truncate_lyman,
                                 truncate_red=args.truncate_red,extrapolate=args.extrapolate)

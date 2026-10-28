@@ -4,9 +4,10 @@
 import numpy as np
 import torch
 
+import galapy.internal.emulators as EMUL
+
 from galapy.spectroscopy.svgp import (BatchedSVGPS, load_artifacts, predictive_cache, fast_predict, decode)
 
-ONE_MINUS_FESC_FLOOR = 1e-4     # floor of (1 - f_esc) in the scale of the reference line: f_esc -> 1 is not log(0)
 
 
 def qh_unit_lookup(qh_nodes, input_keys, theta_batch):
@@ -39,7 +40,7 @@ def line_log_scale(qh_nodes, input_keys, theta_batch):
     (see galapy.spectroscopy.svgp.lines_to_ratio). Same function at training and at inference.
     """
     th = np.atleast_2d(np.asarray(theta_batch, dtype=float))
-    one_m_fesc = np.clip(1.0 - th[:, input_keys.index('f_esc_meas')], ONE_MINUS_FESC_FLOOR, None)
+    one_m_fesc = np.clip(1.0 - th[:, input_keys.index('f_esc_meas')], EMUL.ONE_MINUS_FESC_FLOOR, None)
     return np.log10(qh_unit_lookup(qh_nodes, input_keys, th)) + np.log10(one_m_fesc)
 
 

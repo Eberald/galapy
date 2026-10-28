@@ -9,6 +9,7 @@ from tqdm import tqdm
 
 
 import galapy.internal.constants as CONST
+import galapy.internal.cloudy as CLOUDY
 import galapy.internal.globs as GLOBS
 from galapy.internal.data import DataFile
 import  galapy.spectroscopy.utils.lhs_core as CORE
@@ -96,12 +97,12 @@ def build_jobs(sample, names, ssp_meta):
                 'F_star' : F_star,
                 'element_scale_block' : "\n".join(_chem().element_scale_lines(log_zeta_O)),
                 # dust mass per H = xi_d x metal mass per H (D/G = xi_d Z) in units of 'grains ISM'
-                'grain_scale': xi_d * _chem().metal_mass_per_H(log_zeta_O) / CONST.GRAIN_MASS_ISM_PER_H,
+                'grain_scale': xi_d * _chem().metal_mass_per_H(log_zeta_O) / CLOUDY.GRAIN_MASS_ISM_PER_H,
             })
     return jobs
 
 def main():
-    default_config = DataFile(CONST.CONFIG_HII_FILE, GLOBS.CONFIG_NEB).get_file()
+    default_config = DataFile(CLOUDY.CONFIG_HII_FILE, GLOBS.CONFIG_NEB).get_file()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('-c', '--config', required=None, default=default_config, help='charter grid_hii.yaml, default galapy-dataset')
     ap.add_argument('-s', '--ssp-meta', required=None, default="data/cloudy_seds/ssp_metadata.json",

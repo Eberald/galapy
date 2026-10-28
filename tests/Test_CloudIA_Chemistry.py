@@ -9,7 +9,8 @@ import pytest
 import ast
 from jinja2 import Environment, StrictUndefined, Template, meta
 
-from galapy.internal.constants import (ATOMIC_WEIGHT, SOLAR_REFERENCES, XI_D_MW, GRAIN_MASS_ISM_PER_H)
+import galapy.internal.constants as CONST
+import galapy.internal.cloudy as CLOUDY
 from galapy.spectroscopy.utils.physics.abundances import (ZMAP_DEFAULT_GRID, Chemistry,
     ChemistryHashMismatch, build_zeta_map, format_cloudy_float,
     grain_scale_from_xi_d)
@@ -130,7 +131,7 @@ def test_helium_curve_and_primordial_intercept():
     ab0 = CHEM.abundance_pattern(0.0)
     assert ab0['He'] == pytest.approx(9.7728e-2, rel=1e-4)
     p = CHEM.special['He']
-    Yp = (ATOMIC_WEIGHT['He'] * p['A']) / (ATOMIC_WEIGHT['H'] + ATOMIC_WEIGHT['He'] * p['A'])
+    Yp = (CONST.ATOMIC_WEIGHT['He'] * p['A']) / (CONST.ATOMIC_WEIGHT['H'] + CONST.ATOMIC_WEIGHT['He'] * p['A'])
     assert Yp == pytest.approx(0.2490, abs=1e-3)
 
 
@@ -146,8 +147,8 @@ def test_helium_is_not_scaled_by_the_uniform_factor():
     # Y on a plateau poor of metals is Y_primordial.
     for lz, Y_exp in ((-2.30, 0.249), (-1.00, 0.252), (0.00, 0.276), (0.50, 0.321)):
         ab = CHEM.abundance_pattern(lz)
-        tot = sum(ATOMIC_WEIGHT[s] * n for s, n in ab.items())
-        assert ATOMIC_WEIGHT['He'] * ab['He'] / tot == pytest.approx(Y_exp, abs=5e-4)
+        tot = sum(CONST.ATOMIC_WEIGHT[s] * n for s, n in ab.items())
+        assert CONST.ATOMIC_WEIGHT['He'] * ab['He'] / tot == pytest.approx(Y_exp, abs=5e-4)
 
 
 @pytest.mark.unit
@@ -292,7 +293,7 @@ def test_grain_fac_uses_mass_fraction_not_zeta():
     lz = -1.0
     right = CHEM.metallicity_from_zeta(lz) / CHEM.metallicity_from_zeta(0.0)
     assert right == pytest.approx(0.0816, abs=1e-3)
-    assert right * grain_scale_from_xi_d(XI_D_MW) == pytest.approx(0.0816, abs=1e-3)
+    assert right * grain_scale_from_xi_d(CONST.XI_D_MW) == pytest.approx(0.0816, abs=1e-3)
     assert abs(right - 10**lz) > 0.015
 
 
@@ -336,8 +337,8 @@ def test_grain_scale_normalised_at_MW():
     the metallicity of the local gas in the Milky Way, using the ratio (D/G)_MW / Z_gas^MW,
     where the denominator is derived as Z_GC.
     """
-    assert grain_scale_from_xi_d(XI_D_MW) == pytest.approx(1.0, abs=1e-12)
-    assert (1.0 / 162.0) / CHEM.Z_GC == pytest.approx(XI_D_MW, abs=5e-3)
+    assert grain_scale_from_xi_d(CONST.XI_D_MW) == pytest.approx(1.0, abs=1e-12)
+    assert (1.0 / 162.0) / CHEM.Z_GC == pytest.approx(CONST.XI_D_MW, abs=5e-3)
     with pytest.raises(ValueError):
         grain_scale_from_xi_d(0.0)
 
@@ -364,7 +365,7 @@ def test_to_solar_units_requires_explicit_reference():
     Tests the `to_solar_units` function of the `CHEM` module to ensure that an explicit
     reference is required when converting 'log Z/Zsun' values.
     """
-    assert 'GC' not in SOLAR_REFERENCES
+    assert 'GC' not in CONST.SOLAR_REFERENCES
     a = CHEM.to_solar_units(0.0, reference='GC')
     b = CHEM.to_solar_units(0.0, reference='Caffau11')
     assert a == 0.0
@@ -449,7 +450,7 @@ def _job_hii(lz=_LZ_DECK):
         'log_zeta_O': lz,
         'sed_file': 'ssp_003_02.sed', 'log_N_stop': 21.5,
         'element_scale_block': "\n".join(CHEM.element_scale_lines(lz)),
-        'grain_scale': XI_D_MW * CHEM.metal_mass_per_H(lz) / GRAIN_MASS_ISM_PER_H,
+        'grain_scale': CONST.XI_D_MW * CHEM.metal_mass_per_H(lz) / CLOUDY.GRAIN_MASS_ISM_PER_H,
     }
 
 

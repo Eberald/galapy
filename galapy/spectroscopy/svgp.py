@@ -158,6 +158,33 @@ def fast_predict(cache, x):
         var = var * cache['var_scale'][:, None]
     return mean, var.clamp_min(0.0)
 
+def _matmul(a, b):
+    """
+    Computes the matrix multiplication of two numpy arrays using PyTorch.
+
+    This function converts the input numpy arrays into PyTorch tensors in float64
+    precision, performs the matrix multiplication using PyTorch operations, and
+    converts the resulting tensor back into a numpy array. This approach prevents
+    potential performance issues caused by the interplay between PyTorch's and
+    numpy's thread pools during computation.
+
+    Parameters:
+    a : np.ndarray
+        The left-hand side input array for the matrix multiplication. Must be
+        convertible to a float64 PyTorch tensor.
+    b : np.ndarray
+        The right-hand side input array for the matrix multiplication. Must be
+        convertible to a float64 PyTorch tensor.
+
+    Returns:
+    np.ndarray
+        The result of the matrix multiplication as a numpy array in float64.
+    """
+    a = torch.from_numpy(np.ascontiguousarray(a, dtype=np.float64))
+    b = torch.from_numpy(np.ascontiguousarray(b, dtype=np.float64))
+    return (a @ b).numpy()
+
+
 def pca_decode(coeffs, components, pca_mean, mu, sd):
     """
     Decode PCA coefficients into the reconstructed physics field.
@@ -195,7 +222,7 @@ def pca_decode(coeffs, components, pca_mean, mu, sd):
     - The function performs the inverse PCA computation followed by unnormalization
       and exponential transformation to reconstruct the field.
     """
-    z = np.asarray(coeffs).T @ np.asarray(components) + np.asarray(pca_mean)  # inverse PCA, (B, n_wl)
+    z = _matmul(np.asarray(coeffs).T, components) + np.asarray(pca_mean)      # inverse PCA, (B, n_wl)
     log_field = z * np.asarray(sd) + np.asarray(mu)                           # de-normalization
     return np.power(10.0, log_field)
 
@@ -274,7 +301,7 @@ def decode(prep, mean, var, log_scale=None):
             s = np.asarray(pca['score_sd'])
             mu_z, var_z = mu_z * s[:, None], var_z * s ** 2
         y = pca_decode(mu_z, C, pca['mean'], prep['mu'], prep['sd'])    # (N, n_wl)
-        var_z = var_z @ C ** 2                                          # (N, n_wl)
+        var_z = _matmul(var_z, C ** 2)                                  # (N, n_wl)
     elif prep.get('ratio') is not None:
         if log_scale is None:
             raise ValueError("[svgp] lines in ratio form: decode needs log_scale (log10 Q_H (1 - f_esc))")

@@ -88,7 +88,7 @@ written by the parser (`<job_id>.h5.part`) do not match the pattern and are igno
 too, so the corpus can be written inside the fragment directory itself. An empty directory is an error.
 
 **2. Units.** The units travel with the data (see [Parse HII](parse_hii.md#1-the-fragment-job_idh5)). The root
-groups `units` and `descriptions` (`CONST.Units_Legend`), which give the unit and the meaning of every member of
+groups `units` and `descriptions` (`CLOUDY.Units_Legend`), which give the unit and the meaning of every member of
 the `grid_point_*` groups, are copied **once**, from the first fragment. Every other fragment must carry the same
 legend, attribute by attribute. A first fragment without them was written by a parser older than the units and
 aborts the merge: it must be parsed again (`galapy-run-cloudy-hii --parse-only`). A corpus can therefore never mix
@@ -99,7 +99,7 @@ template, the line list and the `galapy-sed-cloudy-extract` run (the wavelength 
 are the same for every model of a grid:
 
 ```python
-# galapy.internal.constants
+# galapy.internal.cloudy
 Root_Shared_HII = ('continuum/wave_grid', 'line_names', 'lines_emergent/wavelengths_rest',
                    'lines_emergent/wavelengths_rest_vacuum', 'incident/wave_grid')
 ```

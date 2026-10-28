@@ -107,8 +107,8 @@ $$
 
 with $m_Z$ the metal mass per H atom **before depletion** [g], $m_u$ the atomic mass unit (`CONST.AMU_G`) and
 $m_{\rm ISM} = 1.4934\times10^{-26}$ g the grain mass per H atom of `grains ISM` at scale 1
-(`CONST.GRAIN_MASS_ISM_PER_H`), computed as `xi_d * Chemistry.metal_mass_per_H(log_zeta_O) /
-CONST.GRAIN_MASS_ISM_PER_H`. The `Chemistry` instance is built once per process and cached, to avoid re-reading the chemistry files for each of
+(`CLOUDY.GRAIN_MASS_ISM_PER_H`), computed as `xi_d * Chemistry.metal_mass_per_H(log_zeta_O) /
+CLOUDY.GRAIN_MASS_ISM_PER_H`. The `Chemistry` instance is built once per process and cached, to avoid re-reading the chemistry files for each of
 the hundreds of thousands of jobs.
 
 ---

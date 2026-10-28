@@ -9,13 +9,13 @@ import pytest
 # HII parser
 from galapy.spectroscopy.utils.hii.parse_one_hii import (fesc, fuv_transmittance_hii, s_k_factor, support_safe_ratio,
                                                          energy_balance, cmb_incident_ratio, air_to_vacuum_A,
-                                                         parse_cloudy_cong, parse_table_sed, Stellar_Max_A, as_float32,
-                                                         zone_edges, integrate_grain_abundance,
-                                                         Root_Units_HII, Points_Units_HII)
+                                                         parse_cloudy_cong, parse_table_sed, as_float32,
+                                                         zone_edges, integrate_grain_abundance)
 from galapy.spectroscopy.utils.extract_spectra import write_cloudy_sed, _lyman_edge_nodes
-from galapy.internal.constants import LymanA, LyLimit, FUV_Lo_A, FUV_Hi_A, clight, Lsun
+import galapy.internal.constants as CONST
+import galapy.internal.cloudy as CLOUDY
 
-C_CGS = clight['cm/s']
+C_CGS = CONST.clight['cm/s']
 
 
 #================================================= test on fesc
@@ -128,11 +128,11 @@ def test_energy_balance_is_referred_to_the_stellar_incident_energy():
     col2 = star + cmb
     col3 = 0.5 * col2
     col4 = 0.5 * col2 + 0.01 * star               # 1% of the stellar energy counted twice
-    stellar = energy_balance(wave, col2, col3, col4, split_A=Stellar_Max_A)
+    stellar = energy_balance(wave, col2, col3, col4, split_A=CLOUDY.Stellar_Max_A)
     assert stellar == pytest.approx(0.01, rel=1e-9)
     assert energy_balance(wave, col2, col3, col4) < stellar    # diluted by the CMB energy
     assert energy_balance(wave[::-1], col2[::-1], col3[::-1], col4[::-1],
-                          split_A=Stellar_Max_A) == pytest.approx(stellar)
+                          split_A=CLOUDY.Stellar_Max_A) == pytest.approx(stellar)
 
 
 @pytest.mark.unit
@@ -247,28 +247,28 @@ def test_as_float32_refuses_overflow():
 
 @pytest.mark.unit
 def test_units_tables_are_well_formed():
-    for name, (unit, description) in Points_Units_HII.items():
+    for name, (unit, description) in CLOUDY.Points_Units_HII.items():
         assert isinstance(unit, str) and description.strip(), name
-    for name, (unit, description, extra) in Root_Units_HII.items():
+    for name, (unit, description, extra) in CLOUDY.Root_Units_HII.items():
         assert (unit is None or isinstance(unit, str)) and description.strip(), name
         assert isinstance(extra, dict)
-    assert Root_Units_HII['continuum/wave_grid'][2]['wavelength_medium'] == 'vacuum'
-    assert Root_Units_HII['incident/wave_grid'][2]['wavelength_medium'] == 'vacuum'
-    assert Points_Units_HII['continuum/nebular_emission_per_Msun'][0] == 'erg s-1 Msun-1'
-    assert Points_Units_HII['incident/sed_per_Msun'][0] == 'erg s-1 Msun-1'
-    assert Points_Units_HII['s_k'][0] == 'cm2 Msun-1'
+    assert CLOUDY.Root_Units_HII['continuum/wave_grid'][2]['wavelength_medium'] == 'vacuum'
+    assert CLOUDY.Root_Units_HII['incident/wave_grid'][2]['wavelength_medium'] == 'vacuum'
+    assert CLOUDY.Points_Units_HII['continuum/nebular_emission_per_Msun'][0] == 'erg s-1 Msun-1'
+    assert CLOUDY.Points_Units_HII['incident/sed_per_Msun'][0] == 'erg s-1 Msun-1'
+    assert CLOUDY.Points_Units_HII['s_k'][0] == 'cm2 Msun-1'
 
 
 #================================================= test incident table SED
 @pytest.mark.unit
 def test_table_sed_round_trip_of_the_written_file(tmp_path):
     lam = np.logspace(1.5, 6, 40)[::-1]                   # any order: the writer sorts it
-    L_lambda = 1e-3 * (lam / 1e3) ** -2.2                 # Lsun A^-1 per Msun
+    L_lambda = 1e-3 * (lam / 1e3) ** -2.2                 # CONST.Lsun A^-1 per Msun
     wave, nuLnu = parse_table_sed(write_cloudy_sed(lam, L_lambda, tmp_path / 'n.sed'))
     assert np.all(np.diff(wave) > 0)
-    nufnu = L_lambda * lam * Lsun                         # the writer adds 2 nodes bracketing the Lyman edge,
-    blue, red = lam < LyLimit, lam > LyLimit              # copying the flux of the nearest blue/red node
-    exp_w = np.append(lam, [LyLimit - 0.01, LyLimit + 0.01])
+    nufnu = L_lambda * lam * CONST.Lsun                         # the writer adds 2 nodes bracketing the Lyman edge,
+    blue, red = lam < CONST.LyLimit, lam > CONST.LyLimit              # copying the flux of the nearest blue/red node
+    exp_w = np.append(lam, [CONST.LyLimit - 0.01, CONST.LyLimit + 0.01])
     exp_f = np.append(nufnu, [nufnu[blue][np.argmax(lam[blue])], nufnu[red][np.argmin(lam[red])]])
     order = np.argsort(exp_w)
     np.testing.assert_allclose(wave, exp_w[order], rtol=1e-6)
@@ -338,7 +338,7 @@ def test_s_k_inverse_in_U_and_nH():
 
 @pytest.mark.unit
 def test_band_constants_sane():
-    assert LymanA < FUV_Lo_A < FUV_Hi_A
+    assert CONST.LymanA < CONST.FUV_Lo_A < CONST.FUV_Hi_A
 
 
 #==================================================== test support_safe_ratio

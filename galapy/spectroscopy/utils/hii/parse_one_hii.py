@@ -9,10 +9,10 @@ import re
 import sys
 import numpy as np
 
-from galapy.internal.constants import (M_Sun_G, LymanA, LyLimit, FUV_Lo_A, FUV_Hi_A, clight, Stellar_Max_A,
-                                       Root_Units_HII, Points_Units_HII)
+import galapy.internal.constants as CONST
+import galapy.internal.cloudy as CLOUDY
 
-def write_root_dataset(f, name, data, table=Root_Units_HII):
+def write_root_dataset(f, name, data, table=CLOUDY.Root_Units_HII):
     """
     Creates the root dataset `name` and writes its attributes 'units' (when it has a unit),
     'description' and the extra ones of `table` (e.g. 'wavelength_medium').
@@ -26,7 +26,7 @@ def write_root_dataset(f, name, data, table=Root_Units_HII):
     return ds
 
 
-def write_units_legend(f, table=Points_Units_HII):
+def write_units_legend(f, table=CLOUDY.Points_Units_HII):
     """
     Writes the units of the grid_point members once per file
     """
@@ -47,7 +47,7 @@ def point_members(group):
     return members
 
 
-def check_point_units(group, table=Points_Units_HII):
+def check_point_units(group, table=CLOUDY.Points_Units_HII):
     """
     Every member of the grid_point group has its units in `table`, and every entry of `table` is
     written: a quantity added to the fragment without its units fails here, not downstream.
@@ -504,7 +504,7 @@ def fesc(wave_A, col2_incident, col3_transmitted):
         ionizing photon flux for wavelengths below 911.6 Å. Returns 0.0 if the
         wavelength range criterion is not met or the denominator is non-positive.
     """
-    m = wave_A < LymanA
+    m = wave_A < CONST.LymanA
     if not np.any(m):
         return 0.0
     x = wave_A[m][::-1]
@@ -550,7 +550,7 @@ def fuv_transmittance_hii(wave_A, col2_incident, col3_transmitted, col4_own):
         - T_FUV: Dimensionless FUV transmittance ratio (0.0 to 1.0).
         - N_FUV: Dimensionless FUV nebular continuum contribution (≥ 0.0).
     """
-    m = (wave_A >= FUV_Lo_A) & (wave_A <= FUV_Hi_A)
+    m = (wave_A >= CONST.FUV_Lo_A) & (wave_A <= CONST.FUV_Hi_A)
     if not np.any(m):
         return 0.0, 0.0
     x = np.log(wave_A[m][::-1])
@@ -571,7 +571,7 @@ def _band_energy(wave_A, col, mask):
         return 0.0
     return float(abs(np.trapezoid(np.asarray(col, dtype=float)[mask], np.log(wave_A[mask]))))
 
-def reprocessing_budget(wave_A, col2_incident, col3_transmitted, col4_own, lyc_A=LyLimit):
+def reprocessing_budget(wave_A, col2_incident, col3_transmitted, col4_own, lyc_A=CONST.LyLimit):
     """
     Calculates the reprocessing budget based on the provided wavelength, incident flux, transmitted
     flux, and own flux values.
@@ -591,7 +591,7 @@ def reprocessing_budget(wave_A, col2_incident, col3_transmitted, col4_own, lyc_A
     col4_own : numpy.ndarray
         Array of emitted flux values from the system corresponding to the wavelengths.
     lyc_A : float, optional
-        Lyman limit wavelength in angstrom (Å). Defaults to LyLimit.
+        Lyman limit wavelength in angstrom (Å). Defaults to CONST.LyLimit.
 
     Returns:
     tuple
@@ -623,7 +623,7 @@ def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own, split_A=No
     With the 'CMB' command col2 also holds 4 pi nu B_nu(T_CMB), which in many models carries
     more energy than the SED. The CMB balances itself (what the cloud absorbs, it re-emits),
     so the imbalance is referred to the STELLAR incident energy, int col2 below `split_A`
-    (Stellar_Max_A in the parser): otherwise it would measure the CMB and stay blind to the
+    (CLOUDY.Stellar_Max_A in the parser): otherwise it would measure the CMB and stay blind to the
     stellar budget, which is what a double-counted component would break.
 
     Parameters:
@@ -655,7 +655,7 @@ def energy_balance(wave_A, col2_incident, col3_transmitted, col4_own, split_A=No
     return float(abs(I2 - (I3 + I4)) / abs(E_ref))
 
 
-def cmb_incident_ratio(wave_A, col2_incident, split_A=Stellar_Max_A):
+def cmb_incident_ratio(wave_A, col2_incident, split_A=CLOUDY.Stellar_Max_A):
     """
     Incident energy above `split_A` over the incident energy below it: with the 'CMB' command,
     the CMB over the stellar incident field (the SED adds at most ~1% above 10 um). Large
@@ -727,7 +727,7 @@ def s_k_factor(Qh_unit_node, logU, lognH):
         float: Geometric factor [cm^2 Msun^-1] that converts outputs from per cm^2
         to luminosity/mass per 1 Msun of formed SSP.
     """
-    return Qh_unit_node / (10.0**logU * 10.0**lognH * clight['cm/s'])
+    return Qh_unit_node / (10.0**logU * 10.0**lognH * CONST.clight['cm/s'])
 
 
 def as_float32(name, values):
@@ -900,7 +900,7 @@ def main(argv=None):
     # scaled to the energy left by the emission at lambda >= 911.76 A
     excess, absorbed_fraction, lyc_frac = reprocessing_budget(wave, col2, col3, col4)
     if excess > 0 and lyc_frac > 0:
-        nebular[wave < LyLimit] *= max(0.0, 1.0 - excess / lyc_frac)
+        nebular[wave < CONST.LyLimit] *= max(0.0, 1.0 - excess / lyc_frac)
     # Transmission
     transmission = support_safe_ratio(col2, col3)
     lam_support = wave.astype('f4')[col2 > 0]  # same values as the stored continuum/wave_grid
@@ -935,7 +935,7 @@ def main(argv=None):
         g.attrs['not_converged'] = bool(not_converged)  # DD-4  # flag: CLOUDY run did not converge
         g.attrs['cloudy_warnings'] = bool(cloudy_warnings)  # flag: CLOUDY exited with warnings
         g.attrs['pumping_removed'] = pathlib.Path(f"{pre}.pump").is_file()  # flag: lines cleaned of pumping
-        g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4, split_A=Stellar_Max_A)  # |inc - (trans + diffuse)| / stellar incident energy
+        g.attrs['energy_balance_rel'] = energy_balance(wave, col2, col3, col4, split_A=CLOUDY.Stellar_Max_A)  # |inc - (trans + diffuse)| / stellar incident energy
         g.attrs['cmb_incident_ratio'] = cmb_incident_ratio(wave, col2)  # CMB / stellar incident energy
         g.attrs['reprocessing_excess'] = excess  # (diffuse - absorbed) / absorbed energy
         g.attrs['absorbed_fraction'] = absorbed_fraction  # absorbed / incident energy
@@ -952,7 +952,7 @@ def main(argv=None):
         g.create_dataset('incident/sed_per_Msun', data=sed_nuLnu.astype('f4'))  # input stellar SED, nuLnu per Msun
         g.attrs['sed_support_A'] = sed_support  # (min, max) wavelength [A] where incident > 0
         g.create_dataset('lines_emergent/fluxes', data=lines_per_Msun)  # emergent line luminosities per Msun
-        g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / M_Sun_G)  # dust mass [Msun] per Msun of SSP
+        g.create_dataset('dust_mass_per_Msun', data=Sigma_d * s_k / CONST.M_Sun_G)  # dust mass [Msun] per Msun of SSP
         g.create_dataset('s_k', data=s_k)  # geometric factor per cm^2 -> per Msun [cm^2 Msun^-1]
         # inside atomic_h5: a member written without its units leaves no fragment
         check_point_units(g)

@@ -18,8 +18,8 @@ One master list per sector, under `Nebular/Configs/Lines` of the dataset:
 
 | Sector | Master list | Emitted files | Lines | Pumped lines |
 | :--- | :--- | :--- | :--- | :--- |
-| `hii` | `hii_full.yaml` (`CONST.HII_LINES_FILE`) | `hii_lines.dat`, `hii_pump.dat` | 72 | 55 (13 blends, 42 single lines) |
-| `pdr` | `pdr_full.yaml` (`CONST.PDR_LINES_FILE`) | `pdr_lines.dat` (`pdr_pump.dat` if it declares a `pump` key) | 24 | 0 |
+| `hii` | `hii_full.yaml` (`CLOUDY.HII_LINES_FILE`) | `hii_lines.dat`, `hii_pump.dat` | 72 | 55 (13 blends, 42 single lines) |
+| `pdr` | `pdr_full.yaml` (`CLOUDY.PDR_LINES_FILE`) | `pdr_lines.dat` (`pdr_pump.dat` if it declares a `pump` key) | 24 | 0 |
 
 The file carries the top-level key `lines`, holding one mapping per transition, and the optional key `pump`
 (see [Pumped resonance blends](#pumped-resonance-blends)):
@@ -84,7 +84,7 @@ each line (see [Parse HII](parse_hii.md#4-derived-quantities)).
 ### The reference LineLists
 
 `Nebular/Configs/Lines_Ref` holds a frozen copy of the two official CLOUDY lists, `LineList_HII.dat` and
-`LineList_PDR.dat` (`CONST.HII_LINES_OFF`, `CONST.PDR_LINES_OFF`), together with `LineList.sha256` recording
+`LineList_PDR.dat` (`CLOUDY.HII_LINES_OFF`, `CLOUDY.PDR_LINES_OFF`), together with `LineList.sha256` recording
 their digest. Both files are parsed — whatever the sector — so that a PDR line declared in the HII master list
 still validates.
 

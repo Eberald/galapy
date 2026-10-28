@@ -255,7 +255,7 @@ photons, so a photon budget would never close. $\epsilon$ is `NaN` if the refere
 The reference $I_2^{\star}$ is the **stellar** incident energy. With `CMB z_CMB` the incident column also holds
 $4\pi\nu B_\nu(T_{\rm CMB})$, which in many models carries more energy than the SED: referred to the whole $I_2$,
 the imbalance would measure the CMB, which balances itself, and stay blind to a double-counted stellar
-component. The split at $10\,\mu$m (`CONST.Stellar_Max_A`) is exact enough for this: below it the CMB of every
+component. The split at $10\,\mu$m (`CLOUDY.Stellar_Max_A`) is exact enough for this: below it the CMB of every
 $z_{\rm CMB} \le 12$ carries $\sim 3\times10^{-14}$ of its energy, above it the SSP nodes carry at most $1.3\%$ of
 theirs. The weight of the CMB is stored as
 
@@ -412,7 +412,7 @@ the dust emission and never added to the SED. Its wavelength column must coincid
 ```
 
 **Units.** The units are written in the fragment itself, from the tables `Root_Units_HII` and
-`Points_Units_HII` of `galapy.internal.constants` (unit strings in the astropy *generic* syntax: `Msun` is `solMass`, `''` dimensionless or flag, `dex(X)`
+`Points_Units_HII` of `galapy.internal.cloudy` (unit strings in the astropy *generic* syntax: `Msun` is `solMass`, `''` dimensionless or flag, `dex(X)`
 the log10 of a quantity in X):
 
 - each **root** dataset carries the attributes `units`, `description` and, for the wavelengths,
@@ -501,7 +501,7 @@ The messages of the parser checks are prefixed with `[parse_one/hii]`. No error 
 | `ValueError: ... not strictly monotonic` | Corrupted continuum. |
 | `ValueError: ... columns, expected columns: 4` | The grain continuum does not have the expected layout. |
 | `ValueError: ... wavelength column differs from the continuum mesh` | The grain continuum is not on the mesh of the continuum (e.g. a different `units` on its save). |
-| `ValueError: ... units table out of date` | A quantity is written without its units in `CONST.Points_Units_HII`, or an entry of the table is not written (a development error). |
+| `ValueError: ... units table out of date` | A quantity is written without its units in `CLOUDY.Points_Units_HII`, or an entry of the table is not written (a development error). |
 | `ValueError: ... expected header '#Depth<TAB>...<TAB>total'` | The grain abundance format changed. |
 | `ValueError: ... depth not strictly increasing` | Several iterations were saved: the `last` keyword is missing from the deck. |
 | `ValueError: ... zone edges not increasing` | The depth column of the grain abundance is not the middle of the zones. |

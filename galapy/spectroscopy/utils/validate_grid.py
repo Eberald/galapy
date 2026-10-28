@@ -35,6 +35,7 @@ import numpy as np
 from tqdm import tqdm
 
 import galapy.internal.constants as CONST
+import galapy.internal.cloudy as CLOUDY
 from galapy.spectroscopy.utils import CLOUDY_REQUIRED
 from galapy.spectroscopy.utils.run_core import converged_from_out
 from galapy.spectroscopy.utils.hii.parse_one_hii import (parse_cloudy_con, parse_cloudy_linelist, air_to_vacuum_A,
@@ -183,10 +184,35 @@ T = THRESHOLDS
 # HELPER functions
 
 def _decode(value):
+    """
+    Decodes the given value based on its data type.
+
+    If the value is of type bytes or numpy.bytes_, the function decodes it using the
+    default string encoding. Otherwise, it converts the value to a string.
+
+    Parameters:
+    value : Any
+        The input value to decode. It may be of type bytes, numpy.bytes_, or any other
+        type that can be converted to a string.
+
+    Returns:
+    str
+        The decoded or converted string representation of the input value.
+    """
     return value.decode() if isinstance(value, (bytes, np.bytes_)) else str(value)
 
 def _as_float(value):
-    """Scalar float of an attribute, or None."""
+    """
+    Converts the given value to a scalar float if it is a numeric attribute with
+    a single element. Returns None if the conversion is not possible.
+
+    Parameters:
+        value: The input value to be converted to a scalar float.
+
+    Returns:
+        float: Scalar float representation of the value if conversion is successful.
+        None: If the value cannot be converted to a scalar float.
+    """
     try:
         array = np.asarray(value)
         if array.dtype.kind in 'iuf' and array.size == 1:
@@ -196,7 +222,18 @@ def _as_float(value):
     return None
 
 def _clean(obj):
-    """JSON-serialisable copy (numpy types, NaN -> None)."""
+    """
+    Creates a JSON-serializable copy of the given object by converting incompatible types such as numpy types,
+    NaNs, and pathlib.Path objects into forms that can be serialized.
+
+    Parameters:
+    obj: Any
+        The object to be processed for JSON serialization.
+
+    Returns:
+    Any
+        A JSON-serializable copy of the input object.
+    """
     if isinstance(obj, dict):
         return {str(k): _clean(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, np.ndarray)):
@@ -212,17 +249,74 @@ def _clean(obj):
     return obj
 
 def _round(value, digits=4):
+    """
+    Rounds a numeric value to a specified number of digits.
+
+    This function converts the given value to a float and rounds it to
+    the specified number of decimal places. If the value is not finite,
+    it returns None.
+
+    Parameters:
+    value : float
+        The numeric value to be rounded.
+
+    digits : int, optional
+        The number of decimal places to round to. Defaults to 4.
+
+    Returns:
+    float or None
+        The rounded value if the input is finite, otherwise None.
+    """
     value = float(value)
     return round(value, digits) if np.isfinite(value) else None
 
 def _percentiles(values, qs=(5, 50, 95), digits=4):
-    """compute percentiles"""
+    """
+    Compute specified percentiles of a numeric dataset.
+
+    This function calculates the percentiles for a given sequence of numeric
+    values using numpy. It ignores any non-finite values in the sequence
+    (e.g., NaN, infinity). Percentiles are calculated using the corresponding
+    quantiles provided as input.
+
+    Parameters:
+    values : array-like
+        A sequence of numeric values from which percentiles need to be computed.
+    qs : tuple of int, optional
+        A tuple of integers representing the percentiles to compute. Default is (5, 50, 95).
+    digits : int, optional
+        The number of decimal places to round the percentile values. Default is 4.
+
+    Returns:
+    dict or None
+        A dictionary where keys are strings of the form 'pX' (where X is the
+        percentile) and values are the corresponding rounded percentile values.
+        Returns None if the input sequence contains no finite values.
+    """
     values = np.asarray(values, float)
     values = values[np.isfinite(values)]
     return {f'p{q}': _round(np.percentile(values, q), digits) for q in qs} if values.size else None
 
 def _combine(statuses):
-    """Total status of a check (summ of all status)"""
+    """
+    Calculates the combined status from a list of individual statuses.
+
+    This function determines the overall status based on the statuses provided.
+    It supports statuses such as SKIP, FAIL, ERROR, PASS, and PARTIAL, applying
+    the following logic:
+    - If all statuses are SKIP, the combined status is SKIP.
+    - If any status is FAIL or ERROR, the combined status is FAIL.
+    - If all statuses are PASS, the combined status is PASS.
+    - Otherwise, the combined status is PARTIAL.
+
+    Parameters:
+    statuses: list
+        A list of individual statuses to be combined.
+
+    Returns:
+    str
+        The overall combined status, which can be SKIP, FAIL, PASS, or PARTIAL.
+    """
     if not statuses or all(s == SKIP for s in statuses):
         return SKIP
     if any(s in (FAIL, ERROR) for s in statuses):
@@ -230,35 +324,129 @@ def _combine(statuses):
     return PASS if all(s == PASS for s in statuses) else PARTIAL
 
 def _reason(exc):
-    """return reason for failure"""
+    """
+    Returns the reason for a failure as a formatted string.
+
+    This function generates a string representation of the exception passed to
+    it, including the type of the exception and the exception message.
+
+    Parameters:
+    exc: Exception
+        The exception instance to extract the reason from.
+
+    Returns:
+    str
+        The formatted string containing the type and message of the exception.
+    """
     return f'{type(exc).__name__}: {exc}'
 
 def _scan_key(value):
-    """return scan key """
+    """
+    Transforms and formats the given value into a manageable scan key.
+
+    This function takes a numerical value, ensures it is a finite
+    floating-point number, and formats it to a precision of up to
+    10 significant digits. If the value is not finite, the function
+    returns None.
+
+    Parameters:
+    value: Any
+        The input value to be processed into a scan key. It is expected
+        to be convertible to a float.
+
+    Returns:
+    float or None
+        The formatted scan key as a floating-point number with up to
+        10 significant digits, or None if the input value is not finite.
+    """
     value = float(value)
     return float(f'{value:.10g}') if np.isfinite(value) else None
 
 @functools.lru_cache(maxsize=1)
 def _chemistry():
-    """Chemistry instance of the abundance module (reads the database); raises if unavailable."""
+    """
+    Provides a cached instance of the Chemistry class, used for accessing the
+    abundance database. The method utilizes an LRU cache to store the instance
+    for efficient reuse. Raises an exception if the Chemistry module is
+    unavailable.
+
+    Returns:
+        Chemistry: An instance of the Chemistry class from the abundance module.
+
+    Raises:
+        Exception: If the Chemistry module cannot be imported or is unavailable.
+    """
     from galapy.spectroscopy.utils.physics.abundances import Chemistry
     return Chemistry()
 
 def _lyman_series_mask(wavelength_A, relative_half_width=3e-3, n_max=40):
-    """compute mask for lyman series"""
+    """
+    Compute a mask for the Lyman series, identifying wavelength regions that
+    are near the series frequencies based on a specified relative half-width.
+
+    This function computes a boolean mask over the provided wavelength values,
+    marking positions that are close to the theoretical wavelengths of the
+    Lyman series transitions.
+
+    Parameters:
+    wavelength_A : array-like
+        An array of wavelength values (in Angstroms) to be analyzed.
+    relative_half_width : float, optional
+        The relative half-width around each Lyman series frequency within
+        which a point is considered near. Default is 3e-3.
+    n_max : int, optional
+        The maximum principal quantum number n to include in the series.
+        Default is 40.
+
+    Returns:
+    ndarray
+        A boolean array of the same shape as `wavelength_A`, where True values
+        indicate wavelength positions near the Lyman series transitions.
+
+    """
     near = np.zeros(np.shape(wavelength_A), dtype=bool)
     for n in range(2, n_max + 1):
         near |= np.abs(np.asarray(wavelength_A) / (CONST.LyLimit / (1.0 - 1.0 / n ** 2)) - 1.0) < relative_half_width
     return near
 
 def _integrate_log(values, wavelength, mask):
-    """Integral over d ln(lambda) along the last axis inside `mask` (energy of a nu*F_nu column)."""
+    """
+    Computes the integral over d ln(lambda) along the last axis for the provided
+    values and wavelength array, constrained by the given mask. This function
+    calculates the energy within a column where nu * F_nu is defined.
+
+    Arguments:
+        values: Array of numerical values representing F_nu.
+        wavelength: Array of wavelengths corresponding to the values.
+        mask: Boolean array specifying the elements to include in the integration.
+
+    Returns:
+        Result of the integration as a numerical array.
+    """
     x = np.log(np.asarray(wavelength, float)[mask])
     order = np.argsort(x)
     return _trapezoid(np.asarray(values, float)[..., mask][..., order], x[order], axis=-1)
 
 def _spearman(a, b):
-    """Spearman rank correlation, None when undefined (< 3 points or a constant input)."""
+    """
+    Computes the Spearman rank correlation coefficient for two input arrays.
+
+    The Spearman rank correlation assesses how well the relationship between two variables
+    can be described using a monotonic function. This function returns None if the correlation
+    is undefined, such as when there are fewer than three valid points or one of the inputs is
+    a constant array.
+
+    Parameters:
+    a : list or numpy.ndarray
+        The first input array to compute the Spearman correlation.
+    b : list or numpy.ndarray
+        The second input array to compute the Spearman correlation.
+
+    Returns:
+    float or None
+        The Spearman rank correlation coefficient. Returns None if computation is
+        undefined due to insufficient data (< 3 points) or constant input arrays.
+    """
     from scipy import stats
     a, b = np.asarray(a, float), np.asarray(b, float)
     good = np.isfinite(a) & np.isfinite(b)
@@ -267,7 +455,27 @@ def _spearman(a, b):
     return float(stats.spearmanr(a[good], b[good])[0])
 
 def _ks_uniform(values, lower, upper, n_effective=None):
-    """KS (kolmogorov-smirnov) distance to U(lower, upper) and its p-value for `n_effective` independent draws."""
+    """
+    Calculates the Kolmogorov-Smirnov (KS) distance to a uniform distribution U(lower, upper)
+    and its associated p-value. The p-value computation considers `n_effective` independent
+    draws if provided, otherwise uses the total number of draws.
+
+    Parameters:
+    values: list or numpy.ndarray
+        A sequence of values to test against the uniform distribution.
+    lower: float
+        The lower bound of the uniform distribution.
+    upper: float
+        The upper bound of the uniform distribution.
+    n_effective: int, optional
+        The effective number of independent draws for p-value computation.
+
+    Returns:
+    tuple
+        A tuple containing:
+        - distance (float): The KS distance between the input values and the uniform distribution.
+        - p-value (float): The p-value associated with the KS test.
+    """
     from scipy import stats
     u = np.sort((np.asarray(values, float) - lower) / (upper - lower))
     n = u.size
@@ -275,7 +483,31 @@ def _ks_uniform(values, lower, upper, n_effective=None):
     return float(distance), float(stats.kstwo.sf(distance, int(n_effective or n)))
 
 def _below_hyperbola(x, y, a, x0, b):
-    """True where (x, y) lies below y = a / (x - x0) + b on the branch x < x0."""
+    """
+    Determine whether points lie below a hyperbolic curve on a specific branch.
+
+    This function evaluates whether given points (x, y) in a coordinate system lie
+    below the hyperbolic curve defined by the equation y = a / (x - x0) + b,
+    specifically on the branch where x < x0.
+
+    Parameters:
+    x : array-like
+        X-coordinates of the points to evaluate.
+    y : array-like
+        Y-coordinates of the points to evaluate.
+    a : float
+        The numerator of the hyperbolic term.
+    x0 : float
+        The x-coordinate of the vertical asymptote of the hyperbolic curve.
+    b : float
+        The constant offset added to the hyperbolic term.
+
+    Returns:
+    ndarray of bool
+        Boolean array indicating whether each point lies below the hyperbolic curve
+        on the specified branch.
+
+    """
     x, y = np.asarray(x, float), np.asarray(y, float)
     out = np.zeros(x.shape, dtype=bool)
     left = x < x0
@@ -283,6 +515,27 @@ def _below_hyperbola(x, y, a, x0, b):
     return out
 
 def _log10_ratio(numerator, denominator):
+    """
+    Computes the base-10 logarithm of the ratio of two arrays element-wise.
+
+    This function calculates the logarithmic ratio between the provided numerator
+    and denominator arrays. It handles invalid or non-positive values in the
+    arrays by assigning NaN to the corresponding elements in the output.
+
+    Parameters:
+    numerator : array_like
+        The array containing the numerator for the ratio calculation. All
+        elements are converted to a float type.
+    denominator : array_like
+        The array containing the denominator for the ratio calculation. All
+        elements are converted to a float type.
+
+    Returns:
+    ndarray
+        An array containing the base-10 logarithm of the ratios, with the
+        same shape as the input arrays. Elements corresponding to non-positive
+        numerator or denominator values are replaced with NaN.
+    """
     numerator, denominator = np.asarray(numerator, float), np.asarray(denominator, float)
     with np.errstate(divide='ignore', invalid='ignore'):
         out = np.log10(numerator / denominator)
@@ -295,11 +548,39 @@ def _log10_ratio(numerator, denominator):
 # CLOUDY raw files helper functions and inspects products
 
 def _read_text(path):
-    """Read text file, replacing invalid characters with U+FFFD."""
+    """
+    Read text file, replacing invalid characters with U+FFFD.
+
+    This function reads the content of a text file at the specified path.
+    Any invalid characters encountered during reading are replaced by
+    the replacement character U+FFFD.
+
+    Args:
+        path (str): The path to the text file to be read.
+
+    Returns:
+        str: The content of the text file as a string, with invalid characters replaced.
+    """
     return pathlib.Path(path).read_text(errors='replace')
 
 def read_sed_file(path):
-    """(wavelength [A], nu*F_nu) of a CLOUDY table-SED file (unit keywords ignored)."""
+    """
+    Reads the spectral energy distribution (SED) data from a CLOUDY table-SED file.
+
+    This function processes the input file line by line, extracting the wavelength and
+    flux values from non-commented lines. Comment lines, lines with insufficient tokens,
+    or lines with invalid numerical values are ignored.
+
+    Parameters:
+    path : str
+        The file system path to the CLOUDY table-SED file.
+
+    Returns:
+    tuple
+        A tuple containing two numpy arrays:
+        - The first array contains the wavelength values in Angstroms.
+        - The second array contains nu*F_nu values.
+    """
     wavelength, flux = [], []
     for line in _read_text(path).splitlines():
         tokens = line.split()
@@ -313,10 +594,45 @@ def read_sed_file(path):
     return np.asarray(wavelength), np.asarray(flux)
 
 def incident_shape(wavelength_A, nufnu, lyman_A, band_A):
-    """(ionising photon rate per unit energy, energy fraction in `band_A`) of a nu*F_nu spectrum.
+    """
+    Calculates the ionising photon rate per unit energy and the energy fraction
+    in a specified band for a given nu*F_nu spectrum.
 
-    Both are independent of the normalisation, so the SED file and CLOUDY's
-    incident column must agree.
+    This function computes two key quantities from a nu*F_nu spectrum:
+    1. The ionising photon rate per unit energy.
+    2. The energy fraction within a specified wavelength band.
+
+    The calculations are performed using trapezoidal integration over the
+    spectrum, and the results are independent of the normalization of the input
+    spectrum. The input parameters must align with the expected formatting and
+    values required by the model.
+
+    Parameters:
+    wavelength_A : array-like
+        Array of wavelengths corresponding to the nu*F_nu values.
+    nufnu : array-like
+        Array of nu*F_nu values representing the spectrum.
+    lyman_A : float
+        Wavelength threshold (in Ångströms) below which photons are considered
+        ionising.
+    band_A : tuple of two floats
+        Tuple specifying the lower and upper bounds (in Ångströms) of the
+        wavelength band of interest.
+
+    Returns:
+    tuple of two floats
+        A tuple containing:
+        - Ionising photon rate per unit energy.
+        - Energy fraction in the specified wavelength band.
+
+    Raises:
+    ValueError
+        If the input arrays do not have the same length.
+
+    Notes:
+    The input wavelengths and nu*F_nu are expected to be positive. Negative
+    values in the nu*F_nu array are clipped to zero. If the computed total
+    energy of the spectrum is non-positive, the function returns NaN values.
     """
     order = np.argsort(np.asarray(wavelength_A, float))
     w = np.asarray(wavelength_A, float)[order]
@@ -331,21 +647,67 @@ def incident_shape(wavelength_A, nufnu, lyman_A, band_A):
     return float(photons / energy), float(band / energy)
 
 def read_cloudy_banner(out_text, max_lines=200):
-    """First line of a CLOUDY output that starts with 'Cloudy' (the version banner)."""
+    """
+    Reads the first line of a CLOUDY output that starts with 'Cloudy', referred to as the version banner.
+
+    This function scans through the given output text up to a specified maximum number of lines
+    and returns the first line that begins with the string 'Cloudy'. If no such line is found, it
+    returns None.
+
+    Parameters:
+        out_text (str): The text content to search for the 'Cloudy' version banner.
+        max_lines (int): The maximum number of lines to examine in the provided text. The
+            default value is 200.
+
+    Returns:
+        str or None: The first line in the output text that starts with 'Cloudy', stripped of
+            leading and trailing whitespace. If no line is found, None is returned.
+    """
     return next((line.strip() for line in out_text.splitlines()[:max_lines]
                  if line.strip().startswith('Cloudy')), None)
 
 def read_exec_time(out_text):
-    """Execution time on CLOUDY's final summary line, or None."""
+    """
+    Extract the execution time from CLOUDY's final summary line.
+
+    This function parses the provided output text to locate the
+    execution time specified in the final summary line. If the
+    execution time is found, it is extracted and returned as a
+    float. If no execution time is identified, the function
+    returns None.
+
+    Parameters:
+    out_text: str
+        The output text from which execution time is to be parsed.
+
+    Returns:
+    float or None
+        The extracted execution time as a floating-point number if
+        found, otherwise None.
+    """
     matches = EXEC_TIME_PATTERN.findall(out_text)
     return float(matches[-1]) if matches else None
 
-
+#####
 _ELEMENT_ENTRY = re.compile(r'([A-Z][a-z]?)\s*:\s*([-+]?\d+\.\d+)')
-
+#####
 
 def read_gas_phase_abundances(out_path):
-    """log10(X/H) of the 'Gas Phase Chemical Composition' block, or None."""
+    """
+    Extracts the log10(X/H) values from the 'Gas Phase Chemical Composition'
+    block in a given file. If the block is not found, returns None.
+
+    Parameters:
+    out_path: str
+        The file path to the output containing the 'Gas Phase Chemical
+        Composition' data.
+
+    Returns:
+    dict or None
+        A dictionary with chemical element symbols as keys and their log10(X/H)
+        values as float values, extracted from the specified file. Returns None
+        if the 'Gas Phase Chemical Composition' block is not present.
+    """
     lines = _read_text(out_path).splitlines()
     for i, line in enumerate(lines):
         if 'Gas Phase Chemical Composition' not in line:
@@ -363,7 +725,30 @@ def read_gas_phase_abundances(out_path):
 
 
 def inspect_grain_abundance_file(path):
-    """Structure of a 'save last grain abundance ... no hash' file: '#Depth <bins> total', one row per zone."""
+    """
+    Analyze the structure and content of a file containing grain abundance data. The file
+    typically contains headers and rows of numeric data, and this function inspects
+    those elements to determine specific characteristics of the file.
+
+    Parameters
+    ----------
+    path : str
+        Path to the file to analyze.
+
+    Returns
+    -------
+    dict
+        A dictionary containing the following keys:
+        - 'depth_headers': int. Count of headers starting with '#Depth'.
+        - 'last_header_token': str or None. The last token of the last depth header,
+          converted to lowercase, or None if no depth headers exist.
+        - 'zones': int. Number of numeric data rows (zones) in the file.
+        - 'unreadable_rows': int. Count of rows that couldn't be parsed into numeric data.
+        - 'column_counts': list of int. Sorted set of unique column counts across
+          numeric rows.
+        - 'depth_increasing': bool. Indicates if the depth values in numeric rows
+          are strictly increasing.
+    """
     headers, rows = [], []
     for line in _read_text(path).splitlines():
         if line.startswith('#'):
@@ -387,7 +772,21 @@ def inspect_grain_abundance_file(path):
 _WAVELENGTH_SUFFIX = {'A': 1.0, 'm': 1.0e4, 'c': 1.0e8}          # Angstrom, micron, cm
 
 def parse_line_label(label):
-    """('H 1', 6562.8) from a CLOUDY label such as 'H  1 6562.80A', 'O  3 88.3323m'; None if unreadable."""
+    """
+    Parses a CLOUDY spectral line label and extracts its identifier and wavelength.
+
+    The function processes a CLOUDY label such as 'H  1 6562.80A', extracting the
+    element or ion identifier ('H 1') and the wavelength (6562.8) in the proper units,
+    based on the suffix of the wavelength. It returns these as a tuple. If the input
+    is invalid or cannot be read, the function returns None.
+
+    Args:
+        label (str): A string containing the CLOUDY label to be parsed.
+
+    Returns:
+        tuple[str, float] or None: A tuple containing the spectral line identifier as
+        a string and the wavelength as a float, or None if the label is invalid.
+    """
     tokens = str(label).split()
     if len(tokens) < 2 or tokens[-1][-1:] not in _WAVELENGTH_SUFFIX:
         return None
@@ -413,6 +812,26 @@ class LineCatalogue:
             wavelength.append(parsed[1] if parsed else fallback)
         self.wavelength = np.asarray(wavelength, float)
     def find(self, species, wavelength_A, rtol=1e-3):
+        """
+        Find the closest matching spectral line index for a given species and wavelength.
+
+        This method searches through the list of species and their corresponding wavelengths
+        to find the index of the spectral line that most closely matches the requested species
+        and its wavelength. The search is case-insensitive for species names, and the
+        closeness of the wavelength match is assessed within a specified relative tolerance.
+
+        Parameters:
+        species: str
+            The name of the species to search for (case-insensitive).
+        wavelength_A: float
+            The wavelength in Angstroms to match against.
+        rtol: float, optional
+            The relative tolerance within which to accept a wavelength match (default is 1e-3).
+
+        Returns:
+        int or None
+            The index of the closest matching spectral line if found; None otherwise.
+        """
         species, best, best_distance = species.casefold(), None, rtol
         for k, sp in enumerate(self.species):
             if sp == species and abs(self.wavelength[k] / wavelength_A - 1.0) <= best_distance:
@@ -424,11 +843,40 @@ LINES = {'H_alpha': ('H 1', 6562.8), 'H_beta': ('H 1', 4861.3), 'OIII_5007': ('O
          'OIII_4959': ('O 3', 4958.9), 'NII_6584': ('N 2', 6583.5)}
 
 def line_flux(table, name):
-    """Flux of a diagnostic line for every model; None if not in the master list."""
+    """
+    Flux of a diagnostic line for every model; None if not in the master list.
+
+    Parameters:
+    table (Table): A table object containing the catalogue and line data.
+    name (str): The name of the diagnostic line to search for in the catalogue.
+
+    Returns:
+    Optional[numpy.ndarray]: An array of flux values (as float) for the
+    diagnostic line across all models if the line is found in the master list;
+    otherwise, returns None.
+    """
     index = table.catalogue.find(*LINES[name])
     return None if index is None else table.lines[:, index].astype(float)
 
 def _missing_lines(table, names):
+    """
+    Constructs a list of missing line names from the given table.
+
+    This function iterates through the provided list of names and checks if the
+    corresponding line flux values in the table are None. If a name's flux value
+    is missing, the name is added to the resulting list. This function serves as
+    a utility to identify missing line data.
+
+    Args:
+        table (Any): The data structure containing line flux values. It should
+            expose a way to retrieve flux values associated with names.
+        names (list): A list of strings representing the line names to be checked
+            for missing flux values.
+
+    Returns:
+        list: A list of strings containing the names of lines for which the flux
+            values are missing.
+    """
     return [name for name in names if line_flux(table, name) is None]
 
 #######################################################################################################################
@@ -449,7 +897,7 @@ class DataTable:
             # units declared by the parser: legend of the grid_point members, root datasets
             self.units = {k: _decode(v) for k, v in f['units'].attrs.items()} if 'units' in f else {}
             self.root_dataset_attrs = {name: {k: _decode(v) for k, v in f[name].attrs.items()}
-                                       for name in CONST.Root_Shared_HII if name in f}
+                                       for name in CLOUDY.Root_Shared_HII if name in f}
             self.lines_vacuum = (np.asarray(f['lines_emergent/wavelengths_rest_vacuum'][()], float)
                                  if 'lines_emergent/wavelengths_rest_vacuum' in f else None)
             self.wave = np.asarray(f['continuum/wave_grid'][()], float) if 'continuum/wave_grid' in f else None
@@ -522,7 +970,24 @@ class DataTable:
         return self.params.get(key)
 
     def read_spectra(self, indices, dataset):
-        """(len(indices), n_wave) array of `dataset` (NaN rows where missing), or None if no model has it."""
+        """
+        Reads the spectral data for specified indices and dataset.
+
+        The method retrieves the spectral data for the given indices from an HDF5 file.
+        If the specified dataset exists for the provided indices and matches the expected
+        shape, it populates the returned array with the corresponding data. Missing rows
+        are filled with NaN values. If no data is found, the method returns None.
+
+        Parameters:
+        indices (list or array-like): List of indices specifying the groups to retrieve
+            the dataset from.
+        dataset (str): The name of the dataset to be retrieved.
+
+        Returns:
+        numpy.ndarray or None: A 2D NumPy array of shape (len(indices), n_wave) containing
+            the spectral data for the given dataset, where missing rows are filled with
+            NaN values. Returns None if the dataset is not found or if `wave` is not set.
+        """
         if self.wave is None:
             return None
         out, found = np.full((len(indices), self.wave.size), np.nan), False
@@ -572,22 +1037,81 @@ class Context:
     seed: int = 0
 
     def raw_runs(self):
-        """(job_id, directory) of every kept working directory."""
+        """
+        Provides a list of job IDs and associated directories for kept working directories.
+
+        Returns
+        -------
+        list of tuple
+            A list of tuples where each tuple contains the job ID (str) and the directory
+            (pathlib.Path object) of each kept working directory. Returns an empty list
+            if the root directory does not exist or is not a directory.
+        """
         root = pathlib.Path(self.raw_workdirs) if self.raw_workdirs else None
         return [(d.name, d) for d in sorted(root.iterdir()) if d.is_dir()] if root and root.is_dir() else []
 
     def raw_file(self, job, workdir, extension):
-        """Path to a file in a kept working directory."""
+        """
+        Generates the path to a specific file within a maintained working directory.
+
+        This method constructs a file path based on the given working directory, job information,
+        file extension, and an instance-specific sector attribute. The resulting path points to
+        a file that corresponds to the provided details.
+
+        Parameters:
+        job: str
+            Name or identifier of the job used to construct the filename.
+        workdir: str
+            Path to the working directory where the file is expected to reside.
+        extension: str
+            File extension to append to the constructed filename.
+
+        Returns:
+        pathlib.Path
+            A Path object representing the constructed file path.
+        """
         return pathlib.Path(workdir) / f'{self.sector}_{job}{extension}'
 
     def sample(self, mask):
-        """Reproducible random subsample (at most max_spectra) of the models in `mask`."""
+        """
+        Reproducible random subsampling of models based on the given mask.
+
+        This function selects a random subsample of models from the provided `mask`.
+        The size of the subsample will not exceed the value of `max_spectra`.
+        The randomization process is reproducible using the specified random seed.
+
+        Parameters:
+            mask (numpy.ndarray): A boolean array indicating eligible elements
+                for subsampling. True values correspond to candidates.
+
+        Returns:
+            numpy.ndarray: An array of indices representing the selected subsample
+                of models from the `mask`.
+
+        Raises:
+            ValueError: If `mask` is not a one-dimensional numpy array.
+        """
         candidates = np.flatnonzero(mask)
         if candidates.size <= self.max_spectra:
             return candidates
         return np.sort(np.random.default_rng(self.seed).choice(candidates, self.max_spectra, replace=False))
 
     def charter_bounds(self, attribute):
+        """
+        Returns the bounds of the given attribute from the charter data if available.
+
+        The method searches for the specified attribute within the charter's axes
+        and retrieves its minimum and maximum bounds.
+
+        Parameters:
+        attribute : str
+            The name of the attribute for which bounds are requested.
+
+        Returns:
+        tuple[float, float] | None
+            A tuple containing the minimum and maximum bounds of the given attribute
+            in the form of (min, max). If the attribute is not found, None is returned.
+        """
         for axis in (self.charter or {}).get('axes', []):
             if CHARTER_TO_ATTRIBUTE.get(axis['name'], axis['name']) == attribute:
                 return float(axis['min']), float(axis['max'])
@@ -602,22 +1126,37 @@ _NO_WORKDIRS = {'reason': 'no --raw-workdirs (kept CLOUDY working directories)'}
 
 @check('units_legend', blocking=True)
 def check_units_legend(ctx):
-    """The units the data declares are the ones the HII parser writes, i.e. the ones every check assumes.
+    """
+    Checks the consistency of declared units in the data with the units expected by the HII parser.
 
-    Compared with the tables of galapy.internal.constants: the root group 'units' (one entry per
-    member of the grid_point groups) and the attributes of the root datasets.
+    This function validates the units declared in the grid point groups and root datasets,
+    comparing these with the predefined unit mappings available in the galapy.internal.cloudy
+    module. It ensures that the units meet the expected standards necessary for further checks
+    and processing. Any inconsistencies or missing attributes are recorded as problems.
 
-    Pass: same unit for every member and root dataset, same wavelength media.
+    Attributes:
+        ctx (Context): A context object which encapsulates the data table that contains
+        units, and attributes required for validating compliance.
+
+    Returns:
+        Tuple[Status, Dict]: A tuple containing the result status, which could be either
+        PASS, FAIL, or SKIP, along with a detailed dictionary that includes the number of
+        problems identified, a summary of the findings, and a list of detected problems.
+
+    Raises:
+        No exceptions are explicitly raised as part of this function, but dependent
+        attributes in ctx must be at least partially initialized for it to function
+        correctly.
     """
     table = ctx.data
     if not table.units:
         return SKIP, {'reason': 'data without units (written by an older parser)'}
     problems = []
-    expected = {name: unit for name, (unit, _description) in CONST.Points_Units_HII.items() if unit is not None}
+    expected = {name: unit for name, (unit, _description) in CLOUDY.Points_Units_HII.items() if unit is not None}
     for name in sorted(set(expected) | set(table.units)):
         if table.units.get(name) != expected.get(name):
             problems.append(f'{name}: {table.units.get(name)!r} instead of {expected.get(name)!r}')
-    for name, (unit, _description, extra) in CONST.Root_Units_HII.items():
+    for name, (unit, _description, extra) in CLOUDY.Root_Units_HII.items():
         attrs = table.root_dataset_attrs.get(name)
         if attrs is None:
             problems.append(f'root dataset {name} missing')
@@ -631,14 +1170,32 @@ def check_units_legend(ctx):
 
 @check('convergence', blocking=True)
 def check_convergence(ctx):
-    """Converged runs over planned runs, and the convergence flags against the kept outputs.
+    """
+    Check if planned runs match converged runs and validate convergence flags.
 
-    The planned runs come from the charter or --n-expected, so crashed runs count as failures.
-    On the kept working directories the convergence read from the main output must agree with
-    converged.flag, the NOT_CONVERGED marker and the data attribute; outputs without
-    'Cloudy exited OK' are listed.
+    This function compares the number of converged runs against the planned
+    runs and examines convergence-related flags for all relevant outputs.
+    The planned runs are derived from the provided charter or the --n-expected
+    argument. Crashed runs are considered failures. The function verifies
+    convergence data for the working directories and ensures agreement between
+    the output and the convergence flags. Outputs without the "Cloudy exited OK"
+    marker are separately listed for further inspection.
 
-    Pass: converged / planned > 99% and no flag disagrees with its output.
+    Parameters:
+        ctx: The execution context containing relevant job data, working
+             directories, and configuration, including planned runs.
+
+    Returns:
+        A tuple containing:
+            - A status string indicating the result ('PASS' or 'FAIL').
+            - A dictionary providing detailed information about the convergence
+              state, including counts of converged, planned, and fragment runs,
+              any disagreements between flags and output, and outputs without
+              an exit marker.
+
+    Raises:
+        This function may raise exceptions depending on errors encountered
+        within the execution context or data handling, not explicitly documented.
     """
     table = ctx.data
     converged = int(table.converged.sum())
@@ -674,9 +1231,23 @@ def check_convergence(ctx):
 
 @check('ionizing_photon_budget',  blocking=True)
 def check_ionizing_photon_budget(ctx):
-    """Q_H of the written SED files (node metadata) versus the SSP table.
+    """
+    Checks the ionizing photon budget for the written SED files against the SSP table.
 
-    Pass: worst node within 5%.
+    This function compares the Q_H values of the written SED files (from node metadata) to the
+    values found in the SSP table, ensuring consistency between them. The check passes if the
+    worst relative difference between the SED file and table values is within 5%.
+
+    Parameters:
+        ctx: The context object containing metadata and configuration information.
+
+    Returns:
+        tuple: A tuple containing the result (PASS, FAIL, or SKIP) and a detail dictionary
+        with information about the check, such as the worst relative difference, the node
+        causing the largest discrepancy, and nodes with zero table Q_H values.
+
+    Raises:
+        None
     """
     if ctx.ssp_meta is None:
         return SKIP, {'reason': 'no --ssp-meta'}
@@ -699,15 +1270,32 @@ def check_ionizing_photon_budget(ctx):
 
 @check('energy_balance',  blocking=True)
 def check_energy_balance(ctx):
-    """Emitted versus absorbed energy, per model.
+    """
+    Emitted versus absorbed energy, per model.
 
-    Graded: converged models with absorbed_fraction above the threshold (below it the print
-    precision of the continua dominates; this also leaves out the models dominated by the CMB).
-    The excess in the observable range (lambda >= 911.76 A) is reprocessing_excess - lyc_emit_fraction:
-    the diffuse Lyman continuum is reported apart, since with `sphere` CLOUDY counts its inward
-    half twice.
+    This function evaluates the energy balance of models by analyzing the energy
+    reprocessing excess and the LyC (Lyman continuum) emission fraction. It focuses
+    on models having a significant absorbed energy fraction and excludes those
+    dominated by computational noise or cosmic microwave background (CMB) effects.
+    The grading process determines models that meet stringent observable range
+    excess criteria, while the function computes relevant statistics and identifies
+    outlier models for detailed analysis.
 
-    Pass: >= 95% of the graded models with an observable excess <= 2%.
+    Parameters:
+    ctx (object): The context which includes the input data and configurations used
+                  for checking energy balance. The required attributes include
+                  model properties and threshold values for energy fraction grading.
+
+    Returns:
+    tuple: A tuple containing the following elements:
+        - A pass/fail/skip status as determined by the evaluation process.
+        - A dictionary with detailed results including:
+            - Total number of graded models.
+            - Fraction of models passing the criteria.
+            - Percentile statistics of observable reprocessing excess, total excess,
+              and LyC emission fraction.
+            - List of identifiers for models with the highest outlier excess.
+            - Summary of the evaluation results.
     """
     table = ctx.data
     excess, absorbed, lyc = table.reprocessing.T
@@ -727,9 +1315,24 @@ def check_energy_balance(ctx):
 
 @check('balmer_decrement')
 def check_balmer_decrement(ctx):
-    """Emergent H-alpha / H-beta against Case B, around log U = -3 and z ~ 0.
+    """
+    Check the emergent H-alpha to H-beta ratio against the predicted Case B value under
+    specific conditions of log U and redshift.
 
-    Pass: |median / 2.86 - 1| < 5%.
+    This function evaluates whether the median ratio of H-alpha to H-beta over selected
+    data entries deviates significantly from the theoretical Case B ratio. The conditions
+    for evaluation include the presence of relevant spectral lines and specific values of
+    logU and redshift parameters.
+
+    Parameters:
+        ctx (Context): The context object containing the dataset to evaluate.
+
+    Returns:
+        tuple: A tuple containing the result of the check (PASS, FAIL, or SKIP) and a
+        dictionary with detailed information regarding the evaluation.
+
+    Raises:
+        None
     """
     table = ctx.data
     if _missing_lines(table, ('H_alpha', 'H_beta')) or table.param('logU') is None or table.param('z_CMB') is None:
@@ -747,12 +1350,21 @@ def check_balmer_decrement(ctx):
 
 @check('bpt_star_forming_locus')
 def check_bpt_locus(ctx):
-    """Models in the [N II]/H-alpha versus [O III]/H-beta diagram.
+    """
+    Models the behavior of galaxy classification in the [N II]/H-alpha versus [O III]/H-beta diagram.
 
-    Graded against the maximum-starburst line on the models with log U <= -2 (the range it was
-    derived for); the fraction below the Kauffmann et al. (2003) line is reported, not graded.
+    Evaluates model adherence to specific astrophysical thresholds defined by the maximum-starburst
+    line using log U constraints and emission line ratios.
 
-    Pass: >= 95% of the models with log U <= -2 below the Kewley et al. (2001) line.
+    Parameters:
+        ctx (Context): The context object providing input data and parameters required for the check.
+
+    Returns:
+        tuple: A tuple containing the result ('PASS', 'FAIL', or 'SKIP') and a dictionary with
+        details of the evaluation process.
+
+    Raises:
+        None
     """
     table = ctx.data
     if _missing_lines(table, ('NII_6584', 'H_alpha', 'OIII_5007', 'H_beta')) or table.param('logU') is None:
@@ -774,9 +1386,31 @@ def check_bpt_locus(ctx):
 
 @check('sampling_design_uniformity')
 def check_sampling_design(ctx):
-    """Kolmogorov-Smirnov uniformity of every marginal of the continuous sample.
+    """
+    Evaluates the Kolmogorov-Smirnov test for the uniformity of every marginal
+    distribution in the continuous sample provided.
 
-    Pass: every p-value > 0.01 and no value outside the bounds.
+    This function checks the uniformity of sample distributions along specified
+    axes with the Kolmogorov-Smirnov test. It also verifies whether sample values
+    are within the specified bounds and summarizes the findings for each axis.
+    A "pass" result is given if every axis satisfies the following conditions:
+    - All p-values from the test are greater than 0.01.
+    - No sample values exist outside the defined bounds.
+
+    Parameters:
+    ctx : Context object
+        A context object that contains the left-hand sample (lhs) and the
+        configuration of axes (charter) defining the bounds.
+
+    Returns:
+    tuple
+        A tuple where the first element is either "PASS", "FAIL", or "SKIP", and
+        the second element is a dictionary detailing the summary of the test results
+        or the reason for skipping the check.
+
+    Raises:
+        KeyError: If necessary keys are missing in the axis configuration in ctx.charter.
+        TypeError: If ctx.lhs cannot be converted to a numerical array.
     """
     if ctx.lhs is None or ctx.charter is None:
         return SKIP, {'reason': 'needs --lhs and --config (axis bounds)'}
@@ -799,13 +1433,30 @@ def check_sampling_design(ctx):
 
 @check('grain_continuum_sanity')
 def check_grain_continuum(ctx):
-    """Shape and scale of the diagnostic grain continuum, on a subsample of converged models.
+    """
+    Validates the diagnostic grain continuum for a subsample of converged models.
 
-    (a) no negative value; (b) peak of nu*F_nu between 5 and 500 um; (c) below 0.3 um less than
-    1e-3 of the peak; (d) far-infrared (> 20 um) energy of the same order as the own continuum
-    (median ratio in [0.1, 10]).
+    This function checks a series of conditions to ensure the physical accuracy of the
+    diagnostic grain continuum data. The checks include validating that:
+    (a) The grain continuum contains no negative values.
+    (b) The peak of the spectrum (nu*F_nu) lies within the range of 5 to 500 micrometers.
+    (c) Below 0.3 micrometers, the continuum is less than 1e-3 of the peak value.
+    (d) The far-infrared (> 20 micrometers) energy of the continuum is comparable to the
+        nebular emission continuum, with a median ratio in the range [0.1, 10].
 
-    Pass: (a)-(c) for >= 99% of the sample, and (d).
+    The function reports whether the conditions are met for at least 99% of the sampled
+    models and provides detailed diagnostic data.
+
+    Args:
+        ctx: The context object that provides access to input data and configuration.
+
+    Returns:
+        tuple: A two-element tuple where the first element is a status flag indicating
+        whether the checks passed (`PASS`), failed (`FAIL`), or were skipped (`SKIP`),
+        and the second element is a dictionary providing details on the validation results.
+
+    Raises:
+        None
     """
     table = ctx.data
     if table.wave is None:
@@ -842,7 +1493,30 @@ def check_grain_continuum(ctx):
     return _combine([PASS if fraction >= T['grain.min_pass_fraction'] else FAIL, status_fir]), detail
 
 def _spike_flags(spectra, bins, excess, half=3, gap=2):
-    """(n_models, n_bins): the line bin exceeds both local baselines by `excess`."""
+    """
+    Identifies spikes in spectral data that exceed local baselines by a defined excess. Flags the
+    corresponding bins where the spike condition is met. Local baselines are calculated on both
+    sides of the target bin.
+
+    Parameters:
+    spectra: numpy.ndarray
+        A 2D array of shape (n_models, n_bins) containing the spectral data.
+    bins: list[int]
+        A list of bin indices to evaluate for spikes.
+    excess: float
+        The percentage by which the peak in a bin must exceed the local baseline for it to be
+        flagged.
+    half: int, optional
+        The width in bins on either side of the local baseline region for median calculation.
+        Default is 3.
+    gap: int, optional
+        The gap in bins between the analyzed bin and the local baseline region. Default is 2.
+
+    Returns:
+    numpy.ndarray
+        A 2D boolean array of the same shape as `(n_models, len(bins))`, where True indicates a
+        spike in the corresponding bin of each model.
+    """
     flags = np.zeros((spectra.shape[0], len(bins)), dtype=bool)
     for column, b in enumerate(bins):
         centre = np.max(spectra[:, b - 1:b + 2], axis=1)
@@ -853,12 +1527,29 @@ def _spike_flags(spectra, bins, excess, half=3, gap=2):
 
 @check('line_free_continua')
 def check_line_free_continua(ctx):
-    """No residual line in the own continuum (col4 - col9) nor in the grain continuum.
+    """
+    Checks for the presence of residual line in the own continuum or the grain continuum.
 
-    At every line of the master list the bin is compared with two baselines a few bins away on
-    each side (edges are steps, not spikes).
+    At each line of the master list, bin values are compared against baselines a few bins
+    away on both sides. This ensures that edges are treated as gradual steps rather than spikes.
+    The check is considered successful if no more than 1% of the model-line pairs are flagged
+    for both continua.
 
-    Pass: <= 1% of the (model, line) pairs flagged, for both continua.
+    Parameters:
+        ctx : Context
+            The context object containing the wavelength grid, catalogue data, and other parameters
+            necessary for the line-free continuum check.
+
+    Returns:
+        result : Status
+            One of SKIP, PASS, or FAIL based on the analysis of flagged line pairs in the spectra.
+        detail : dict
+            A dictionary detailing the results of the check. It includes lines tested, fraction of flagged
+            lines, and summary information about flagged continua.
+
+    Raises:
+        KeyError
+            If required datasets or configurations are missing from the context object.
     """
     table = ctx.data
     if table.wave is None or not table.catalogue.labels:
@@ -895,12 +1586,27 @@ def check_line_free_continua(ctx):
 
 @check('oiii_doublet_ratio')
 def check_oiii_doublet(ctx):
-    """[O III] 4959 / 5007 (same upper level), worst converged model.
+    """
+    Checks the ratio of [O III] 4959 / 5007 emission lines in converged models.
 
-    The lines are emergent: the internal dust absorbs 4959 slightly more than 5007 (up to ~1% in the
-    dustiest models), while the intrinsic ratio is the atomic 0.3459.
+    This function evaluates whether the ratio of [O III] lines (4959 and 5007) in astrophysical
+    data conforms to an expected intrinsic ratio, accounting for small differences due to internal
+    dust absorption. The intrinsic ratio is determined by atomic physics to be 0.3459. The function
+    only considers models where the [O III] 5007 line strength is above a specified threshold,
+    ensures that all conditions are met for valid analysis, and calculates the deviation from
+    the expected ratio.
 
-    Pass: within 2% of 0.346, for the models with [O III] 5007 >= 1e-3 H-beta.
+    The measure passes if the ratio deviates by less than 2% from the intrinsic value for valid
+    models.
+
+    Parameters:
+        ctx (object): The context object containing the astrophysical data required for the check.
+
+    Returns:
+        tuple: A status indicating whether the check passed (PASS, FAIL, SKIP), and a dictionary
+        containing detailed information about the result. The dictionary includes the number of
+        valid models examined, the worst relative deviation observed, details about the model
+        with the worst deviation, and a summary of the worst-case deviation.
     """
     table = ctx.data
     if _missing_lines(table, ('OIII_4959', 'OIII_5007', 'H_beta')):
@@ -918,12 +1624,35 @@ def check_oiii_doublet(ctx):
 
 @check('dust_mass_scaling')
 def check_dust_mass_scaling(ctx):
-    """Dust mass per solar mass against the truncated Stromgren scaling.
+    """
+    Check the scaling of dust mass per solar mass against the truncated Stromgren scaling.
 
-    M_dust / M_SSP ~ (1 - f_esc) xi_d m_Z(zeta_O) Q_H / n_H, constant fitted (median residual);
-    m_Z (metal mass per H) from the chemistry module, as the grain_scale of the deck. The residual trend with log U is reported.
+    This function validates the relationship:
+    M_dust / M_SSP ~ (1 - f_esc) * xi_d * m_Z(zeta_O) * Q_H / n_H, where a constant is fitted based
+    on the median residual. The m_Z (metal mass per hydrogen) is derived using the chemistry module
+    and is treated as the grain_scale of the deck. The method also captures the residual trend
+    concerning log U.
 
-    Pass: >= 90% of the models within 0.2 dex.
+    Summary of validation:
+    - Pass condition: At least 90% of the models must fall within 0.2 dex of the expected scaling.
+
+    Parameters:
+    ctx : Context
+        The context object containing the required data and metadata for the check.
+
+    Returns:
+    tuple
+        A tuple consisting of:
+        - A result status, either PASS, FAIL, or SKIP.
+        - A dictionary with details about the validation including model count,
+          fitted constant, fraction within tolerance, and trends with log U.
+
+    Raises:
+    KeyError
+        If required parameters or metadata are missing.
+    ModuleNotFoundError
+        If the chemistry module is unavailable for the calculations.
+
     """
     table = ctx.data
     needed = ('f_esc', 'log_zeta_O', 'xi_d', 'lognH_HII', 'tau_SSP', 'Z_star', 'logU')
@@ -954,9 +1683,30 @@ def check_dust_mass_scaling(ctx):
 
 @check('old_node_ionizing_output')
 def check_old_nodes(ctx):
-    """Q_H of the 70 and 100 Myr nodes over Q_H of the youngest, per stellar metallicity.
+    """
+    Check Q_H ratio of 70 and 100 Myr nodes to the youngest node for each stellar metallicity.
 
-    Pass: both ratios < 1% for every metallicity.
+    This function evaluates stellar metallicity nodes and compares the Q_H ratio of
+    older nodes (70 and 100 Myr) against the youngest node. The primary objective is to
+    verify that the Q_H ratio for all older nodes remains below 1% of the youngest for every
+    metallicity. If this condition is not met, the check fails.
+
+    The function performs this operation by iterating over the nodes provided in the context
+    and computing the ratios per metallicity group. The worst case of the ratio is reported,
+    and the successful or failed status is returned accordingly.
+
+    Parameters:
+    ctx: Context
+        The context object containing `ssp_meta` data with stellar metallicity nodes.
+
+    Returns:
+    tuple
+        A status outcome (PASS, FAIL, or SKIP), accompanied by a dictionary containing
+        per-node results and a summary of the largest Q_H ratio computed for the older
+        nodes relative to the youngest.
+
+    Raises:
+        None
     """
     if ctx.ssp_meta is None:
         return SKIP, {'reason': 'no --ssp-meta'}
@@ -978,13 +1728,24 @@ def check_old_nodes(ctx):
 
 @check('escape_fraction_coverage')
 def check_escape_fraction(ctx):
-    """Coverage of the measured escape fraction, and no cloud cut at its face.
+    """Evaluate the coverage of the measured escape fraction and detect clouds stopping at their face.
 
-    The emulator reads the MEASURED escape fraction, so only its coverage matters; the rank correlation
-    with the target is reported, not graded (dust lowers the measured value, hot gas raises it through
-    alpha_B(T)). A measured value above 0.99 means that the cloud absorbed nothing: a stop at the face.
+    This function ensures that the coverage of the measured escape fraction is within the required
+    range and checks that no model indicates an escape fraction above a specified threshold.
+    Additionally, the function calculates the rank correlation of the measured escape fraction
+    with the target parameter and evaluates gaps in the coverage of the escape fraction range.
 
-    Pass: widest empty interval inside [0, 0.9] <= 0.1 and no model with f_esc_meas > 0.99.
+    Parameters:
+        ctx (object): Context object containing data for the models, including measured and target
+            escape fractions, associated metadata, and thresholds.
+
+    Returns:
+        tuple: A tuple where the first element is a status (PASS, FAIL, or SKIP), and the second
+            element is a dictionary providing detailed information on the widest gap, rank correlation,
+            and any models that stopped at the cloud face.
+
+    Raises:
+        None
     """
     table = ctx.data
     measured, target = table.scalars['f_esc_meas'], table.param('f_esc')
@@ -1007,9 +1768,19 @@ def check_escape_fraction(ctx):
 
 @check('depletion(jk)_axis_coverage')
 def check_depletion_coverage(ctx):
-    """KS uniformity of F* over the converged models (sample size: distinct draws, not models).
+    """
+    KS uniformity of F* over the converged models (sample size: distinct draws, not models). The method
+    evaluates the uniformity of F* values using the Kolmogorov-Smirnov (KS) test. Converged models with
+    a sufficient number of distinct F* values are considered. The test is passed if the calculated
+    p-value is greater than 0.01.
 
-    Pass: p-value > 0.01.
+    Parameters:
+        ctx: Context object containing required data and configurations for the method.
+
+    Returns:
+        Tuple: A 2-element tuple where the first element is a status string ('PASS', 'FAIL', or 'SKIP')
+        based on the result of the uniformity test or conditions for skipping, and the second element is a
+        dictionary containing test details or reasoning.
     """
     f_star = ctx.data.param('F_star')
     if f_star is None:
@@ -1025,13 +1796,34 @@ def check_depletion_coverage(ctx):
 
 @check('fuv_terms')
 def check_fuv_terms(ctx):
-    """FUV terms of the ionised skin: sign, and spectral tilt of the transmission in the Habing band.
+    """
+    Analyzes the FUV terms of the ionized skin, including positivity conditions
+    and the spectral tilt of the transmission in the Habing band.
 
-    (a) 0 < T_FUV <= 1 and N_FUV > 0. (c) where T_FUV > 1e-2, log10 T is fitted as a line in
-    log10 lambda (Lyman-series bins excluded); tilt = log10 T(red edge) - log10 T(blue edge).
-    The tilt is carried to the PDR grid by the beta axis, beta in [-2.5, 0] (tilt up to 0.888 dex).
+    This function ensures that the FUV transmission (T_FUV) and FUV count (N_FUV)
+    adhere to expected sign and positivity constraints. Additionally, where valid,
+    it computes the tilt of the transmission spectrum across the FUV band. The
+    tilt is derived as the slope of the logarithmic transmission fitted across the
+    valid wavelength range (excluding Lyman-series bins).
 
-    Pass: (a) for every model and 99th percentile of |tilt| < 0.888 dex.
+    The function passes if all models meet positivity constraints and the 99th
+    percentile of the absolute tilt does not exceed 0.888 dex, which represents
+    compliance with the beta axis on the PDR grid.
+
+    Parameters:
+        ctx: The computational context, which includes the data necessary
+             for validation and analysis.
+
+    Returns:
+        Tuple containing:
+        - status: Computation result as a string indicating overall pass, fail,
+                  or skipped status based on validation checks.
+        - detail: A dictionary with detailed checks and results for positivity
+                  violations, tilt computation, and summary statistics.
+
+    Raises:
+        No explicit exceptions are documented; however, internal operations might
+        raise exceptions if data is corrupted or computation fails.
     """
     table = ctx.data
     t_fuv, n_fuv = table.scalars['T_fuv'], table.scalars['N_fuv']
@@ -1064,9 +1856,37 @@ def check_fuv_terms(ctx):
 
 @check('transparency_outside_sed_support', blocking=True)
 def check_transparency(ctx):
-    """Transmission = 1 outside the SED support (sed_support_A) and in [0, 1] inside, on a subsample.
+    """
+    Ensures the transmission values meet expected criteria based on the SED support range in the data.
 
-    Pass: no bin off by more than the print precision of the .con (1e-3).
+    Summary:
+    This function evaluates whether the transmission values of a dataset conform to specified tolerances:
+    - Outside of the SED support range (sed_support_A), transmission values should strictly equal 1.
+    - Inside the SED support range, transmission values must fall within the range [0, 1].
+
+    Pass Criteria:
+    The function passes if no transmission value outside the SED support range deviates from 1 by more than 1e-3,
+    and all values within the range fall between 0 and 1 (inclusive).
+
+    Failure Details:
+    If bins are identified as incorrect, the function details how many bins are wrong both outside and inside
+    the range, as well as a list of up to 10 examples (job IDs) that exhibited these issues.
+
+    Parameters:
+    ctx (object): The execution context containing input data and configuration.
+
+    Returns:
+    A tuple containing:
+    - PASS or FAIL (str): Indicates whether the data meets the transmission criteria.
+    - detail (dict): A dictionary summarizing validation details, including:
+        - sampled (int): The number of data points sampled.
+        - bins_wrong_outside (int): The count of bins deviating from 1 outside the range.
+        - bins_wrong_inside (int): The count of bins with values outside [0, 1] inside the range.
+        - examples (list): Up to 10 job IDs of datasets with transmission issues.
+        - summary (str): A short description of the issues detected.
+
+    Raises:
+    SKIP: If no converged models with valid "continuum/transmission" and "sed_support_A" data are found in the input.
     """
     table = ctx.data
     indices = ctx.sample(table.converged & np.all(np.isfinite(table.sed_support), axis=1))
@@ -1093,9 +1913,21 @@ def check_transparency(ctx):
 def check_cloudy_version(ctx):
     """The version banner of every kept output contains the required version.
 
-    Required version: charter 'cloudy_version', else data attribute, else CLOUDY_REQUIRED.
+    This function checks whether the outputs from a CLOUDY run include the
+    required version specified in the charter, data attributes, or a default
+    value defined by CLOUDY_REQUIRED. Each main output is scanned for the
+    presence of a version token to ensure compatibility.
 
-    Pass: every output from the required version.
+    Args:
+        ctx: The context object for running the check, which provides access
+        to charter information, raw runs, and file handling.
+
+    Returns:
+        tuple: A two-element tuple where the first element is the status of the
+        check (e.g., PASS, FAIL, or SKIP), and the second element is a detailed
+        dictionary containing information about the check results, such as the
+        required version, number of outputs checked, and details of any outputs
+        that failed the version check.
     """
     runs = ctx.raw_runs()
     if not runs:
@@ -1118,15 +1950,45 @@ def check_cloudy_version(ctx):
 
 @check('rw-abundance_echo', blocking=True)
 def check_abundance_echo(ctx):
-    """The gas-phase composition CLOUDY echoes in the main output of the kept runs.
+    """
+    Checks the gas-phase composition echoed by CLOUDY in the main output of the runs kept.
 
-    (1) thirty elements in every run (absent ones are switched off silently). With the chemistry
-    module: (2) He/H as expected at the run's log zeta_O, within 0.01 dex; (3) no element above
-    its total abundance; (4) among runs at the same F*, the echo of each run minus that of the
-    run nearest to log zeta_O = 0 equals the difference of log pattern_X (the depletion cancels
-    at fixed F*, so CLOUDY's depletion table is not re-implemented).
+    The primary function of this check is to validate the gas-phase abundance blocks echoed by CLOUDY
+    in each simulation run. It ensures that the abundance blocks contain the expected number of
+    elements, check that helium abundances align with the expected values at a given metallicity
+    (log zeta_O), verify that no element exceeds its total abundance, and confirm that the echoed
+    blocks correctly reflect differences in abundance patterns when comparing runs at the same F*
+    but with different metallicities. The presence and quality of main output files are also checked.
 
-    Pass: (1)-(4), (4) within 0.001 dex plus one print step; PARTIAL when (2)-(4) cannot run.
+    Pass Criteria:
+    1. Thirty elements must be present in every run (absent ones are silently switched off).
+    2. Helium-to-hydrogen (He/H) ratio must be as expected at the run's metallicity (log zeta_O)
+       within 0.01 dex.
+    3. No element should have an abundance above its total.
+    4. For runs at the same F*, the echoed abundance difference compared to a reference run close to
+       log zeta_O = 0 must equal the log pattern differences (within a deviation tolerance of 0.001
+       dex plus one print step).
+
+    A PASS outcome indicates that all checks are satisfied. A PARTIAL outcome is returned in cases
+    where checks (2)-(4) cannot be performed. A FAIL outcome is issued if any problem is detected
+    (e.g., missing or incomplete composition blocks, He/H deviations, presence of excess elements,
+    etc.).
+
+    Arguments:
+        ctx (any): Context object containing details about the pipeline runs, data, and associated
+            metadata.
+
+    Returns:
+        tuple: A tuple containing the outcome of the check and a detailed dictionary. The outcome will
+        be one of PASS, PARTIAL, or FAIL, based on the results of the checks. The dictionary includes
+        details such as the number of outputs analyzed, the count of He/H-graded runs, the count of
+        pattern differences, the worst pattern deviation (in dex), a summary, and the first 20
+        problems identified, if any.
+
+    Raises:
+        Does not raise any errors directly. The function handles exceptions where the chemistry module
+        cannot be loaded.
+
     """
     runs = ctx.raw_runs()
     if not runs:
@@ -1189,18 +2051,28 @@ def check_abundance_echo(ctx):
 
 @check('rw-line_raster_closure')
 def check_line_raster_closure(ctx):
-    """The line-only column (col9) contains the listed line fluxes.
+    """
+    The function performs a validation check on the line raster closure, ensuring that the
+    fluxes provided in the line-only column of the spectrum data meet specific criteria.
 
-    Around each listed line the column is summed cell by cell over +-3 bins (energy of a cell:
-    value x cell width in ln lambda) and compared with the listed fluxes whose cell falls in the
-    same window, with the continuum pumping of the pumped lines removed as the parser does
-    (the pumped part is scattered stellar light, never in col9). Graded below 10 um only: beyond,
-    col9 carries the lines net of the CMB. The upper side is reported for strong lines but not
-    graded: col9 is less attenuated by the internal dust than the emergent list, and holds unlisted
-    lines too. Windows holding a line pumped above 10% (C IV, Si IV, Mg II, Si III] at any age) are
-    reported, not graded: the removal is exact only to ~1-20% of the pumped part.
+    Summary:
+    The function assesses the fidelity of the flux values in a column (col9) of a spectral
+    dataset by comparing the calculated summed window fluxes to the listed theoretical fluxes.
+    It considers continuum-pumped lines, strong lines, and non-graded regions based on specific
+    thresholds and grades the results accordingly.
 
-    Pass: raster / listed >= 0.98 for every line below 10 um.
+    Parameters:
+    ctx: Context object providing access to raw run files, configurations, and helper methods.
+
+    Returns:
+    tuple: A tuple containing the grade result ('PASS', 'FAIL', or 'SKIP') and a details dictionary
+    containing:
+        - runs: Number of runs processed.
+        - lines_evaluated: Number of spectral lines evaluated.
+        - violations: List of up to 20 closure violations with details.
+        - strong_lines_above: Count of strong lines outside the tolerance range.
+        - pump_dominated_windows: Number of windows affected by continuum pumping.
+        - summary: Text summary of the evaluation results.
     """
     runs = ctx.raw_runs()
     if not runs:
@@ -1253,12 +2125,28 @@ def check_line_raster_closure(ctx):
 
 @check('rw-grain_abundance_file', blocking=True)
 def check_grain_abundance_file(ctx):
-    """The grain-abundance output holds one block of zones, and the parser integrates it.
+    """
+    Inspects grain-abundance files from simulation runs and validates their format and integrity according to
+    specific criteria.
 
-    One '#Depth ... total' header, rows of constant width, >= 1 zone, depth strictly increasing
-    (a second block, i.e. a lost 'last', would double the dust mass); a positive integral.
+    The function processes the grain-abundance output file, analyzing its structure for the following:
+    - The file contains exactly one '#Depth ... total' header.
+    - Rows have a consistent width across the file.
+    - There is at least one zone present, and depth increases strictly across zones.
+    - The data is integrated to ensure positive and finite values are returned.
 
-    Pass: every file.
+    The validation includes examining headers, row structure, and integrated values. It reports files with issues
+    and provides a summary of valid and invalid files.
+
+    Parameters:
+        ctx (object): Context object that provides access to raw runs and files.
+
+    Returns:
+        tuple: A tuple containing the result status and detailed summary. The result status can be SKIP, PASS,
+        or FAIL. The detail includes the number of files analyzed, identified problems, and an overall summary.
+
+    Raises:
+        None directly, but issues during file parsing or invalid formats are captured and reported as problems.
     """
     runs = ctx.raw_runs()
     if not runs:
@@ -1293,13 +2181,30 @@ def check_grain_abundance_file(ctx):
 
 @check('rw-incident_continuum_matches_sed', blocking=True)
 def check_incident_continuum(ctx):
-    """CLOUDY was illuminated by the SED file its deck names, read as intended.
+    """
+    Checks the consistency of the incident continuum with the SED file specified in the
+    CLOUDY deck across multiple runs.
 
-    The file named by 'table SED' (under SED/ of the working directory, else in the working
-    directory) is compared with the incident column through two normalisation-free numbers:
-    ionising photons per unit energy and the energy fraction in the Habing band.
+    This function verifies that the SED file referenced using 'table SED' in the CLOUDY
+    deck is correctly reflected in the incident continuum output of the simulation. The
+    check is performed by comparing two key metrics: the ionizing photons per unit energy
+    and the energy fraction in the Habing band. A pass is determined if both metrics differ
+    by less than 5% between the incident continuum and the SED file for all runs.
 
-    Pass: both within 5% in every run.
+    Parameters:
+        ctx (object): Context object containing information about the simulation runs.
+                      This context provides access to directories, input files, and
+                      continuum outputs required for the consistency checks.
+
+    Returns:
+        tuple[str, dict]: A tuple representing the status of the check and detailed results.
+                          If any issues are detected, the status will be 'FAIL', otherwise
+                          'PASS'. The detailed results include the number of comparisons
+                          performed, the worst relative difference found, a summary, and
+                          details of any problems detected (limited to 20 entries).
+
+    Raises:
+        None
     """
     runs = ctx.raw_runs()
     if not runs:
@@ -1317,7 +2222,7 @@ def check_incident_continuum(ctx):
             problems.append({'job_id': job, 'problem': f'SED file {name} not found'})
             continue
         wave, col2 = parse_cloudy_con(str(con))[:2]
-        stellar = wave < CONST.Stellar_Max_A  # above it lives the CMB of the run, not in the file
+        stellar = wave < CLOUDY.Stellar_Max_A  # above it lives the CMB of the run, not in the file
         file_wave, file_nufnu = read_sed_file(path)
         on_mesh = np.exp(np.interp(np.log(wave[stellar]), np.log(file_wave), np.log(np.maximum(file_nufnu, 1e-300))))
         cloudy = incident_shape(wave[stellar], col2[stellar], lyman, band)
@@ -1335,11 +2240,23 @@ def check_incident_continuum(ctx):
 
 @check('rw-line_list_complete', blocking=True)
 def check_line_list_complete(ctx):
-    """Every line requested by the list file of the deck comes out of CLOUDY, with a valid flux.
+    """
+    Every line requested by the list file of the deck comes out of CLOUDY, with a valid flux.
 
     Lines of the main output mentioning a line not found are reported for inspection.
 
     Pass: requested = returned and fluxes finite, >= 0, in every run.
+
+    Parameters:
+        ctx (Context): Context object containing information about the raw runs and file management.
+
+    Returns:
+        tuple: A tuple where the first element is either SKIP, PASS, or FAIL, indicating the check status,
+               and the second element is a dictionary containing details such as problems identified,
+               summary statistics, and output lines requiring inspection.
+
+    Raises:
+        None
     """
     runs = ctx.raw_runs()
     if not runs:
@@ -1372,9 +2289,20 @@ def check_line_list_complete(ctx):
 
 @check('rw-runtime_per_model', blocking=True)
 def check_runtime(ctx):
-    """Mean execution time of the kept runs times the planned runs (charter or --n-expected).
+    """
+    Check the runtime and projected core hours for planned runs.
 
-    Pass: projected cost within 5400 core hours.
+    This function calculates the mean execution time from the provided outputs of kept runs, estimates the
+    projected core hours required for the planned runs, and evaluates if this projected cost is within
+    the defined budget limit.
+
+    Parameters:
+    ctx (object): The runtime context containing relevant data, including job output files and expected
+                  number of runs.
+
+    Returns:
+    tuple: A tuple containing a status ('PASS', 'FAIL', or 'SKIP') and a details dictionary with
+           calculated metrics and additional information.
     """
     outputs = [ctx.raw_file(job, workdir, '.out') for job, workdir in ctx.raw_runs()]
     times = [read_exec_time(_read_text(out)) for out in outputs if out.is_file()]
@@ -1393,13 +2321,30 @@ def check_runtime(ctx):
 
 @check('rw-energy_balance_from_raw_output', blocking=True)
 def check_raw_energy_balance(ctx):
-    """Energy balance recomputed from the continuum outputs, and the attribute the parser stored.
+    """
+    Energy balance recomputed from the continuum outputs, and the attribute stored by the parser.
 
-    E = integral of nu*F_nu over d ln lambda, referred (as in the parser) to the stellar incident
-    energy, the incident column below Stellar_Max_A (above it lives the CMB of the run).
+    This function validates the energy balance consistency by checking the recomputed energy
+    from the continuum outputs against stored energy balance attributes in the parser. It compares
+    the integral of nu*F_nu (energy density) over the wavelength range against the incident stellar
+    energy, ensuring that the overall median imbalance is within acceptable thresholds and all
+    stored attributes agree with the computed results.
 
-    Pass: median imbalance < 1%, every stored attribute within 2e-3 of the recomputed one, no
-    output without incident energy.
+    Parameters:
+        ctx (Context): The context object that provides access to raw runs, raw files, and data
+                       for performing the energy balance checks.
+
+    Returns:
+        tuple: A tuple consisting of the status of the check (PASS, FAIL, or SKIP) and a detailed
+               dictionary containing:
+               - The number of runs considered for the check.
+               - Median imbalance percentage.
+               - A list of up to 20 disagreements between stored attributes and recomputed values.
+               - A list of up to 20 runs without incident energy.
+               - A summary of the results.
+
+    Raises:
+        None
     """
     runs = ctx.raw_runs()
     if not runs:
@@ -1412,7 +2357,7 @@ def check_raw_energy_balance(ctx):
         wave, col2, col3, col4 = (np.asarray(c, float) for c in parse_cloudy_con(str(con))[:4])
         everywhere = np.ones(wave.shape, dtype=bool)
         e2, e3, e4 = (_integrate_log(c, wave, everywhere) for c in (col2, col3, col4))
-        e2_stellar = _integrate_log(col2, wave, wave < CONST.Stellar_Max_A)
+        e2_stellar = _integrate_log(col2, wave, wave < CLOUDY.Stellar_Max_A)
         if not e2_stellar > 0:
             unlit.append(job)
             continue
@@ -1442,6 +2387,26 @@ def check_raw_energy_balance(ctx):
 def run_checks(ctx, strict=False):
     """
     Executes predefined checks based on the provided context and returns the results.
+
+    Summary:
+        This function iterates through a list of checks applicable to the given context sector
+        and executes their associated functions. It collects the results and determines which
+        checks have failed, adhering to the strictness setting if provided. A progress bar is
+        displayed during execution to track the performed checks.
+
+    Parameters:
+        ctx: The context object specifying the sector for which the checks should be executed.
+            The checks are filtered based on the sector value.
+        strict: bool (optional)
+            If set to True, skipped checks are considered as failed. Defaults to False.
+
+    Returns:
+        tuple:
+            A tuple containing:
+            - results: A list of dictionaries where each dictionary details the name,
+              status, blocking status, and additional details of the executed check.
+            - failed: A list of names of the checks that have failed. Blocking checks
+              with statuses of FAIL or ERROR, and skipped checks marked as strict, are included.
     """
     results = []
     specs = [spec for spec in CHECKS if ctx.sector in spec.sectors]
@@ -1462,6 +2427,15 @@ def run_checks(ctx, strict=False):
 def render_markdown(report):
     """
     Renders a markdown report based on the provided validation grid report.
+
+    Parameters:
+        report (dict): A dictionary containing the validation grid report. It must
+                       include keys like 'sector', 'overall', 'data', 'models',
+                       'converged', 'failed_blocking', 'strict', and 'checks' with
+                       relevant data types for each.
+
+    Returns:
+        str: A string representing the generated markdown report.
     """
     lines = [f"# Grid validation - {report['sector'].upper()} - {report['overall']}", '',
              f"Data `{report['data']}`: {report['models']} models, {report['converged']} converged. "
@@ -1478,25 +2452,94 @@ def render_markdown(report):
     return '\n'.join(lines) + '\n'
 
 def _write(path, text):
+    """
+    Writes the provided text to a file at the specified path. Creates any necessary
+    parent directories if they do not already exist.
+
+    Parameters:
+    path (str or pathlib.Path): The file path where the text should be written.
+                                Parent directories will be created if needed.
+    text (str): The content to write into the file.
+    """
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text)
 
 def _load_yaml(path):
+    """
+    Loads and parses a YAML file, returning its contents as a Python object.
+
+    Args:
+        path (str): The file path to the YAML file to be loaded.
+
+    Returns:
+        Any: The parsed content of the YAML file.
+
+    Raises:
+        FileNotFoundError: If the specified file does not exist.
+        yaml.YAMLError: If an error occurs during parsing the YAML file.
+    """
     import yaml
     with open(path) as handle:
         return yaml.safe_load(handle)
 
 def _load_json(path):
+    """
+    Loads and parses a JSON file from the specified path.
+
+    This function reads the content of a file from the given file path and
+    parses it as JSON, returning the corresponding Python object.
+
+    Parameters:
+    path : str
+        The file path to the JSON file.
+
+    Returns:
+    dict
+        Parsed JSON content as a Python dictionary.
+    """
     return json.loads(pathlib.Path(path).read_text())
 
 def _expected_runs(charter):
+    """
+    Calculate the expected number of runs based on input data structure.
+
+    This function attempts to compute the product of specific keys present in the
+    nested dictionary `charter`. If any of the required keys are missing or their
+    values are invalid, the function returns None.
+
+    Arguments:
+        charter (dict): A nested dictionary expected to contain keys 'lhs', 'nodes',
+            and their respective subkeys 'n_samples', 'n_tau_ssp', and 'n_zstar'.
+            Values for these keys must be convertible to integers.
+
+    Returns:
+        int or None: The computed product of the values if all keys are present
+        and their values are valid integers. Otherwise, returns None.
+    """
     try:
         return int(charter['lhs']['n_samples']) * int(charter['nodes']['n_tau_ssp']) * int(charter['nodes']['n_zstar'])
     except (KeyError, TypeError, ValueError):
         return None
 
 def _default_config_path(sector):
+    """
+    Determines the default configuration file path for a specified sector.
+
+    This function iterates through a set of predefined file paths and checks whether
+    a valid configuration file exists. If no valid file is found in the predefined
+    paths, it attempts to look up the file using the datapath settings from
+    `galapy.configuration.rcParams` and the global configuration location defined in
+    `galapy.internal.globs`. If neither approach succeeds, it returns None.
+
+    Parameters:
+    sector: str
+        The name of the sector for which the configuration path is being determined.
+
+    Returns:
+    str or None
+        The path to the configuration file if found, otherwise None.
+    """
     for candidate in (
         f'data/grids/{sector}/grid_{sector}.yaml',
         f'data/grids/{sector}/{sector}.yaml',
@@ -1517,6 +2560,21 @@ def _default_config_path(sector):
     return None
 
 def _default_lhs_path(sector):
+    """
+    Generate the default file path for a given sector.
+
+    This function checks a predefined list of potential file paths for the specified
+    sector and returns the first path that exists. If none of the paths exist,
+    the function returns None.
+
+    Parameters:
+    sector: str
+        The name of the sector used to construct the file paths.
+
+    Returns:
+    str | None
+        The first valid file path that exists, or None if no valid paths are found.
+    """
     for candidate in (
         f'data/grids/{sector}/lhs_{sector}.npy',
         f'data/grids/{sector}/lhs.npy',
@@ -1527,6 +2585,22 @@ def _default_lhs_path(sector):
     return None
 
 def _default_ssp_meta_path(sector):
+    """
+    Determine the default metadata path for a given sector.
+
+    This function checks for the existence of a metadata file in a predefined
+    set of directory paths. It returns the first valid file path found or
+    None if no valid path exists.
+
+    Parameters:
+    sector : str
+        The name of the sector for which the metadata path is being determined.
+
+    Returns:
+    str or None
+        The file path to the metadata if it exists, or None if no valid path
+        is found.
+    """
     for candidate in (
         'data/cloudy_seds/ssp_metadata.json',
         f'data/grids/{sector}/ssp_metadata.json',
@@ -1537,6 +2611,20 @@ def _default_ssp_meta_path(sector):
     return None
 
 def _default_raw_workdirs(sector):
+    """
+    Generate the default working directory path for a given sector.
+
+    This function checks if a constructed directory path exists and is a directory. If the directory
+    exists, the path is returned. Otherwise, the function returns None. It is specifically designed to
+    work with directory structures associated with each sector.
+
+    Args:
+        sector (str): The sector name used to construct the directory path.
+
+    Returns:
+        Optional[str]: The directory path if it exists and is valid, or None if the directory does
+        not exist.
+    """
     candidate = f'data/{sector}/work'
     return candidate if pathlib.Path(candidate).is_dir() else None
 

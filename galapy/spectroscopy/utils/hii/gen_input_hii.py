@@ -12,7 +12,7 @@ import numpy as np
 from jinja2 import StrictUndefined, Template
 from tqdm import tqdm
 
-import galapy.internal.constants as CONST
+import galapy.internal.cloudy as CLOUDY
 from galapy.spectroscopy.utils.physics.abundances import format_cloudy_float
 
 #remove possible syntact error in the jinja template (in terms of format)
@@ -66,7 +66,7 @@ def load_jobs(spec_path):
             if f[k].shape[0] != n:
                 raise ValueError(f"{spec_path}: dataset '{k}' has length {f[k].shape[0]}, expected {n}")
         cols = {k: f[k][:] for k in keys}
-    missing = set(CONST.TEMPLATE_KEYS_HII) -set (cols)
+    missing = set(CLOUDY.TEMPLATE_KEYS_HII) -set (cols)
     if missing:
         raise KeyError(f"{spec_path}: file of jobs does not include {sorted(missing)}")
     return [{k: _decode(cols[k][i]) for k in cols} for i in range(n)]
@@ -93,7 +93,7 @@ def render_one(tmpl, job):
             - The "grains" keyword is not properly configured in the output.
     """
     ctx = dict(job)
-    for k in CONST.EXP_FIELDS: #in case of exponential fields
+    for k in CLOUDY.EXP_FIELDS: #in case of exponential fields
         ctx[k] = format_cloudy_float(ctx[k])
 
     deck = tmpl.render(**ctx)

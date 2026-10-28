@@ -11,8 +11,7 @@ import yaml
 
 from galapy.internal.data import DataFile
 from galapy.internal.globs import LINES_YML, LINES_REF
-from galapy.internal.constants import (HII_LINES_FILE, PDR_LINES_FILE,
-                                       HII_LINES_OFF, PDR_LINES_OFF)
+import galapy.internal.cloudy as CLOUDY
 
 # Tag of a line of CLOUDY (<=4 char, space OK), lambda,
 # unit optional, keyword air/vacuum optional, comment '#' optional.
@@ -20,12 +19,12 @@ LINE_RE = re.compile(r'^(.{1,4}?)\s{1,}([0-9][0-9.]*)\s*([AmcM]?)\s*(air|vacuum)
 
 # Sector
 SECTORS = {
-    'hii': (HII_LINES_FILE, 'hii_lines.dat'),
-    'pdr': (PDR_LINES_FILE, 'pdr_lines.dat'),
+    'hii': (CLOUDY.HII_LINES_FILE, 'hii_lines.dat'),
+    'pdr': (CLOUDY.PDR_LINES_FILE, 'pdr_lines.dat'),
 }
 
 # Official CLOUDY LineLists in LINES_REF
-OFFICIAL_FILES = (HII_LINES_OFF, PDR_LINES_OFF)
+OFFICIAL_FILES = (CLOUDY.HII_LINES_OFF, CLOUDY.PDR_LINES_OFF)
 # default working output directory
 DEFAULT_OUT_DIR = pathlib.Path('data') / 'lines'
 
@@ -171,9 +170,9 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     sector = ap.add_mutually_exclusive_group(required=True)
     sector.add_argument('--hii', dest='sector', action='store_const', const='hii',
-                        help=f'HII master list ({HII_LINES_FILE}) -> hii_lines.dat')
+                        help=f'HII master list ({CLOUDY.HII_LINES_FILE}) -> hii_lines.dat')
     sector.add_argument('--pdr', dest='sector', action='store_const', const='pdr',
-                        help=f'PDR master list ({PDR_LINES_FILE}) -> pdr_lines.dat')
+                        help=f'PDR master list ({CLOUDY.PDR_LINES_FILE}) -> pdr_lines.dat')
     ap.add_argument('--out', default=str(DEFAULT_OUT_DIR),
                     help=f'output directory for the .dat of save line list '
                          f'(default: {DEFAULT_OUT_DIR})')

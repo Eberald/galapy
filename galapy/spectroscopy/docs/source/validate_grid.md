@@ -154,7 +154,7 @@ they claim to be.
 **`units_legend`** *(blocking)*. The corpus declares its own units: a root legend giving the unit of every member
 of the `grid_point_*` groups, and unit and wavelength-medium attributes on the root datasets (see
 [Parse HII](parse_hii.md#1-the-fragment-job_idh5)). The check compares them, one by one, with the tables of
-`galapy.internal.constants` from which the parser writes them. Every threshold of this page is expressed in those
+`galapy.internal.cloudy` from which the parser writes them. Every threshold of this page is expressed in those
 units, so a difference (e.g. luminosities per cm² instead of per $M_\odot$, or line wavelengths in vacuum where
 air is expected) would make every following verdict meaningless. A corpus written by a parser older than the
 units has no legend, and the check is skipped.
