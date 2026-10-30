@@ -119,7 +119,13 @@ def test_predict_standardises_the_input_and_matches_gpytorch(hii_artifact):
         ref = e.line_gp(x)
         mean, var = fast_predict(e.cache['lines'], x)
     np.testing.assert_allclose(mean.numpy(), ref.mean.numpy(), rtol=1e-4, atol=1e-6)
-    np.testing.assert_allclose(var.numpy(), ref.variance.numpy(), rtol=2e-4)
+    #====== FIX
+    # fix 2: fast_predict returns the variance of y = latent + likelihood noise, times the calibration scale s_k^2
+    c = e.cache['lines']
+    ref_var = ref.variance + (c['noise'][:, None] if 'noise' in c else 0.0)
+    ref_var = ref_var * (c['var_scale'][:, None] if 'var_scale' in c else 1.0)
+    np.testing.assert_allclose(var.numpy(), ref_var.numpy(), rtol=2e-4)
+    #======= END FIX
 
 
 @pytest.mark.unit

@@ -3,6 +3,10 @@
 
 import numpy as np
 import torch
+#====== FIX
+# fix 2: likelihood of each family, for the noise in the predictive variance
+import gpytorch
+#======= END FIX
 
 import galapy.internal.emulators as EMUL
 
@@ -44,6 +48,31 @@ def line_log_scale(qh_nodes, input_keys, theta_batch):
     return np.log10(qh_unit_lookup(qh_nodes, input_keys, th)) + np.log10(one_m_fesc)
 
 
+#====== FIX
+# fix 1: descriptors of the ionizing SED as extra inputs of the GP
+def sed_features(qh_nodes, input_keys, theta_batch):
+    """
+    log10 Q_H per Msun, log10 Q(He0)/Q(H) and log10 Q(He+)/Q(H) of the SSP node of each row (EMUL.SED_INPUT_KEYS_HII),
+    with the same lookup as Q_H: nearest node in tau, linear interpolation in Z_star. Needs the hardness tables
+    'hard_he0', 'hard_he1' of qh_nodes (train_emulator_hii.qh_table, from incident/sed_per_Msun of the corpus).
+    """
+    th = np.atleast_2d(np.asarray(theta_batch, dtype=float))
+    cols = [np.log10(qh_unit_lookup(qh_nodes, input_keys, th))]
+    for k in ('hard_he0', 'hard_he1'):
+        cols.append(np.log10(qh_unit_lookup(dict(qh_nodes, Qh=qh_nodes[k]), input_keys, th)))
+    return np.column_stack(cols)
+
+
+def augment_inputs(qh_nodes, input_keys, theta_batch):
+    """
+    Physical inputs (N, len(input_keys)) -> inputs of the GP (N, len(input_keys) + 3): the SED descriptors appended
+    as last columns. Same function at training and at inference.
+    """
+    th = np.atleast_2d(np.asarray(theta_batch, dtype=float))[:, :len(input_keys)]
+    return np.hstack([th, sed_features(qh_nodes, input_keys, th)])
+#======= END FIX
+
+
 class HIIEmulator:
     """
     Emulator HII:
@@ -80,6 +109,10 @@ class HIIEmulator:
         self.line_names = None
         self.line_wavelengths_rest = None
         self.wave_grid = None
+        #====== FIX
+        # fix 1: True when the GP was trained with the SED descriptors appended to the inputs
+        self.sed_inputs = False
+        #======= END FIX
 
     def load(self, artifact_stem, device = None):
         """
@@ -117,11 +150,24 @@ class HIIEmulator:
         for name, (attr, _key) in self.WIRING.items():
             sd = fam[name]['model']                                 # state dict of SVGP (name -> tensor)
             Z = sd['variational_strategy.inducing_points']          # (d_out, M, ard)
-            gp = BatchedSVGPS(torch.zeros_like(Z), Z.shape[0], ard) # empty SVGP with the correct structure
+            #====== FIX
+            # fix 5: prior mean of the artifact (linear after the fix, constant before)
+            mean = 'linear' if 'mean_module.weights' in sd else 'constant'
+            gp = BatchedSVGPS(torch.zeros_like(Z), Z.shape[0], ard, mean=mean) # empty SVGP with the correct structure
+            #======= END FIX
             gp.load_state_dict(sd)                                  # load it with emulator data
             setattr(self, attr, gp.eval())                          # model in inference mode
+            #====== FIX
+            # fix 2: likelihood noise in the predictive variance, only for artifacts whose sigma calibration was
+            # estimated with it (ex['predictive_noise']); older artifacts keep the latent variance
+            lik = None
+            if ex.get('predictive_noise', False):
+                lik = gpytorch.likelihoods.GaussianLikelihood(batch_shape=torch.Size([Z.shape[0]]))
+                lik.load_state_dict(fam[name]['likelihood'])
             # cache the predictions of the emulator
-            self.cache[name] = {k: (v.to(self.device) if torch.is_tensor(v) else v) for k,v in predictive_cache(gp).items()}
+            self.cache[name] = {k: (v.to(self.device) if torch.is_tensor(v) else v)
+                                for k, v in predictive_cache(gp, lik).items()}
+            #======= END FIX
             self.prep[name] = ex[f'{name}_prep']
             # sigma calibration of the training (s_k per output):
             # fast_predict multiplies the latent variance by s_k^2.
@@ -140,7 +186,25 @@ class HIIEmulator:
         self.line_names = ex.get('line_names')
         self.line_wavelengths_rest = ex.get('lines_vacuum')
         self.wave_grid = ex.get('wave_grid')
+        #====== FIX
+        # fix 1
+        self.sed_inputs = bool(ex.get('sed_inputs'))
+        #======= END FIX
         return self
+
+    #====== FIX
+    # fix 1: one place that turns physical inputs into the standardized inputs of the GP
+    def standardize(self, theta_batch):
+        """
+        Physical inputs (N, 9) -> standardized inputs of the GP, torch (N, D) on self.device: the SED descriptors are
+        appended when the artifact was trained with them (D = 12), then (x - x_mean) / x_std.
+        """
+        th = np.atleast_2d(np.asarray(theta_batch, dtype=float))
+        if self.sed_inputs:
+            th = augment_inputs(self.qh_nodes, self.input_keys, th)
+        x = torch.as_tensor(th, dtype=torch.float32, device=self.device)
+        return (x - self.x_mean) / self.x_std
+    #======= END FIX
 
     def fit(self, *args, **kwargs):
         raise NotImplementedError(
@@ -190,8 +254,10 @@ class HIIEmulator:
               - For 'dust_mass_cloud': Returns a tuple where each element is a scalar (mean and std).
               - For 'T_fuv_hii' and 'N_fuv_hii': Returns a scalar without an associated error.
         """
-        x = torch.as_tensor(theta_batch, dtype=torch.float32).to(self.device)               # to tensor
-        x = (x - self.x_mean) / self.x_std                                                  # normalization
+        #====== FIX
+        # fix 1: SED descriptors (if any) + normalization
+        x = self.standardize(theta_batch)
+        #======= END FIX
         out = {}
         with torch.no_grad():                                                               # eval mode on families
             for name, (_attr, key) in self.WIRING.items():

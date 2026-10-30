@@ -17,11 +17,38 @@ import galapy.internal.cloudy as CLOUDY
 import galapy.internal.emulators as EMUL
 from galapy.spectroscopy.svgp import BatchedSVGPS, lines_to_ratio
 from galapy.spectroscopy.hii_emulator import line_log_scale
+#====== FIX
+# fix 1: SED descriptors as inputs; fix 3: removal of PCs; fix 5: copy of the best checkpoint
+import copy
+from galapy.spectroscopy.svgp import select_outputs
+from galapy.spectroscopy.hii_emulator import augment_inputs
+#======= END FIX
 from galapy.spectroscopy.utils.validate_emulator import (holdout_split, encode_targets,
                             holdout_scores, write_holdout, log_targets,
                             build_frozen_set, calibration_scale, coverage_scores,
                             per_output_scores)
 
+
+#====== FIX
+# fix 1: hardness of the incident SED of a node
+def sed_hardness(wave, sed):
+    """
+    Q(He0)/Q(H) and Q(He+)/Q(H) of an incident SED given as nu L_nu on `wave` (Angstrom). Photon rates
+    Q(> E) = int nu L_nu / (h nu) dln(lambda) below the edge; h c cancels in the ratios, so the integrand is
+    nu L_nu * lambda. Edges: CONST.LyLimit for H, EMUL.SED_EDGES_A for He0 and He+; floored at EMUL.SED_HARDNESS_FLOOR.
+    (On the HII corpus Q_H from this integral matches the Q_H of s_k within 2% at all 48 nodes.)
+    """
+    w = np.asarray(wave, dtype=np.float64)
+    o = np.argsort(w)
+    w, n = w[o], (np.asarray(sed, dtype=np.float64) * np.asarray(wave, dtype=np.float64))[o]
+    trap = getattr(np, 'trapezoid', None) or np.trapz
+    def q(edge):
+        m = w <= edge
+        return float(trap(n[m], np.log(w[m]))) if m.sum() > 1 else 0.0
+    qh = q(CONST.LyLimit)
+    return tuple(max(q(e) / qh, EMUL.SED_HARDNESS_FLOOR) if qh > 0 else EMUL.SED_HARDNESS_FLOOR
+                 for e in EMUL.SED_EDGES_A)
+#======= END FIX
 
 def load_corpus(path, keys=None):
     """
@@ -71,6 +98,11 @@ def load_corpus(path, keys=None):
         line_names = [n.decode() if isinstance(n, bytes) else n for n in f['line_names'][:]]
         lines_vacuum = f['lines_emergent/wavelengths_rest_vacuum'][:] # need per mode of galapy spec with flux lines given
         wave_grid = f['continuum/wave_grid'][:]
+        #====== FIX
+        # fix 1: wavelengths of the incident SED (absent in old corpora: no SED descriptors then)
+        wave_inc = f['incident/wave_grid'][:] if 'incident/wave_grid' in f else None
+        hard = {}
+        #======= END FIX
         # 7 families of the training
         src = {'lines': 'lines_emergent/fluxes',
                'cont': 'continuum/nebular_emission_per_Msun',
@@ -105,6 +137,11 @@ def load_corpus(path, keys=None):
             # Q_H node unit
             node = (float(g.attrs['tau_SSP']), float(g.attrs['Z_star']))
             qh.setdefault(node, []).append(float(g['s_k'][()]) * 10.0 ** (g.attrs['logU'] + g.attrs['lognH_HII']) * CONST.clight['cm/s'])
+            #====== FIX
+            # fix 1: hardness of the node, read once (the incident SED is the same for every model of a node)
+            if wave_inc is not None and node not in hard and 'incident/sed_per_Msun' in g:
+                hard[node] = sed_hardness(wave_inc, g['incident/sed_per_Msun'][:])
+            #======= END FIX
 
     # pumping choerence
     if len(pumped) > 1:
@@ -122,10 +159,16 @@ def load_corpus(path, keys=None):
              'units': units,
              'n_used': len(X),
              'pumping_removed': pumped == {True},
-             'qh_unit_nodes': qh_table(qh),
+             #====== FIX
+             # fix 1: hardness tables next to Q_H
+             'qh_unit_nodes': qh_table(qh, hard),
+             #======= END FIX
              'keys': used})
 
-def qh_table(qh):
+#====== FIX
+# fix 1: hard = {node: (Q(He0)/Q(H), Q(He+)/Q(H))}, tabulated as 'hard_he0', 'hard_he1' like 'Qh'
+def qh_table(qh, hard=None):
+#======= END FIX
     """
     Constructs a 2D table of Q_H values as a function of tau and Z_star based on the input
     dictionary and verifies consistency of Q_H values within each node.
@@ -156,7 +199,16 @@ def qh_table(qh):
         if np.ptp(v) > 1e-5 * v.mean():
             raise ValueError(f"[hii-train] node (tau={t:g}, Z={z:g}): Q_H values are not consistent (not constant between points)")
         Q[taus.index(t), Zs.index(z)] = v.mean()
-    return {'log_tau': np.log10(taus), 'Z': np.asarray(Zs), 'Qh': Q}
+    #====== FIX
+    # fix 1
+    out = {'log_tau': np.log10(taus), 'Z': np.asarray(Zs), 'Qh': Q}
+    if hard:
+        H = np.full((2,) + Q.shape, np.nan)
+        for (t, z), v in hard.items():
+            H[:, taus.index(t), Zs.index(z)] = v
+        out['hard_he0'], out['hard_he1'] = H
+    return out
+    #======= END FIX
 
 def parse_rel_floor(items, line_targets='ratio'):
     """
@@ -368,6 +420,41 @@ def preprocess_targets(Y, do_pca, var_target=0.9999, k_granted=None, offset=0.0,
         }
     }
 
+#====== FIX
+# fix 3: removal of the PCs the GP does not predict, and variance left out of the retained PCs
+def drop_pcs(prep, keep):
+    """
+    Preprocessing of a PCA family restricted to the PCs `keep` (indices into the trained ones). The explained
+    fraction is rescaled with the variance of the scores (score_sd^2 is the eigenvalue of each PC).
+    """
+    pca = dict(prep['pca'])
+    s2 = np.asarray(pca['score_sd'], dtype=np.float64) ** 2
+    pca['explained'] = float(pca['explained'] * s2[keep].sum() / s2.sum())
+    pca['dropped_pcs'] = [int(k) for k in np.setdiff1d(np.arange(len(s2)), keep)]
+    pca['n_components_trained'] = int(len(s2))
+    pca['components'] = np.asarray(pca['components'])[keep]
+    pca['score_sd'] = np.asarray(pca['score_sd'])[keep]
+    pca['n_components'] = int(len(keep))
+    return dict(prep, pca=pca)
+
+
+def pca_residual_var(prep, Y, chunk=4096):
+    """
+    Variance per column (in the z-scored log space of the family) not carried by the retained PCs, on the
+    training models: mean over rows of (z - mean - P z)^2, P the projector on the retained components. It
+    contains the truncation at var_target and the PCs removed by drop_pcs (their GP predicts 0 = the mean).
+    decode adds it to the propagated GP variance before converting to dex.
+    """
+    pca = prep['pca']
+    C, mean = np.asarray(pca['components']), np.asarray(pca['mean'])
+    mu, sd = np.asarray(prep['mu']), np.asarray(prep['sd'])
+    acc = np.zeros(C.shape[1])
+    for i in range(0, len(Y), chunk):     # chunks: a wavelength family is ~1e4 columns
+        z = (log_targets(Y[i:i + chunk], prep.get('offset', 0.0), prep.get('rel_floor', 0.0)) - mu) / sd - mean
+        acc += np.sum((z - (z @ C.T) @ C) ** 2, axis=0)
+    return acc / len(Y)
+#======= END FIX
+
 def init_inducing(Xz, n_out, M=512, seed=42):
     """
     Decides the initial position of the M inducing points of the SVGP for a family.
@@ -394,8 +481,11 @@ def init_inducing(Xz, n_out, M=512, seed=42):
     Z = torch.as_tensor(km.cluster_centers_, dtype=torch.float32)   # tensor [M x D]
     return Z.unsqueeze(0).repeat(n_out, 1, 1)                       # [n_out x M x D]
 
+#====== FIX
+# fix 5: select = (Xz, Yz) of the calibration clouds, on which the best checkpoint is chosen
 def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_every=10,
-                 progress=None, cost=1.0):
+                 progress=None, cost=1.0, select=None):
+#======= END FIX
     """
     Trains all Gaussian Processes (GPs) of a family together using a batched model composed of independent Stochastic Variational
     Gaussian Processes (SVGP). This function facilitates the simultaneous training of multiple output dimensions by leveraging
@@ -414,7 +504,7 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_
         batch: int
             The batch size used for sampling mini-batches during training.
         lr: float
-            The learning rate for the AdamW optimizer.
+            The initial learning rate of the Adam optimizer (cosine schedule down to lr * EMUL.LR_MIN_FACTOR).
         device: str
             The computation device on which the training is conducted (e.g., "cpu" or "cuda").
         seed: int, optional
@@ -423,6 +513,9 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_
             The holdout in the training space, scored every eval_every epochs (TE lines).
         progress: tqdm, optional
             Progress bar of the whole training, advanced by `cost` at each epoch.
+        select: (Xz_sel, Yz_sel), optional
+            Calibration clouds: every eval_every epochs the rmse_z on them is computed and the model of the best
+            evaluation is returned (not the last epoch). Never the holdout, which stays an independent check.
 
     Returns:
         tuple:
@@ -431,6 +524,8 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_
                 - likelihood: The trained GaussianLikelihood corresponding to the batched SVGP model.
                 - hist: A list containing the history of ELBO losses recorded per epoch.
                 - epoch_times: A list of times taken to complete each epoch during training.
+                - test_hist: holdout scores every eval_every epochs.
+                - best_epoch: epoch of the returned model (chosen on `select`; the last epoch without it).
 
     """
     torch.manual_seed(seed)
@@ -445,7 +540,16 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_
     likelihood.train()
 
     mll = gpytorch.mlls.VariationalELBO(likelihood, model, num_data=Xt.size(0)) # what maximize (ELBO)
-    opt = torch.optim.AdamW(list(model.parameters()) + list(likelihood.parameters()), lr=lr) # optimizer
+    #====== FIX
+    # fix 5: Adam instead of AdamW. AdamW has weight_decay = 0.01 by default, which shrinks EVERY parameter towards 0
+    # (variational mean and Cholesky, inducing points, raw lengthscale/outputscale/noise): with lr 5e-3 for 8000 steps a
+    # factor ~exp(-0.4) where the gradient does not resist. A GP has no reason for it.
+    # was: opt = torch.optim.AdamW(list(model.parameters()) + list(likelihood.parameters()), lr=lr)
+    opt = torch.optim.Adam(list(model.parameters()) + list(likelihood.parameters()), lr=lr) # optimizer
+    # cosine decay of the learning rate over the epochs: large steps first, fine convergence at the end
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(epochs, 1), eta_min=lr * EMUL.LR_MIN_FACTOR)
+    best = None   # (rmse_z on select, epoch, model state, likelihood state)
+    #======= END FIX
 
     ds = torch.utils.data.TensorDataset(Xt, Yt)
     loader = torch.utils.data.DataLoader(ds, batch_size=batch, shuffle=True) # mini batch of batch points
@@ -469,9 +573,20 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_
             tot += loss.item()
         hist.append(tot / max(len(loader), 1))
         epoch_times.append(time.perf_counter() - _t0)
-        if test is not None and ((epoch + 1) % eval_every == 0 or epoch == epochs - 1):
-            test_hist.append({'epoch': epoch+1, **holdout_scores(model, test[0], test[1], device)})
+        #====== FIX
+        # fix 5: learning rate schedule, and best checkpoint on the calibration clouds
+        sched.step()
+        evaluate = (epoch + 1) % eval_every == 0 or epoch == epochs - 1
+        if select is not None and evaluate:
+            sc = holdout_scores(model, select[0], select[1], device, likelihood=likelihood)['rmse_z']
             model.train()
+            if best is None or sc < best[0]:
+                best = (sc, epoch + 1, copy.deepcopy(model.state_dict()), copy.deepcopy(likelihood.state_dict()))
+        # fix 2: holdout scores (cov68) with the likelihood noise in the variance
+        if test is not None and evaluate:
+            test_hist.append({'epoch': epoch+1, **holdout_scores(model, test[0], test[1], device, likelihood=likelihood)})
+            model.train()
+        #======= END FIX
             tqdm.write(f"[hii-train] TE epoch {epoch + 1:4d}/{epochs}  rmse_z {test_hist[-1]['rmse_z']:.4f}"
                        f" (constant predictor {ref:.4f}, good << it)  explained {100 * test_hist[-1]['explained']:.1f}%"
                        f"  cov68 {test_hist[-1]['cov68']:.3f} (calibrated 0.68)")
@@ -480,7 +595,16 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_
         if progress is not None:
             progress.update(cost)
 
-    return model, likelihood, hist, epoch_times, test_hist
+    #====== FIX
+    # fix 5: back to the best checkpoint
+    best_epoch = epochs
+    if best is not None:
+        model.load_state_dict(best[2])
+        likelihood.load_state_dict(best[3])
+        best_epoch = best[1]
+        tqdm.write(f"[hii-train] best checkpoint on the calibration clouds: epoch {best_epoch} (rmse_z {best[0]:.4f})")
+    return model, likelihood, hist, epoch_times, test_hist, best_epoch
+    #======= END FIX
 
 def report_per_pc(fam, model, Xz_te, Yz_te, score_sd, device='cpu'):
     """
@@ -620,6 +744,12 @@ def main():
     ap.add_argument('--calib-quantile', type=float, default=EMUL.CALIB_QUANTILE, help='quantile q of |r| used for the '
                     'scale, s_k = quantile_q(|r|) / Phi^-1((1+q)/2): 0.95 calibrates the tails (cov95), 0.5 is '
                     'the median estimator (cov68) (default: %(default)g)')
+    #====== FIX
+    # fix 1
+    ap.add_argument('--no-sed-inputs', action='store_true', help='do not append the SED descriptors of the node '
+                    f'{EMUL.SED_INPUT_KEYS_HII} to the inputs of the GP (default: appended when the corpus has the '
+                    'incident SED)')
+    #======= END FIX
     ap.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto', help='device '
                                                                                       'to use (default: auto)')
     args=ap.parse_args()
@@ -630,6 +760,16 @@ def main():
     device = (('cuda' if torch.cuda.is_available() else 'cpu') if args.device == 'auto' else args.device)
     X, Y, meta = load_corpus(args.corpus)
     print(f"[hii-train] {meta['n_used']} converged models, {X.shape[1]} input, device={device}")
+    #====== FIX
+    # fix 1: SED descriptors of the node appended to the inputs (X keeps the physical inputs in the first columns)
+    sed_inputs = 'hard_he0' in meta['qh_unit_nodes'] and not args.no_sed_inputs
+    if sed_inputs:
+        X = augment_inputs(meta['qh_unit_nodes'], list(EMUL.INPUT_KEYS_HII), X)
+        print(f"[hii-train] SED inputs {EMUL.SED_INPUT_KEYS_HII} appended: {X.shape[1]} inputs of the GP")
+    else:
+        print("[hii-train] no SED inputs (" + ("--no-sed-inputs" if args.no_sed_inputs else
+              "corpus without incident/sed_per_Msun") + ")")
+    #======= END FIX
 
     # train-test
     te = holdout_split(meta['keys'], X, EMUL.AXES_DOMINANT_HII, args.holdout_frac, args.holdout_seed)
@@ -673,6 +813,11 @@ def main():
                          'log10_inputs': list(EMUL.LOG10_INPUTS_HII), 'qh_unit_nodes': meta['qh_unit_nodes'],
                          'pumping_removed': meta['pumping_removed'], 'ard_num_dims': X.shape[1],
                          'n_inducing': args.inducing, 'n_inducing_lines': args.inducing_lines}
+    #====== FIX
+    # fix 1: SED descriptors in the inputs; fix 2: predictive variance = latent + likelihood noise
+    extras['sed_inputs'] = list(EMUL.SED_INPUT_KEYS_HII) if sed_inputs else []
+    extras['predictive_noise'] = True
+    #======= END FIX
 
     # families of emulators (name, PCA, offset)
     FAM = EMUL.FAMILIES_HII
@@ -720,26 +865,62 @@ def main():
         tqdm.write(f"[hii-train] Training {fam}: {Yz.shape[1]} output, M={M_fam}"
                 + (f" (PCA {prep['pca']['n_components']} PC, "f"{prep['pca']['explained']:.4f} var)" if prep['pca'] else ""))
 
-        m, lik, hist, ep_t, te_hist = train_family(Xz[tr], Yz, M_fam, args.epochs, args.batch_size, args.lr, device, args.seed,
-                                                   test=(Xz[te], Yz_te), eval_every=args.eval_every,
-                                                   progress=pbar, cost=cost[fam])
+        #====== FIX
+        # fix 5: calibration clouds encoded BEFORE the training, to choose the best checkpoint on them
+        Yz_cal = encode_targets(prep, Y[fam][cal], log_scale=log_scale[cal] if lr_kw else None) if cal.any() else None
+        m, lik, hist, ep_t, te_hist, best_epoch = train_family(Xz[tr], Yz, M_fam, args.epochs, args.batch_size, args.lr,
+                                                   device, args.seed, test=(Xz[te], Yz_te), eval_every=args.eval_every,
+                                                   progress=pbar, cost=cost[fam],
+                                                   select=(Xz[cal], Yz_cal) if Yz_cal is not None else None)
+        extras[f'{fam}_best_epoch'] = best_epoch
+        #======= END FIX
         epoch_times.extend(ep_t)
 
         if prep['pca'] is not None:
             extras[f'{fam}_holdout_per_pc'] = report_per_pc(fam, m, Xz[te], Yz_te, prep['pca']['score_sd'], device)
 
+        #====== FIX
+        # fix 3: PCs that the GP does not predict better than their mean (explained <= EMUL.PC_MIN_EXPLAINED on the
+        # calibration clouds, never on the holdout) are removed: they cost M^2 each in file size and evaluation time
+        # and their prediction is ~0 anyway. Their variance, and the truncation at var_target, become the residual
+        # variance per wavelength that decode adds to the sigma (before: sigma of the retained PCs only).
+        if prep['pca'] is not None:
+            if Yz_cal is not None:
+                _, expl_cal = per_output_scores(m, Xz[cal], Yz_cal, device)
+                keep = np.flatnonzero(expl_cal > EMUL.PC_MIN_EXPLAINED)
+                if 0 < len(keep) < len(expl_cal):
+                    m, lik = select_outputs(m, lik, keep)
+                    prep = drop_pcs(prep, keep)
+                    Yz, Yz_te, Yz_cal = Yz[:, keep], Yz_te[:, keep], Yz_cal[:, keep]
+                    tqdm.write(f"[hii-train] {fam}: removed {len(expl_cal) - len(keep)} of {len(expl_cal)} PCs "
+                               f"(explained <= {EMUL.PC_MIN_EXPLAINED:g} on the calibration clouds): "
+                               f"{prep['pca']['dropped_pcs']}")
+            prep['pca']['resid_var'] = pca_residual_var(prep, Y[fam][tr])
+            tqdm.write(f"[hii-train] {fam}: residual variance outside the PCs, median "
+                       f"{np.median(prep['pca']['resid_var']):.2e}, max {np.max(prep['pca']['resid_var']):.2e} (z units)")
+        #======= END FIX
+
         # post-hoc sigma calibration: s_k per output from the calibration clouds .
         # Stored in the preprocessing, applied by fast_predict as var -> s_k^2 var.
         # The holdout coverage is recorded before and after
         if fam in cal_fams:
-            Yz_cal = encode_targets(prep, Y[fam][cal], log_scale=log_scale[cal] if lr_kw else None)
-            s = calibration_scale(m, Xz[cal], Yz_cal, device, s_min=EMUL.SIGMA_SCALE_MIN, quantile=args.calib_quantile)
+            #====== FIX
+            # fix 2: calibration on latent + likelihood noise, the variance that fast_predict returns
+            # (Yz_cal already encoded before the training, see fix 5)
+            # s_min: latent + noise can be too wide, so the calibration may also narrow sigma
+            s = calibration_scale(m, Xz[cal], Yz_cal, device, s_min=EMUL.SIGMA_SCALE_MIN_NOISE,
+                                  quantile=args.calib_quantile, likelihood=lik)
             prep['sigma_scale'] = s
-            before = coverage_scores(m, Xz[te], Yz_te, device=device)
-            after = coverage_scores(m, Xz[te], Yz_te, scale=s, device=device)
+            before = coverage_scores(m, Xz[te], Yz_te, device=device, likelihood=lik)
+            after = coverage_scores(m, Xz[te], Yz_te, scale=s, device=device, likelihood=lik)
+            #======= END FIX
             extras[f'{fam}_sigma_calibration'] = {
                 's_median': float(np.median(s)), 's_max': float(s.max()),
-                'n_clipped': int(np.sum(s <= EMUL.SIGMA_SCALE_MIN)),
+                #====== FIX
+                # fix 2: clip at SIGMA_SCALE_MIN_NOISE; n_shrunk = outputs whose sigma was narrowed (s_k < 1)
+                'n_clipped': int(np.sum(s <= EMUL.SIGMA_SCALE_MIN_NOISE)), 's_min': float(np.min(s)),
+                'n_shrunk': int(np.sum(s < 1.0)),
+                #======= END FIX
                 'holdout_cov68_before': before['cov68'], 'holdout_cov68_after': after['cov68'],
                 'holdout_cov95_before': before['cov95'], 'holdout_cov95_after': after['cov95'],
                 'holdout_out5_before': before['out5'], 'holdout_out5_after': after['out5']}
@@ -806,11 +987,22 @@ def main():
                                            for k, do_pca, _ in FAM if do_pca}},
                 # holdout.final is the RAW sigma (during training); the calibrated one is below
                 'sigma_calibration': {'file': calib_path, 'frac': args.calib_frac, 'n_calib': int(cal.sum()),
-                    'families': list(cal_fams), 's_min': EMUL.SIGMA_SCALE_MIN,
+                    #====== FIX
+                    # fix 2
+                    'families': list(cal_fams), 's_min': EMUL.SIGMA_SCALE_MIN_NOISE,
+                    #======= END FIX
                     'estimator': f"quantile_{args.calib_quantile:g}(|r|) / Phi^-1((1+q)/2)",
                     'quantile': args.calib_quantile,
                     'per_family': {f: extras[f'{f}_sigma_calibration'] for f in cal_fams}},
                 'input_keys': list(EMUL.INPUT_KEYS_HII),
+                #====== FIX
+                # fix 1, 2, 3, 5: what the artifact contains (x_min/x_max below include the SED inputs, last columns)
+                'sed_inputs': extras['sed_inputs'],
+                'predictive_noise': extras['predictive_noise'],
+                'best_epoch': {k: extras[f'{k}_best_epoch'] for k, _, _ in FAM},
+                'dropped_pcs': {k: extras[f'{k}_prep']['pca'].get('dropped_pcs', [])
+                                for k, do_pca, _ in FAM if do_pca},
+                #======= END FIX
                 'x_min': X[tr].min(0).tolist(),
                 'x_max': X[tr].max(0).tolist(),
                 'n_inducing': args.inducing,

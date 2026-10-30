@@ -15,7 +15,10 @@ class BatchedSVGPS(ApproximateGP):
     D = n_lines or n_components_PCA (for continuum)
     """
 
-    def __init__(self, inducing_points, d_out, ard_dims=None):
+    #====== FIX
+    # fix 5: mean='linear' (default for new trainings) or 'constant' (artifacts trained before the fix)
+    def __init__(self, inducing_points, d_out, ard_dims=None, mean='linear'):
+    #======= END FIX
         """
         The ard_dims (Automatic Relevance Determination dimensions)
         is deduced from the number of inducing points
@@ -38,7 +41,18 @@ class BatchedSVGPS(ApproximateGP):
         # for the ELBO. With learn_inducing_locations=True, the inducing points are optimized during training
         var_strat = VariationalStrategy(self, inducing_points, var_dist, learn_inducing_locations=True)
         super().__init__(var_strat) # need to create the SVGP object
-        self.mean_module = gpytorch.means.ConstantMean(batch_shape=bs) # mean of the prior (trainable) one per output
+        #====== FIX
+        # fix 5: linear prior mean, m(x) = w . x + b, one per output. The global trends (logU, Z, F_star...) go into
+        # the mean and the kernel models only the residuals. Weights start at 0 (gpytorch draws them from N(0, 1),
+        # which on standardized inputs and targets is a random slope of order 1 per input).
+        if mean == 'linear':
+            self.mean_module = gpytorch.means.LinearMean(ard_dims, batch_shape=bs)
+            with torch.no_grad():
+                self.mean_module.weights.zero_()
+                self.mean_module.bias.zero_()
+        else:
+            self.mean_module = gpytorch.means.ConstantMean(batch_shape=bs) # mean of the prior (trainable) one per output
+        #======= END FIX
         # Covariance between points (Kernel):
         # 1) Computation of weighted distance using ARD lengthscales: r = sqrt(sum((\theta_i - \theta'_i)^2 / l_i^2))
         # 2) Covariance used in the kernel (MaternKernel): k(r) = (1 + sqrt(5)*r + 5*r^2/3) * exp(-sqrt(5)*r)
@@ -87,8 +101,30 @@ def load_artifacts(paths):
 
     return fam, ex
 
+#====== FIX
+# fix 3: keep only some outputs of a trained batched SVGP (and of its likelihood)
 @torch.no_grad()
-def predictive_cache(gp):
+def select_outputs(model, likelihood, idx):
+    """
+    New BatchedSVGPS and GaussianLikelihood with only the outputs `idx` of a trained family, same parameters.
+    Every tensor of the state dicts with leading dimension d (the batch of outputs) is indexed; scalars
+    (constraint bounds, flags of the variational strategy) are copied as they are.
+    """
+    Z = model.variational_strategy.inducing_points
+    d, dev = Z.shape[0], Z.device
+    idx = torch.as_tensor(np.asarray(idx), dtype=torch.long, device=dev)
+    cut = lambda sd: {k: (v[idx] if v.dim() > 0 and v.shape[0] == d else v) for k, v in sd.items()}
+    sd = cut(model.state_dict())
+    mean = 'linear' if isinstance(model.mean_module, gpytorch.means.LinearMean) else 'constant'
+    new = BatchedSVGPS(sd['variational_strategy.inducing_points'].clone(), len(idx), Z.shape[-1], mean=mean).to(dev)
+    new.load_state_dict(sd)
+    lik = gpytorch.likelihoods.GaussianLikelihood(batch_shape=torch.Size([len(idx)])).to(dev)
+    lik.load_state_dict(cut(likelihood.state_dict()))
+    return new, lik
+#======= END FIX
+
+@torch.no_grad()
+def predictive_cache(gp, likelihood=None):
     """
     Computes pre-computed quantities for variational strategy prediction in a GP model
     under a whitened approximation. These quantities are independent of the input data x
@@ -134,10 +170,22 @@ def predictive_cache(gp):
     Q = Linv.transpose(-1, -2) @ (Ls @ Ls.transpose(-1,-2) - eye) @ Linv                # L^-T (S - I) L^-1
     k = gp.covar_module                                                                 # kernel
 
-    return {'Z': Z, 'A': A.float(), 'Q' : Q.float(), 'jitter' : float(vs.jitter_val),
-            'c' : gp.mean_module.constant.detach().reshape(-1),
-            'outputscale' : k.outputscale.detach().reshape(-1),
-            'lengthscale' : k.base_kernel.lengthscale.detach()}
+    #====== FIX
+    # fix 5: linear mean -> 'c' is the bias and 'w' (d, D) the weights; constant mean (old artifacts) -> 'c' only
+    mm = gp.mean_module
+    linear = isinstance(mm, gpytorch.means.LinearMean)
+    out = {'Z': Z, 'A': A.float(), 'Q' : Q.float(), 'jitter' : float(vs.jitter_val),
+           'c' : (mm.bias if linear else mm.constant).detach().reshape(-1),
+           'outputscale' : k.outputscale.detach().reshape(-1),
+           'lengthscale' : k.base_kernel.lengthscale.detach()}
+    if linear:
+        out['w'] = mm.weights.detach()[..., 0]                                          # (d, D)
+    # fix 2: noise of the likelihood, added to the predictive variance by fast_predict. CLOUDY is deterministic,
+    # so this "noise" is the misfit of the GP on the training points: the error of the emulator, part of its sigma.
+    if likelihood is not None:
+        out['noise'] = likelihood.noise.detach().reshape(-1)                            # (d,)
+    return out
+    #======= END FIX
 
 def fast_predict(cache, x):
     """
@@ -150,6 +198,14 @@ def fast_predict(cache, x):
     K = cache['outputscale'][:, None, None] * (1.0 + s + s * s / 3.0) * torch.exp(-s)       # kernel between x and Z
     mean = torch.einsum('dnm,dm->dn', K, cache['A']) + cache['c'][:, None]
     var = (cache['outputscale'][:, None] + cache['jitter'] + torch.einsum('dnm,dmk,dnk->dn', K, cache['Q'], K))
+    #====== FIX
+    # fix 5: linear part of the prior mean, w . x
+    if 'w' in cache:
+        mean = mean + cache['w'] @ x.T
+    # fix 2: likelihood noise (before the calibration scale, which was estimated on latent + noise)
+    if 'noise' in cache:
+        var = var + cache['noise'][:, None]
+    #======= END FIX
     # Post-hoc sigma calibratio: when the artifact carries
     # a scale s_k per output, the latent variance becomes s_k^2 var_k, i.e. sigma_k -> s_k sigma_k.
     # The mean is untouched. Applied here, in the one place every prediction goes through
@@ -302,6 +358,11 @@ def decode(prep, mean, var, log_scale=None):
             mu_z, var_z = mu_z * s[:, None], var_z * s ** 2
         y = pca_decode(mu_z, C, pca['mean'], prep['mu'], prep['sd'])    # (N, n_wl)
         var_z = _matmul(var_z, C ** 2)                                  # (N, n_wl)
+        #====== FIX
+        # fix 3: variance not carried by the retained PCs (truncation + PCs removed after training), per wavelength
+        if 'resid_var' in pca:
+            var_z = var_z + np.asarray(pca['resid_var'])
+        #======= END FIX
     elif prep.get('ratio') is not None:
         if log_scale is None:
             raise ValueError("[svgp] lines in ratio form: decode needs log_scale (log10 Q_H (1 - f_esc))")

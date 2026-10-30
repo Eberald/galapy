@@ -182,7 +182,10 @@ def encode_targets(prep, Y, log_scale=None):
     return s / np.asarray(pca['score_sd']) if 'score_sd' in pca else s
 
 
-def latent_predict(model, Xz, device='cpu', chunk=1024):
+#====== FIX
+# fix 2: likelihood (optional) -> its noise is added to the variance (prediction of y, not of the latent f)
+def latent_predict(model, Xz, device='cpu', chunk=1024, likelihood=None):
+#======= END FIX
     """
     Compute the mean and variance of the a posteriori distribution of a Gaussian Process (GP) for each input
     point, excluding likelihood noise. The input points are standardized before computation. The function
@@ -212,10 +215,19 @@ def latent_predict(model, Xz, device='cpu', chunk=1024):
             post = model(torch.as_tensor(Xz[i:i + chunk], dtype=torch.float32, device=device))  # model posterior
             mu.append(post.mean.cpu().numpy())
             var.append(post.variance.cpu().numpy())
-    return np.concatenate(mu, axis=1).T, np.concatenate(var, axis=1).T
+    #====== FIX
+    # fix 2
+    var = np.concatenate(var, axis=1).T
+    if likelihood is not None:
+        var = var + likelihood.noise.detach().reshape(-1).cpu().numpy()
+    return np.concatenate(mu, axis=1).T, var
+    #======= END FIX
 
 
-def holdout_scores(model, Xz, Yz, device='cpu', chunk=1024):
+#====== FIX
+# fix 2: likelihood passed to latent_predict
+def holdout_scores(model, Xz, Yz, device='cpu', chunk=1024, likelihood=None):
+#======= END FIX
     """
     Compute performance metrics for a predictive model on a holdout dataset.
     This function evaluates prediction error, coverage, and explained variance
@@ -237,7 +249,10 @@ def holdout_scores(model, Xz, Yz, device='cpu', chunk=1024):
     # no holdout case (no test set)
     if len(Xz) == 0:
         return {'rmse_z': float('nan'), 'cov68': float('nan'), 'explained': float('nan')}
-    mu, var = latent_predict(model, Xz, device, chunk)
+    #====== FIX
+    # fix 2
+    mu, var = latent_predict(model, Xz, device, chunk, likelihood)
+    #======= END FIX
     Yz = np.asarray(Yz)
     r = Yz - mu
     sd = np.sqrt(var)
@@ -281,7 +296,10 @@ def per_output_scores(model, Xz, Yz, device='cpu', chunk=1024):
     return np.sqrt(mse), 1.0 - mse / ref
 
 
-def calibration_scale(model, Xz, Yz, device='cpu', s_min=1.0, chunk=1024, quantile=None):
+#====== FIX
+# fix 2: likelihood passed to latent_predict
+def calibration_scale(model, Xz, Yz, device='cpu', s_min=1.0, chunk=1024, quantile=None, likelihood=None):
+#======= END FIX
     """
     Post-hoc calibration of the predictive sigma of a GP family: one scale factor s_k per output.
 
@@ -328,13 +346,19 @@ def calibration_scale(model, Xz, Yz, device='cpu', s_min=1.0, chunk=1024, quanti
     q = EMUL.CALIB_QUANTILE if quantile is None else float(quantile)
     if not 0.0 < q < 1.0:
         raise ValueError(f"calibration_scale: quantile {q} must be in (0, 1)")
-    mu, var = latent_predict(model, Xz, device, chunk)                  # prediction
+    #====== FIX
+    # fix 2
+    mu, var = latent_predict(model, Xz, device, chunk, likelihood)      # prediction
+    #======= END FIX
     r = (np.asarray(Yz) - mu) / np.sqrt(np.maximum(var, 1e-30))         # normalised residuals
     s = np.quantile(np.abs(r), q, axis=0) / NormalDist().inv_cdf(0.5 * (1.0 + q))
     return np.maximum(s, s_min)                                         # clip, with s_min=1 never narrowed sigma
 
 
-def coverage_scores(model, Xz, Yz, scale=None, device='cpu', chunk=1024):
+#====== FIX
+# fix 2: likelihood passed to latent_predict
+def coverage_scores(model, Xz, Yz, scale=None, device='cpu', chunk=1024, likelihood=None):
+#======= END FIX
     """
     Calculates coverage metrics for predictions and normalized residuals of a model.
 
@@ -359,7 +383,10 @@ def coverage_scores(model, Xz, Yz, scale=None, device='cpu', chunk=1024):
             - 'out5': Fraction of residuals greater than 5 standard deviations.
     """
     # predictions and normalized residuals
-    mu, var = latent_predict(model, Xz, device, chunk)
+    #====== FIX
+    # fix 2
+    mu, var = latent_predict(model, Xz, device, chunk, likelihood)
+    #======= END FIX
     r = (np.asarray(Yz) - mu) / np.sqrt(np.maximum(var, 1e-30))
     # application of calibration (optional)
     if scale is not None:
@@ -639,7 +666,10 @@ def predict_gp(emu, X, chunk=1024):
     import torch
     from galapy.spectroscopy.svgp import fast_predict
     mu, var = {}, {}
-    x = (torch.as_tensor(X, dtype=torch.float32) - emu.x_mean) / emu.x_std # normalise input
+    #====== FIX
+    # fix 1: the emulator appends the SED descriptors (if trained with them) and normalises
+    x = emu.standardize(X).cpu() if hasattr(emu, 'standardize') else (torch.as_tensor(X, dtype=torch.float32) - emu.x_mean) / emu.x_std
+    #======= END FIX
     with torch.no_grad():
         for fam, cache in emu.cache.items():
             m, v = zip(*(fast_predict(cache, x[i:i + chunk]) for i in range(0, len(x), chunk))) #(m1,v2) -> (m1, m2..), (v1, v2..)
@@ -854,7 +884,10 @@ def calibration(ctx, rows=None, families=None, alpha=0.05):
         ok = lo <= c95 <= hi and c68 >= EMUL.COV68_MIN
         det = {'cov68': round(c68, 4), 'cov95': round(c95, 4), 'out5': round(float(np.mean(np.abs(r) > 5)), 4),
                'ks_min_p': float(np.nanmin(p)) if np.isfinite(p).any() else None, 'pass': ok}
-        if f in noise:
+        #====== FIX
+        # fix 2: the noise is already in v when the emulator adds it to the predictive variance
+        if f in noise and 'noise' not in ctx.emu.cache.get(f, {}):
+        #======= END FIX
             rn = (y - m) / np.sqrt(v + noise[f])
             det['cov68_with_noise'] = float(np.mean(np.abs(rn) <= 1))
         per[f] = det
@@ -945,7 +978,10 @@ def ood_growth(ctx, n_probe=20, steps=(0.25, 0.5, 1.0, 2.0)):
         """
         compute the median of the latent sigma for a given set of points
         """
-        x = (torch.as_tensor(X, dtype=torch.float32) - emu.x_mean) / emu.x_std
+        #====== FIX
+        # fix 1
+        x = emu.standardize(X).cpu() if hasattr(emu, 'standardize') else (torch.as_tensor(X, dtype=torch.float32) - emu.x_mean) / emu.x_std
+        #======= END FIX
         with torch.no_grad():
             return {f: np.median(np.sqrt(fast_predict(c, x)[1].numpy()), axis=0)
                     for f, c in emu.cache.items()}
@@ -1545,8 +1581,12 @@ def ard(ctx, min_fraction=0.9, max_ls_ratio=10.0):
     keys = ctx.emu.input_keys
     lo = np.asarray(ctx.meta.get('x_min') or ctx.X.min(0), float)
     hi = np.asarray(ctx.meta.get('x_max') or ctx.X.max(0), float)
-    ls = (ctx.emu.cache['lines']['lengthscale'][:, 0, :].numpy() * ctx.emu.x_std.numpy()
-          / np.where(hi > lo, hi - lo, 1.0))
+    #====== FIX
+    # fix 1: only the physical inputs (the SED descriptors, if any, are the last columns)
+    n = len(keys)
+    ls = (ctx.emu.cache['lines']['lengthscale'][:, 0, :n].numpy() * ctx.emu.x_std.numpy()[:n]
+          / np.where(hi[:n] > lo[:n], hi[:n] - lo[:n], 1.0))
+    #======= END FIX
     cat = ctx.lines()
     active = [keys.index(k) for k in ('logU', 'lognH_HII', 'log_zeta_O')]
     f_star = keys.index('F_star')
