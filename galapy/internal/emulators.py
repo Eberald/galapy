@@ -12,23 +12,21 @@ LOG10_INPUTS_HII = ('tau_SSP', 'Z_star')
 # axes that are dominant in the training, for PCA more impact (stratification of holdout and calibration clouds)
 AXES_DOMINANT_KEYS_HII = ('logU', 'lognH_HII', 'log_zeta_O')
 AXES_DOMINANT_HII = tuple(INPUT_KEYS_HII.index(k) for k in AXES_DOMINANT_KEYS_HII)
-#====== FIX
-# fix 1: descriptors of the ionizing SED of the SSP node, appended to the inputs of the GP (hii_emulator.augment_inputs).
-# tau_SSP lives on 8 nodes and the ionizing SED changes by orders of magnitude between them (5 -> 10 Myr): a stationary
-# kernel on log tau cannot follow it (learned lengthscale ~0.5 sigma, shorter than the node spacing). Line ratios depend
-# on the SHAPE of the SED, which these features give directly: log10 Q_H per Msun, log10 Q(He0)/Q(H), log10 Q(He+)/Q(H).
+# descriptors of the ionizing SED of the SSP node, appended to the inputs of the GP (hii_emulator.augment_inputs).
+# tau_SSP lives on 8 nodes and the ionizing SED changes by orders of magnitude between them (5 -> 10 Myr).
+# Line ratios depend on the SHAPE of the SED, which these features give directly:
+# log10 Q_H per Msun, log10 Q(He0)/Q(H), log10 Q(He+)/Q(H).
 SED_INPUT_KEYS_HII = ('log_Qh_unit', 'log_hard_he0', 'log_hard_he1')
 SED_EDGES_A = (504.26, 227.84)  # ionization edges of He0 (24.587 eV) and He+ (54.418 eV), Angstrom (12398.42 / E[eV])
 # Floor of the hardness ratios: He II 4686 / H-beta ~ 2 Q(He+)/Q(H), so below 1e-6 He II is under RATIO_FLOOR (1e-5) and
 # the exact value no longer matters; without a floor the old nodes reach 1e-18 and stretch the feature over 18 dex.
 SED_HARDNESS_FLOOR = 1e-6
-#======= END FIX
 
 #=========================== HII: OUTPUT FAMILIES ===========================
 FUV_N_OFFSET = 1e-6  # N_FUV >= 0, can be zero and in this case we add a small offset to avoid log(0)
 # (name, compressed with PCA, offset added before the log10) of every family trained on HII
 FAMILIES_HII = (('lines', False, 0.0), ('cont', True, 0.0), ('grain', True, 0.0), ('trans', True, 0.0),
-                ('dust', False, 0.0), ('fuv_t', False, 0.0), ('fuv_n', False, FUV_N_OFFSET))
+                ('dust', False, 0.0), ('fuv_t', False, 0.0), ('fuv_n', False, FUV_N_OFFSET), ('energy', False, 0.0))
 WAVE_FAMS = ('cont', 'grain', 'trans')              # families defined on the continuum wavelength grid
 VECTOR_FAMS = ('lines', 'cont', 'grain', 'trans')   # families that get the relative floor
 
@@ -61,6 +59,33 @@ REL_FLOOR_ABS_LINES = 1e-10  # relative floor of the lines with --line-targets a
 # Families not listed have no ionizing floor (their rel_floor holds at every wavelength).
 REL_FLOOR_LYC = {'cont': 1e-5}
 SD_FLOOR = 0.01     # minimum sd (dex) of the z-score: near-constant column otherwise blow numerical noise up to unit variance and inflate the PCA rank
+# the transmission is emulated as log10 tau, tau = -ln T clipped to TRANS_TAU_RANGE, decoded as T = exp(-tau): T is
+# in (0, 1] by construction. tau_min = 1e-3 -> T <= 0.999
+# tau_max = ln 1e10 -> T >= 1e-10. With ln 1e5 the opaque clouds (f_esc < 0.1)
+TRANS_TAU_RANGE = (1e-3, math.log(1e10))
+TRANS_TARGET = 'tau'         # for trans_target function in svgp.py
+# memory of the training on large dataset. The PCA of the wavelength
+# families (cont, grain, trans) is fitted on at most PCA_FIT_MAX training models drawn at random (--pca-fit-max of
+# galapy-train-hii, 0 = all); mean, sd and the PC scores of every model are computed by chunks of PCA_CHUNK rows.
+PCA_FIT_MAX = 100000
+PCA_CHUNK = 4096
+# memory check of galapy-train-hii (estimate_train_memory): float64 copies of the PCA rows alive at the peak, fixed
+# overhead (bytes), fraction of the available memory the estimate may reach. Measured on the 50k dataset
+MEM_PCA_COPIES = 5.0
+MEM_OVERHEAD = 4 * 2 ** 30
+MEM_SAFETY = 0.85
+# floor of the absorbed fraction and range of the exponent k of the rescaling of the
+# transmission, T -> T^k, that gives the absorbed fraction emulated by energy (hii_emulator.apply_constraints)
+#(if balance imposed as energy rescale)
+ENERGY_A_FLOOR = 1e-10
+ENERGY_K_RANGE = (1e-2, 1e2)
+ENERGY_RESCALE = False
+# below 912 A the continuum is trained with the floor REL_FLOOR_LYC * peak (CLOUDY zeros included), so the
+# emulator returns that floor where CLOUDY has no flux . At decode the cells below LYC_ZERO_FACTOR * floor go to 0.
+LYC_ZERO_FACTOR = 1.5
+# a line whose emulated L / H-beta is below LINE_FLOOR_FLAG_FACTOR * ratio floor is at the floor of the training
+#  and is flagged as not reliable.
+LINE_FLOOR_FLAG_FACTOR = 1.5
 
 #=============================== LINES: RATIO FORM ===============================
 RATIO_REF = ('h 1', 4862.7)  # reference line of the ratio form (species, vacuum wavelength in Angstrom): H-beta
@@ -80,14 +105,10 @@ ONE_MINUS_FESC_FLOOR = 1e-4
 CALIB_FRAC = 0.05   # default fraction of the CLOUDS kept out of training to estimate the scale s_k of sigma
 CALIB_FAMS_HII = tuple(f for f, _, _ in FAMILIES_HII)  # default: every family calibrated
 SIGMA_SCALE_MIN = 1.0  # lower clip of s_k: the calibration only widens sigma, never shrinks it
-#====== FIX
-# fix 2: lower clip of s_k when the predictive variance includes the likelihood noise (artifacts with
-# predictive_noise). The clip at 1 assumed a latent sigma that is always too narrow; latent + noise is instead
-# slightly WIDE: on the HII holdout (artifact of 250 epochs) cov95 goes from 0.63-0.93 (latent) to 0.96-0.99
-# (latent + noise), above COV95_RANGE for lines, grain, dust and fuv_n, so s_k must be allowed below 1. After a
-# short training the learned noise is still large (40 epochs: s_k 0.1-0.8); 0.1 only stops degenerate values.
+# lower clip of s_k when the predictive variance includes the likelihood noise
+# The clip at 1 assumed a latent sigma that is always too narrow; latent + noise is instead
+# slightly wide. 0.1 stop degenerate values
 SIGMA_SCALE_MIN_NOISE = 0.1
-#======= END FIX
 # Median of |r| for r ~ N(0, 1): Phi^-1(0.75). Half of a standard normal lies within +-0.6745.
 MEDIAN_ABS_STD_NORMAL = 0.6744897501960817
 # Sigma calibration and its check: s_k from the 95% quantile of |r| on the
@@ -98,13 +119,11 @@ CALIB_QUANTILE = 0.95
 COV95_RANGE = (0.93, 0.97)
 COV68_MIN = 0.60
 
-#====== FIX
-# fix 3: a PCA component whose GP explains <= PC_MIN_EXPLAINED of its variance on the calibration clouds is no better
-# than its mean (0): it is removed from the emulator and its variance goes into the residual variance of the decoding.
+# a PCA component whose GP explains <= PC_MIN_EXPLAINED of its variance on the calibration clouds is no better
+# than its mean and it is removed from the emulator and its variance goes into the residual variance of the decoding.
 PC_MIN_EXPLAINED = 0.0
-# fix 5: cosine schedule of the learning rate, from lr down to lr * LR_MIN_FACTOR at the last epoch
+# cosine schedule of the learning rate, from lr down to lr * LR_MIN_FACTOR at the last epoch
 LR_MIN_FACTOR = 0.05
-#======= END FIX
 
 #================================ VALIDATION ================================
 FRAC_5PCT_DEX = math.log10(1.05)        # "5% in log-space": RMSE of log10(pred/true)
