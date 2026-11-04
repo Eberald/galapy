@@ -898,9 +898,11 @@ def main(argv=None):
         nebular[hole] = np.exp(np.interp(np.log(wave[hole]), np.log(wave[good])[::-1], np.log(nebular[good])[::-1]))
     # energy budget `sphere` counts twice the inward half of the diffuse Lyman continuum:
     # scaled to the energy left by the emission at lambda >= 911.76 A
-    excess, absorbed_fraction, lyc_frac = reprocessing_budget(wave, col2, col3, col4)
-    if excess > 0 and lyc_frac > 0:
-        nebular[wave < CONST.LyLimit] *= max(0.0, 1.0 - excess / lyc_frac)
+    excess, absorbed_fraction, lyc_frac = reprocessing_budget(wave, col2, col3, col4) # saved for diagnostic on lyc
+    # sphere CLOUDY counts all the diffuse emission in the outward beam:  the inward half of the diffuse
+    # LyC leaves col4 unattenuated, while in a closed shell it crosses the cavity and then the whole cloud (transmission
+    # T). Emergent LyC = (outward + inward * T) ~ col4 * (1 + T)/2, cell by cell (outward ~ inward).
+    nebular[wave < CONST.LyLimit] *= 0.5 * (1.0 + support_safe_ratio(col2, col3)[wave < CONST.LyLimit])
     # Transmission
     transmission = support_safe_ratio(col2, col3)
     lam_support = wave.astype('f4')[col2 > 0]  # same values as the stored continuum/wave_grid
