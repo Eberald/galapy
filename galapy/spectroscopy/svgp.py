@@ -15,19 +15,13 @@ class BatchedSVGPS(ApproximateGP):
     D = n_lines or n_components_PCA (for continuum)
     """
 
-    #====== FIX
-    # fix 5: mean='linear' (default for new trainings) or 'constant' (artifacts trained before the fix)
     def __init__(self, inducing_points, d_out, ard_dims=None, mean='linear'):
-    #======= END FIX
-        """
-        The ard_dims (Automatic Relevance Determination dimensions)
-        is deduced from the number of inducing points
-
-        This is done for the kernel Matérn-5/2. Kernel measures how much
-        close are two points; with ard_dims there is a lenghtscale for each dimension.
-        In this way the GP can learn how much is relevant (in terms of correlation) each
-        single input parameter.
-        """
+        # The ard_dims (Automatic Relevance Determination dimensions)
+        # is deduced from the number of inducing points
+        # This is done for the kernel Matérn-5/2. Kernel measures how much
+        # close are two points; with ard_dims there is a lenghtscale for each dimension.
+        # In this way the GP can learn how much is relevant (in terms of correlation) each
+        # single input parameter.
 
         if ard_dims is None:
             ard_dims = inducing_points.size(-1)
@@ -41,10 +35,8 @@ class BatchedSVGPS(ApproximateGP):
         # for the ELBO. With learn_inducing_locations=True, the inducing points are optimized during training
         var_strat = VariationalStrategy(self, inducing_points, var_dist, learn_inducing_locations=True)
         super().__init__(var_strat) # need to create the SVGP object
-        #====== FIX
-        # fix 5: linear prior mean, m(x) = w . x + b, one per output. The global trends (logU, Z, F_star...) go into
-        # the mean and the kernel models only the residuals. Weights start at 0 (gpytorch draws them from N(0, 1),
-        # which on standardized inputs and targets is a random slope of order 1 per input).
+        # linear prior mean, m(x) = w . x + b, one per output. The global trends (logU, Z, F_star...) go into
+        # the mean and the kernel models only the residuals
         if mean == 'linear':
             self.mean_module = gpytorch.means.LinearMean(ard_dims, batch_shape=bs)
             with torch.no_grad():
@@ -52,7 +44,6 @@ class BatchedSVGPS(ApproximateGP):
                 self.mean_module.bias.zero_()
         else:
             self.mean_module = gpytorch.means.ConstantMean(batch_shape=bs) # mean of the prior (trainable) one per output
-        #======= END FIX
         # Covariance between points (Kernel):
         # 1) Computation of weighted distance using ARD lengthscales: r = sqrt(sum((\theta_i - \theta'_i)^2 / l_i^2))
         # 2) Covariance used in the kernel (MaternKernel): k(r) = (1 + sqrt(5)*r + 5*r^2/3) * exp(-sqrt(5)*r)
@@ -101,14 +92,26 @@ def load_artifacts(paths):
 
     return fam, ex
 
-#====== FIX
-# fix 3: keep only some outputs of a trained batched SVGP (and of its likelihood)
 @torch.no_grad()
 def select_outputs(model, likelihood, idx):
     """
-    New BatchedSVGPS and GaussianLikelihood with only the outputs `idx` of a trained family, same parameters.
-    Every tensor of the state dicts with leading dimension d (the batch of outputs) is indexed; scalars
-    (constraint bounds, flags of the variational strategy) are copied as they are.
+    Creates new BatchedSVGPS and GaussianLikelihood instances based on the provided indices `idx` to select
+    specific outputs from a trained model and likelihood. The new instances retain the same parameters as
+    the original ones. Tensors in the state dictionary with a leading dimension corresponding to the batch
+    of outputs are indexed by `idx`, while scalar values are copied unchanged.
+
+    Parameters:
+    model : BatchedSVGPS
+        The trained model from which the selected outputs will be extracted.
+    likelihood : GaussianLikelihood
+        The likelihood associated with the trained model that needs to be updated for the selected outputs.
+    idx : Sequence[int]
+        Indices of the outputs to retain in the new model and likelihood.
+
+    Returns:
+    Tuple[BatchedSVGPS, GaussianLikelihood]
+        A tuple containing the new BatchedSVGPS model limited to the specified outputs and the updated
+        GaussianLikelihood corresponding to those outputs.
     """
     Z = model.variational_strategy.inducing_points
     d, dev = Z.shape[0], Z.device
@@ -121,7 +124,6 @@ def select_outputs(model, likelihood, idx):
     lik = gpytorch.likelihoods.GaussianLikelihood(batch_shape=torch.Size([len(idx)])).to(dev)
     lik.load_state_dict(cut(likelihood.state_dict()))
     return new, lik
-#======= END FIX
 
 @torch.no_grad()
 def predictive_cache(gp, likelihood=None):
@@ -170,8 +172,7 @@ def predictive_cache(gp, likelihood=None):
     Q = Linv.transpose(-1, -2) @ (Ls @ Ls.transpose(-1,-2) - eye) @ Linv                # L^-T (S - I) L^-1
     k = gp.covar_module                                                                 # kernel
 
-    #====== FIX
-    # fix 5: linear mean -> 'c' is the bias and 'w' (d, D) the weights; constant mean (old artifacts) -> 'c' only
+    # linear mean; c bias, w (d, D) the weights; constant mean means c only
     mm = gp.mean_module
     linear = isinstance(mm, gpytorch.means.LinearMean)
     out = {'Z': Z, 'A': A.float(), 'Q' : Q.float(), 'jitter' : float(vs.jitter_val),
@@ -180,32 +181,73 @@ def predictive_cache(gp, likelihood=None):
            'lengthscale' : k.base_kernel.lengthscale.detach()}
     if linear:
         out['w'] = mm.weights.detach()[..., 0]                                          # (d, D)
-    # fix 2: noise of the likelihood, added to the predictive variance by fast_predict. CLOUDY is deterministic,
-    # so this "noise" is the misfit of the GP on the training points: the error of the emulator, part of its sigma.
+    # noise of the likelihood, added to the predictive variance by fast_predict. CLOUDY is deterministic,
+    # so the noise is the misfit of the GP on the training points: the error of the emulator, part of its sigma.
     if likelihood is not None:
         out['noise'] = likelihood.noise.detach().reshape(-1)                            # (d,)
+    # inducing points in units of the lengthscales and their squared norm, computed once (not at every call, fast)
+    out['Zl'] = (Z / out['lengthscale']).contiguous()                                   # (d, M, D)
+    out['Zl2'] = (out['Zl'] ** 2).sum(-1)                                              # (d, M)
     return out
-    #======= END FIX
 
-def fast_predict(cache, x):
+def fast_predict(cache, x, with_var=True):
     """
-    compute the meand and variance of GP in new point x using quantities prepared from predictive cache
-    (same as gp(x) of pytorch, but without passing from it so that we can be more fast putting quantities in
-    cache)
+    Computes the mean and variance of a Gaussian Process (GP) prediction at a new input point
+    using pre-computed predictive cache quantities. This method is designed to be more efficient
+    than direct GP computation by leveraging cached quantities. Variance computation can be skipped
+    for faster execution if not required.
+
+    Parameters:
+    cache : dict
+        Dictionary containing precomputed values needed for prediction. Keys must include:
+        - 'lengthscale' : Tensor
+        - 'outputscale' : Tensor
+        - 'A' : Tensor
+        - 'c' : Tensor
+        Optional keys include:
+        - 'Zl' : Tensor
+        - 'Zl2' : Tensor
+        - 'Z' : Tensor
+        - 'w' : Tensor
+        - 'jitter' : Tensor
+        - 'noise' : Tensor
+        - 'Q' : Tensor
+        - 'var_scale' : Tensor
+    x : Tensor
+        Input point(s) where the prediction is to be made. Must be compatible with the dimensions
+        of the cached values.
+    with_var : bool, optional (default=True)
+        Whether to compute and return the variance of the prediction or not. If set to False,
+        only the mean is computed and returned, improving execution speed.
+
+    Returns:
+    mean : Tensor
+        Mean of the GP prediction at the input point(s).
+    var : Tensor or None
+        Variance of the GP prediction at the input point(s), if `with_var` is True; otherwise,
+        returns None.
     """
     ls = cache['lengthscale'].to(x.device)                                                  # put lengthscale in device
-    s = 5.0 ** 0.5 * torch.cdist(x.unsqueeze(0) / ls, cache['Z'].to(x.device) / ls)         # distance ARD
+    # |x/l - Z/l|^2 = |x/l|^2 + |Z/l|^2 - 2 (x/l).(Z/l) with Z/l and |Z/l|^2 from the cache
+    if 'Zl' in cache:
+        xl = x.unsqueeze(0) / ls                                                            # (d, n, D)
+        r2 = (xl * xl).sum(-1, keepdim=True) + cache['Zl2'][:, None, :] - 2.0 * torch.bmm(xl, cache['Zl'].transpose(1, 2))
+        s = 5.0 ** 0.5 * r2.clamp_min(0.0).sqrt()                                          # distance ARD
+    else:
+        s = 5.0 ** 0.5 * torch.cdist(x.unsqueeze(0) / ls, cache['Z'].to(x.device) / ls)     # distance ARD
+
     K = cache['outputscale'][:, None, None] * (1.0 + s + s * s / 3.0) * torch.exp(-s)       # kernel between x and Z
     mean = torch.einsum('dnm,dm->dn', K, cache['A']) + cache['c'][:, None]
-    var = (cache['outputscale'][:, None] + cache['jitter'] + torch.einsum('dnm,dmk,dnk->dn', K, cache['Q'], K))
-    #====== FIX
-    # fix 5: linear part of the prior mean, w . x
+    # linear part of the prior mean, w . x
     if 'w' in cache:
         mean = mean + cache['w'] @ x.T
-    # fix 2: likelihood noise (before the calibration scale, which was estimated on latent + noise)
+    if not with_var:
+        return mean, None # case only mean, not variance
+
+    var = (cache['outputscale'][:, None] + cache['jitter'] + torch.einsum('dnm,dmk,dnk->dn', K, cache['Q'], K))
+    # likelihood noise
     if 'noise' in cache:
         var = var + cache['noise'][:, None]
-    #======= END FIX
     # Post-hoc sigma calibratio: when the artifact carries
     # a scale s_k per output, the latent variance becomes s_k^2 var_k, i.e. sigma_k -> s_k sigma_k.
     # The mean is untouched. Applied here, in the one place every prediction goes through
@@ -282,6 +324,44 @@ def pca_decode(coeffs, components, pca_mean, mu, sd):
     log_field = z * np.asarray(sd) + np.asarray(mu)                           # de-normalization
     return np.power(10.0, log_field)
 
+def target_transform(transform, Y):
+    """
+    Transforms the target array Y based on the provided transformation settings.
+
+    This function applies a transformation to the target values depending on the
+    specified transformation dictionary. If the transformation is defined with
+    'kind' set to 'tau', the following transformation is applied:
+    tau = -ln(T), clipped to a specified range (tau_min, tau_max), where T is the
+    original target. If no transformation is specified, the function simply
+    returns the input target array Y. This function is mainly done for Transmission treatment
+    to improve the PCA analysis and training od SVGP. General in case different transformations
+    for different targets need to be adopted
+
+    Parameters:
+    transform (dict or None): A dictionary containing the transformation settings.
+                              If transform['kind'] is 'tau', the function applies
+                              the log transformation and clipping as described.
+                              Expected keys:
+                              - 'kind' (str): Specifies the type of transformation.
+                                             Supported value: 'tau'.
+                              - 'tau_min' (float): The minimum clipping value
+                                                   for the transformed output.
+                              - 'tau_max' (float): The maximum clipping value
+                                                   for the transformed output.
+                              If None, no transformation is applied.
+    Y (array-like): The target values to be transformed. Could be any numerical
+                    array-like object.
+
+    Returns:
+    numpy.ndarray: The transformed target values if a 'tau' transformation is
+                   specified. If no transformation is applied, the original
+                   target array Y is returned unchanged.
+    """
+    if transform and transform.get('kind') == 'tau':
+        T = np.asarray(Y, dtype=np.float64)
+        return np.clip(-np.log(np.maximum(T, 1e-300)), transform['tau_min'], transform['tau_max'])
+    return Y
+
 def lines_to_ratio(ytil, ref, log_scale, floor=0.0):
     """
     Line targets in ratio form, from the log10 of the line fluxes.
@@ -348,34 +428,44 @@ def decode(prep, mean, var, log_scale=None):
     """
     # from fast predict. in cpu
     mu_z = mean.detach().cpu().numpy()      # (d, N)
-    var_z = var.detach().cpu().numpy().T    # (N, d)
+    #  var None (fast_predict with_var=False) : sigma None
+    var_z = None if var is None else var.detach().cpu().numpy().T    # (N, d)
     pca = prep['pca']
     #case of pca or not, different decode
     if pca is not None:
         C = np.asarray(pca['components'])                               # (n_pc, n_wl)
         if 'score_sd' in pca:                                           # undo the whitening of the scores
             s = np.asarray(pca['score_sd'])
-            mu_z, var_z = mu_z * s[:, None], var_z * s ** 2
+            mu_z, var_z = mu_z * s[:, None], (None if var_z is None else var_z * s ** 2)
         y = pca_decode(mu_z, C, pca['mean'], prep['mu'], prep['sd'])    # (N, n_wl)
-        var_z = _matmul(var_z, C ** 2)                                  # (N, n_wl)
-        #====== FIX
-        # fix 3: variance not carried by the retained PCs (truncation + PCs removed after training), per wavelength
-        if 'resid_var' in pca:
+        # C^2 squared once at load (HIIEmulator.load), the variance only when asked
+        if var_z is not None:
+            var_z = _matmul(var_z, pca['components_sq'] if 'components_sq' in pca else C ** 2)   # (N, n_wl)
+        # variance not carried by the retained PCs (truncation + PCs removed after training), per wavelength
+        if var_z is not None and 'resid_var' in pca:
             var_z = var_z + np.asarray(pca['resid_var'])
-        #======= END FIX
     elif prep.get('ratio') is not None:
         if log_scale is None:
             raise ValueError("[svgp] lines in ratio form: decode needs log_scale (log10 Q_H (1 - f_esc))")
         sd = np.asarray(prep['sd'])
-        ylog, vlog = ratio_to_lines(mu_z.T * sd + np.asarray(prep['mu']), var_z * sd ** 2,
+        # without variance only the mean (sigma None)
+        ylog, vlog = ratio_to_lines(mu_z.T * sd + np.asarray(prep['mu']),
+                                    np.zeros_like(mu_z.T) if var_z is None else var_z * sd ** 2,
                                     prep['ratio']['ref'], log_scale)
         y = np.power(10.0, ylog)
         off = float(prep.get('offset', 0.0))
-        return y - off, np.log(10.0) * y * np.sqrt(vlog)
+        return y - off, (None if var_z is None else np.log(10.0) * y * np.sqrt(vlog))
     else:
         y = np.power(10.0, mu_z.T * np.asarray(prep['sd']) + np.asarray(prep['mu']))    # (N, d)
 
-    sig_log = np.sqrt(var_z) * np.asarray(prep['sd'])   # std deviation, multiply by sd away the training division
+    # sigma None without variance
+    sig_log = None if var_z is None else np.sqrt(var_z) * np.asarray(prep['sd'])   # std deviation, multiply by sd away the training division
     off = float(prep.get('offset', 0.0))                # offset computed by training (if present)
-    return y - off, np.log(10.0) * y * sig_log          # return mean and sigma
+    sig = None if sig_log is None else np.log(10.0) * y * sig_log
+    # transmission emulated as log10 tau, so T = exp(-tau) in (0, 1], sigma_T = T sigma_tau
+    tr = prep.get('transform')
+    if tr and tr.get('kind') == 'tau':
+        T = np.exp(-(y - off))
+        return T, (None if sig is None else T * sig)
+    return y - off, sig                                 # return mean and sigma
 
