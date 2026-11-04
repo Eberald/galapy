@@ -164,6 +164,8 @@ def encode_targets(prep, Y, log_scale=None):
     ValueError: If ratio transformation is requested in `prep` and `log_scale` is not provided.
     """
     from galapy.spectroscopy.svgp import lines_to_ratio
+    from galapy.spectroscopy.svgp import target_transform
+    Y = target_transform(prep.get('transform'), Y)
     ytil = log_targets(Y, prep.get('offset', 0.0), prep.get('rel_floor', 0.0))   #log
     # lines treatment
     # if prep ratio exist, prediction is in ratio between lines and Hb
@@ -182,30 +184,31 @@ def encode_targets(prep, Y, log_scale=None):
     return s / np.asarray(pca['score_sd']) if 'score_sd' in pca else s
 
 
-#====== FIX
-# fix 2: likelihood (optional) -> its noise is added to the variance (prediction of y, not of the latent f)
 def latent_predict(model, Xz, device='cpu', chunk=1024, likelihood=None):
-#======= END FIX
     """
-    Compute the mean and variance of the a posteriori distribution of a Gaussian Process (GP) for each input
-    point, excluding likelihood noise. The input points are standardized before computation. The function
-    processes the input in chunks to manage memory constraints.
+    Predicts latent mean and variance for the given data points using a Gaussian Process model.
+
+    This function evaluates a Gaussian Process model in a memory-efficient manner by dividing the data
+    into chunks. It computes the posterior mean and variance for the provided data points and optionally
+    adjusts the variance using the provided likelihood noise.
 
     Parameters:
-    model : object
-        A fitted GP model that supports evaluation using standardized inputs.
-    Xz : array_like
-        The standardized input data points.
-    device : str, optional
-        Device on which to perform computations ('cpu' or 'cuda').
-    chunk : int, optional
-        The size of chunks used for batch processing of input data.
+    model: The Gaussian Process model used for predictions. It should have a `.eval()` method to switch
+           to evaluation mode and support inference with `.mean` and `.variance` attributes in the posterior.
+    Xz: Array-like, the input data points for which predictions are to be made.
+    device: str, optional, specifies the device ('cpu' or 'cuda') where tensor computations are performed.
+            Default is 'cpu'.
+    chunk: int, optional, size of chunks into which the input data is split for memory-efficient
+           processing. Default is 1024.
+    likelihood: Optional, used to adjust the variance if specified. If provided, it should have a
+                `.noise` attribute, which is a tensor that can be detached and converted to numpy.
 
     Returns:
-    tuple
-        A tuple containing the mean and variance of the GP's a posteriori distribution for the input points.
-        Both returned arrays have a shape of (N, d), where N is the number of input points, and d is the
-        dimensionality of the GP output.
+    tuple: A tuple containing two numpy arrays:
+        - The first array contains the predicted posterior mean for each input data point.
+          Shape: (num_data_points, output_dimensions).
+        - The second array contains the predicted posterior variance for each input data point.
+          Shape: (num_data_points, output_dimensions).
     """
     import torch
     model.eval()          # model put in evaluation mode
@@ -215,44 +218,56 @@ def latent_predict(model, Xz, device='cpu', chunk=1024, likelihood=None):
             post = model(torch.as_tensor(Xz[i:i + chunk], dtype=torch.float32, device=device))  # model posterior
             mu.append(post.mean.cpu().numpy())
             var.append(post.variance.cpu().numpy())
-    #====== FIX
-    # fix 2
     var = np.concatenate(var, axis=1).T
     if likelihood is not None:
         var = var + likelihood.noise.detach().reshape(-1).cpu().numpy()
     return np.concatenate(mu, axis=1).T, var
-    #======= END FIX
 
 
-#====== FIX
-# fix 2: likelihood passed to latent_predict
 def holdout_scores(model, Xz, Yz, device='cpu', chunk=1024, likelihood=None):
-#======= END FIX
     """
-    Compute performance metrics for a predictive model on a holdout dataset.
-    This function evaluates prediction error, coverage, and explained variance
-    for model predictions.
+    Calculates statistical scores for a test dataset (holdout set) based on predictions from
+    a given model.
 
     Parameters:
-    model: The predictive model used for generating predictions.
-    Xz: Input features of the holdout dataset.
-    Yz: Ground truth target values corresponding to Xz.
-    device: Specifies the device for computation, default is 'cpu'.
-    chunk: Batch size for splitting computations, default is 1024.
+    model : Any
+        The predictive model used for making predictions on the test dataset.
+
+    Xz : Any
+        The feature data of the holdout set for which predictions are to be made.
+
+    Yz : Any
+        The ground truth target values corresponding to the holdout set.
+
+    device : str, optional
+        The computational device to use for making predictions. Defaults to 'cpu'.
+
+    chunk : int, optional
+        Batch size for processing data in chunks during prediction. Defaults to 1024.
+
+    likelihood : Any, optional
+        Specifies a predictive likelihood function to be used during prediction. Defaults to None.
 
     Returns:
-    dict: A dictionary with the following keys:
-        - 'rmse_z': Root Mean Squared Error (RMSE) of the predictions.
-        - 'cov68': Prediction coverage at 68% confidence interval.
-        - 'explained': Explained variance of the model predictions.
+    dict
+        A dictionary containing three statistical scores:
+        - 'rmse_z': The Root Mean Square Error (RMSE) calculated between the predicted and ground truth
+          values.
+        - 'cov68': The coverage percentage based on 68% confidence intervals (calculated as the
+          proportion of absolute residuals <= standard deviation of predictions).
+        - 'explained': The explained variance score (R²) averaged over the outputs with equal weights.
+
+    Raises:
+    KeyError
+        If essential keys or parameters are missing during the calculation process.
+
+    Notes:
+    In case of an empty holdout set (no test data in Xz), returns NaN values for all output scores.
     """
     # no holdout case (no test set)
     if len(Xz) == 0:
         return {'rmse_z': float('nan'), 'cov68': float('nan'), 'explained': float('nan')}
-    #====== FIX
-    # fix 2
     mu, var = latent_predict(model, Xz, device, chunk, likelihood)
-    #======= END FIX
     Yz = np.asarray(Yz)
     r = Yz - mu
     sd = np.sqrt(var)
@@ -296,97 +311,82 @@ def per_output_scores(model, Xz, Yz, device='cpu', chunk=1024):
     return np.sqrt(mse), 1.0 - mse / ref
 
 
-#====== FIX
-# fix 2: likelihood passed to latent_predict
+
 def calibration_scale(model, Xz, Yz, device='cpu', s_min=1.0, chunk=1024, quantile=None, likelihood=None):
-#======= END FIX
     """
-    Post-hoc calibration of the predictive sigma of a GP family: one scale factor s_k per output.
-
-    The SVGP sigma is not guaranteed to be honest. When it enters the likelihood of a fit as model
-    error, a sigma that is too small gives posteriors that are too narrow and possibly biased.
-    Rescaling sigma fixes the stated error without touching the mean.
-
-    For each calibration point i and output k (in the GP space: z-scored, whitened PCA scores),
-    the normalized residual is r_ik = (y_ik - mu_ik) / sigma_ik. If sigma is honest r_k ~ N(0, 1);
-    if the true error is s_k times the stated one, r_k ~ N(0, s_k^2). For r ~ N(0, s^2) the
-    q-quantile of |r| is s * z_q with z_q = Phi^-1((1 + q) / 2), hence the estimator
-
-        s_k = quantile_q(|r_ik|) / z_q ,
-
-    after which a fraction q of the calibration points lies within z_q sigma.
-
-    Which quantile. The residuals have heavy tails (peaked core, a few % beyond 5 sigma), so no
-    single factor gives both 68% within 1 sigma and 95% within 1.96 sigma. On the HII holdout:
-      - q = 0.5 (median / 0.6745): cov68 ~ 0.65 but cov95 only 0.80-0.89 and up to 3% beyond
-        5 sigma: the tails, where the emulator is wrong, stay overconfident;
-      - q = 0.95 (default): cov95 = 0.95 in every family and 0.1-0.6% beyond 5 sigma, with a
-        conservative core (cov68 0.77-0.91).
-    For a model error in the likelihood an overconfident tail biases the posterior, a conservative
-    core only widens it a little: hence q = 0.95.
-
-    s_k is clipped from below at s_min (default 1): the calibration only ever WIDENS sigma.
-    The variance is multiplied by s_k^2 at prediction time (svgp.fast_predict, via
-    prep['sigma_scale']); the PCA decoding propagates it to physical units as before.
-
-    Limits: one number per output, so it corrects the average over the input space, not regions
-    where the GP is locally worse; and it does not remove the tails, it makes them rarer.
+    Calibrate the scale factor for predictive uncertainty output by the given model using normalized
+    residuals and a specific quantile. The function computes a scaling factor that ensures the output
+    uncertainties align with the observed data quantile distribution, while clipping the result so that
+    it does not narrow the uncertainty below a defined minimum value.
 
     Parameters:
-        model: trained BatchedSVGPS of the family (d outputs).
-        Xz (np.ndarray): standardized inputs of the calibration set, (N, D).
-        Yz (np.ndarray): targets of the calibration set in the GP space (encode_targets), (N, d).
-        s_min (float): lower clip of s_k (1 = never shrink sigma).
-        quantile (Optional[float]): q of the estimator, in (0, 1). Default EMUL.CALIB_QUANTILE (0.95).
+    model: Predictive model used for generating latent predictions. The model's prediction functions
+           are assumed to provide mean and variance estimates for input features.
+    Xz: Array-like
+        Input features to be used for generating predictions.
+    Yz: Array-like
+        Observed target values corresponding to the input features.
+    device: str, optional
+        Computational device to use, such as 'cpu' or 'cuda'. Defaults to 'cpu'.
+    s_min: float, optional
+        Minimum allowable value for the scale factor. Defaults to 1.0.
+    chunk: int, optional
+        Chunk size for processing data when predicting latent distributions. Defaults to 1024.
+    quantile: float or None, optional
+        Quantile value to use for scaling calibration. If None, a default quantile value is taken from the
+        EMUL.CALIB_QUANTILE configuration.
+    likelihood: Optional
+        Model-specific likelihood information, if required for predictions.
 
     Returns:
-        np.ndarray: s_k, (d,).
+    float
+        The calibrated scaling factor for adjusting the predictive uncertainty of the model's output.
+    Raises:
+    ValueError
+        If the quantile value provided is not within the open interval (0, 1).
     """
     from statistics import NormalDist
     q = EMUL.CALIB_QUANTILE if quantile is None else float(quantile)
     if not 0.0 < q < 1.0:
         raise ValueError(f"calibration_scale: quantile {q} must be in (0, 1)")
-    #====== FIX
-    # fix 2
     mu, var = latent_predict(model, Xz, device, chunk, likelihood)      # prediction
-    #======= END FIX
     r = (np.asarray(Yz) - mu) / np.sqrt(np.maximum(var, 1e-30))         # normalised residuals
     s = np.quantile(np.abs(r), q, axis=0) / NormalDist().inv_cdf(0.5 * (1.0 + q))
     return np.maximum(s, s_min)                                         # clip, with s_min=1 never narrowed sigma
 
 
-#====== FIX
-# fix 2: likelihood passed to latent_predict
 def coverage_scores(model, Xz, Yz, scale=None, device='cpu', chunk=1024, likelihood=None):
-#======= END FIX
     """
-    Calculates coverage metrics for predictions and normalized residuals of a model.
+    Calculates statistical coverage scores based on model predictions and residuals.
 
-    This function computes the percentage of predictions falling within
-    one standard deviation (68% coverage) and the fraction of predictions
-    having residuals greater than 5 standard deviations (outliers). The
-    residuals can be optionally calibrated by scaling.
+    This function evaluates the coverage probabilities at 68% and 95% confidence levels and
+    computes the proportion of residuals exceeding an absolute value of 5. Residuals are normalized
+    using the predicted variance, and calibration scaling can be optionally applied.
 
     Args:
-        model: The predictive model from which latent predictions are generated.
-        Xz: The input data used for predictions by the model.
-        Yz: The true output values to compare against the model's predictions.
-        scale: Optional; array of scaling factors for residual calibration.
-        device: The device type ('cpu' or 'gpu') for computation.
-        chunk: Number of samples processed per chunk during predictions
-            (used for memory optimization).
+        model: Any
+            The predictive model used for obtaining mean and variance of predictions.
+        Xz: Any
+            Input dataset or feature set corresponding to the predictions.
+        Yz: Any
+            Target or observed values for comparison with the model's predictions.
+        scale: Optional[Any]
+            Calibration scale factors applied to normalize the residuals. Defaults to None.
+        device: str
+            Computing device for inference ('cpu' or 'cuda'). Defaults to 'cpu'.
+        chunk: int
+            Batch size for processing data in chunks. Defaults to 1024.
+        likelihood: Optional[Any]
+            Optional likelihood model used during prediction. Defaults to None.
 
     Returns:
-        dict: Dictionary with three keys:
-            - 'cov68': Fraction of residuals within 1 standard deviation.
-            - 'cov95': Fraction of residuals within 1.96 standard deviations.
-            - 'out5': Fraction of residuals greater than 5 standard deviations.
+        dict: A dictionary containing the following coverage scores and metrics:
+            - 'cov68': Float value representing the proportion of residuals within 68% coverage (|r| <= 1.0).
+            - 'cov95': Float value representing the proportion of residuals within 95% coverage (|r| <= 1.96).
+            - 'out5': Float value representing the proportion of residuals exceeding an absolute value of 5.0.
     """
     # predictions and normalized residuals
-    #====== FIX
-    # fix 2
     mu, var = latent_predict(model, Xz, device, chunk, likelihood)
-    #======= END FIX
     r = (np.asarray(Yz) - mu) / np.sqrt(np.maximum(var, 1e-30))
     # application of calibration (optional)
     if scale is not None:
@@ -600,6 +600,11 @@ class Context:
         tuple
             A tuple containing the median and sigma (standard deviation) in physical units.
         """
+        # trans, cont, grain and energy are decoded together, with the constraints of predict_batch
+        if hasattr(self.emu, 'physical_constrained'):
+            sl = slice(None) if idx is None else idx
+            return self.emu.physical_constrained(fam, {f: v[sl] for f, v in self.mu.items()},
+                                                 {f: v[sl] for f, v in self.var.items()}, self.X[sl])
         return physical(self.emu, fam, self.mu[fam] if idx is None else self.mu[fam][idx],
                         self.var[fam] if idx is None else self.var[fam][idx],
                         self.X if idx is None else self.X[idx])
@@ -666,10 +671,8 @@ def predict_gp(emu, X, chunk=1024):
     import torch
     from galapy.spectroscopy.svgp import fast_predict
     mu, var = {}, {}
-    #====== FIX
-    # fix 1: the emulator appends the SED descriptors (if trained with them) and normalises
+    # the emulator appends the SED descriptors (if trained with them) and normalises
     x = emu.standardize(X).cpu() if hasattr(emu, 'standardize') else (torch.as_tensor(X, dtype=torch.float32) - emu.x_mean) / emu.x_std
-    #======= END FIX
     with torch.no_grad():
         for fam, cache in emu.cache.items():
             m, v = zip(*(fast_predict(cache, x[i:i + chunk]) for i in range(0, len(x), chunk))) #(m1,v2) -> (m1, m2..), (v1, v2..)
@@ -884,10 +887,8 @@ def calibration(ctx, rows=None, families=None, alpha=0.05):
         ok = lo <= c95 <= hi and c68 >= EMUL.COV68_MIN
         det = {'cov68': round(c68, 4), 'cov95': round(c95, 4), 'out5': round(float(np.mean(np.abs(r) > 5)), 4),
                'ks_min_p': float(np.nanmin(p)) if np.isfinite(p).any() else None, 'pass': ok}
-        #====== FIX
-        # fix 2: the noise is already in v when the emulator adds it to the predictive variance
+
         if f in noise and 'noise' not in ctx.emu.cache.get(f, {}):
-        #======= END FIX
             rn = (y - m) / np.sqrt(v + noise[f])
             det['cov68_with_noise'] = float(np.mean(np.abs(rn) <= 1))
         per[f] = det
@@ -978,10 +979,7 @@ def ood_growth(ctx, n_probe=20, steps=(0.25, 0.5, 1.0, 2.0)):
         """
         compute the median of the latent sigma for a given set of points
         """
-        #====== FIX
-        # fix 1
         x = emu.standardize(X).cpu() if hasattr(emu, 'standardize') else (torch.as_tensor(X, dtype=torch.float32) - emu.x_mean) / emu.x_std
-        #======= END FIX
         with torch.no_grad():
             return {f: np.median(np.sqrt(fast_predict(c, x)[1].numpy()), axis=0)
                     for f, c in emu.cache.items()}
@@ -1581,12 +1579,10 @@ def ard(ctx, min_fraction=0.9, max_ls_ratio=10.0):
     keys = ctx.emu.input_keys
     lo = np.asarray(ctx.meta.get('x_min') or ctx.X.min(0), float)
     hi = np.asarray(ctx.meta.get('x_max') or ctx.X.max(0), float)
-    #====== FIX
-    # fix 1: only the physical inputs (the SED descriptors, if any, are the last columns)
+    # only the physical inputs (the SED descriptors, if any, are the last columns)
     n = len(keys)
     ls = (ctx.emu.cache['lines']['lengthscale'][:, 0, :n].numpy() * ctx.emu.x_std.numpy()[:n]
           / np.where(hi[:n] > lo[:n], hi[:n] - lo[:n], 1.0))
-    #======= END FIX
     cat = ctx.lines()
     active = [keys.index(k) for k in ('logU', 'lognH_HII', 'log_zeta_O')]
     f_star = keys.index('F_star')
