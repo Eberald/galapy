@@ -182,19 +182,26 @@ ${\rm col}_9 > 0$ and ${\rm col}_4 - {\rm col}_9 \le 10^{-3}\,{\rm col}_4$ are t
 filled by linear interpolation in $\ln L^{\rm neb}$ vs $\ln\lambda$ from the other cells with
 $L^{\rm neb} > 0$.
 
-*Diffuse Lyman continuum.* With `sphere`, CLOUDY counts twice the inward half of the diffuse Lyman continuum, so
-the cloud emits more energy than it absorbs (see the reprocessing budget below). When
-`reprocessing_excess` $> 0$ and `lyc_emit_fraction` $> 0$, the continuum below the H threshold,
-$\lambda < 911.76$ Å (`CONST.LyLimit`), is rescaled by
+*Diffuse Lyman continuum.* With `sphere` (closed geometry) CLOUDY counts all the diffuse emission in the
+outward beam (Hazy 1 §9.11, p. 113): the inward half of the diffuse Lyman continuum leaves ${\rm col}_4$ without
+attenuation, while in a closed shell it crosses the central cavity and then the whole cloud, with transmission
+$T_\lambda = {\rm col}_3/{\rm col}_2$. With the outward and inward halves about equal, the emergent continuum below
+the H threshold, $\lambda < 911.76$ Å (`CONST.LyLimit`), is
 
 $$
-L^{\rm neb}_\lambda \to L^{\rm neb}_\lambda \,\max\!\left(0,\ 1 - \frac{\texttt{reprocessing\_excess}}{\texttt{lyc\_emit\_fraction}}\right),
+L^{\rm neb}_\lambda \to L^{\rm neb}_\lambda \,\frac{1 + T_\lambda}{2},
 \qquad \lambda < 911.76\ {\rm Å}
 $$
 
-i.e. the energy of the diffuse Lyman continuum is reduced by the excess $E_4 - E_{\rm abs}$, and the emission at
-$\lambda \ge 911.76$ Å is left untouched. The diagnostics below are computed on the raw columns, before this
-rescaling.
+cell by cell ($T_\lambda = 1$, no correction, where ${\rm col}_2 = 0$); the emission at $\lambda \ge 911.76$ Å
+is left untouched. On 50 pilot models, compared with their open-geometry twin (outward ${\rm col}_4$ plus
+reflected ${\rm col}_6$ times $T_\lambda$, Hazy 1 §16.42.8, p. 201), the Lyman break
+$D_{912} = \log_{10}(\langle L\rangle_{913-1000\,Å} / \langle L\rangle_{830-911\,Å})$ is recovered within
+0.03 dex (median) and 0.12 dex (90th percentile). The former correction scaled the whole Lyman continuum by
+$\max(0, 1 - \texttt{reprocessing\_excess}/\texttt{lyc\_emit\_fraction})$: it set it to zero in 23% of the models,
+often for an energy excess outside the Lyman continuum (e.g. the CMB). In nearly opaque clouds ($f_{\rm esc} <
+0.05$) CLOUDY already attenuates the inward half, and $(1+T_\lambda)/2$ leaves some Lyman continuum in excess. The
+diagnostics below are computed on the raw columns, before this correction.
 
 **Transmission.** The fraction of the incident SED that crosses the cloud,
 
