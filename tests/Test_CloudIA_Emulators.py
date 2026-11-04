@@ -202,3 +202,139 @@ def test_acceptance_gates_read_the_frozen_holdout(hii_artifact):
     rep = acceptance_gates(e, f'{stem}_gate_set_frozen.npz', base=e)
     assert set(rep['checks']) == {'check calibration', 'check no_degradation'}
     assert rep['checks']['check no_degradation']['pass'] and rep['n_points'] > 0
+
+@pytest.mark.unit
+def test_tau_transform_round_trip_keeps_T_in_0_1():
+    import torch
+    from galapy.spectroscopy.svgp import target_transform, decode
+    tr = {'kind': 'tau', 'tau_min': 1e-3, 'tau_max': np.log(1e5)}
+    T = np.array([[0.0, 1e-7, 0.3, 0.999, 1.0, 1.0006]])
+    tau = target_transform(tr, T)
+    assert np.all(tau >= 1e-3) and np.all(tau <= np.log(1e5))
+    prep = {'pca': None, 'ratio': None, 'mu': np.zeros(6), 'sd': np.ones(6), 'transform': tr}
+    y, s = decode(prep, torch.as_tensor(np.log10(tau).T), torch.full((6, 1), 1e-4))
+    np.testing.assert_allclose(y, np.exp(-tau), rtol=1e-12)
+    assert np.all(y > 0) and np.all(y <= 1) and np.all(s >= 0)
+
+
+@pytest.mark.unit
+def test_constraints_close_the_energy_budget_and_bound_T_and_grain(monkeypatch):
+    import galapy.internal.emulators as EMUL
+    monkeypatch.setattr(EMUL, 'ENERGY_RESCALE', True)
+    from galapy.spectroscopy.hii_emulator import incident_tables, apply_constraints
+    rng = np.random.default_rng(1)
+    wave = np.geomspace(1.0, 1e7, 300)[rng.permutation(300)]             # unsorted, as the CLOUDY grid
+    wi = np.geomspace(10.0, 1e6, 120)
+    taus, Zs = np.log10([1e6, 5e6]), np.array([1e-3, 4e-3, 2e-2])
+    sed = np.exp(-((np.log(wi)[None, None, :] - np.log(3e3)) ** 2)) * (1 + np.arange(6).reshape(2, 3, 1))
+    qn = {'log_tau': taus, 'Z': Zs, 'sed_inc': sed, 'wave_inc': wi}
+    tabs = incident_tables(qn, wave)
+    n = 40
+    keys = ['tau_SSP', 'Z_star']
+    th = np.column_stack([rng.choice(taus, n), np.log10(rng.uniform(1e-3, 2e-2, n))])
+    T = np.exp(-rng.uniform(0.2, 2.0, (n, 1)) * (1.0 + (wave[None, :] < 912)))   # absorbs where the SED is
+    C = rng.uniform(0.5, 2.0, (n, 300)) * 1e-2
+    G = 1.5 * C * (wave[None, :] > 1e4)                                     # above cont on purpose
+    a, q = rng.uniform(0.01, 0.6, n), rng.uniform(0.3, 1.2, n)
+    out = {'trans': (T, 0.01 * T), 'cont': (C, 0.1 * C), 'grain': (G, 0.1 * G),
+           'energy': (np.column_stack([a / (1 - a), q]), np.full((n, 2), 0.01))}
+    apply_constraints(tabs, qn, keys, th, out)
+    Tn, Cn, Gn = out['trans'][0], out['cont'][0], out['grain'][0]
+    assert np.all(Tn > 0) and np.all(Tn <= 1) and np.all(Gn <= Cn)
+    # closure of the Energy check (validate_emulator.energy) with the interpolated SED of each row
+    o = np.argsort(wave)
+    lw, lwi = np.log(wave[o]), np.log(wi)
+    it = np.abs(th[:, 0][:, None] - taus[None]).argmin(1)
+    Z = 10 ** th[:, 1]
+    hi = np.clip(np.searchsorted(Zs, Z), 1, 2)
+    w = (Z - Zs[hi - 1]) / (Zs[hi] - Zs[hi - 1])
+    L = (1 - w)[:, None] * sed[it, hi - 1] + w[:, None] * sed[it, hi]
+    trap = getattr(np, 'trapezoid', None) or np.trapz
+    E = trap(L, lwi, axis=1)
+    Ti = np.array([np.interp(lwi, lw, t[o]) for t in Tn])
+    Ci = np.array([np.interp(lwi, lw, c[o], left=0, right=0) for c in Cn])
+    np.testing.assert_allclose(1 - trap(Ti * L, lwi, axis=1) / E, a, rtol=1e-8)
+    np.testing.assert_allclose(trap(Ci, lwi, axis=1) / E, q * a, rtol=1e-8)
+    np.testing.assert_allclose(out['energy'][0], np.column_stack([a, q * a]), rtol=1e-12)
+    out2 = {'trans': (T, None)}
+    assert apply_constraints(None, qn, keys, th, out2)['trans'][0] is T
+    monkeypatch.setattr(EMUL, 'ENERGY_RESCALE', False)
+    out3 = {'trans': (T, 0.01 * T), 'cont': (C, 0.1 * C), 'grain': (G, 0.1 * G),
+            'energy': (np.column_stack([a / (1 - a), q]), np.full((n, 2), 0.01))}
+    apply_constraints(tabs, qn, keys, th, out3)
+    np.testing.assert_array_equal(out3['trans'][0], T)
+    np.testing.assert_array_equal(out3['cont'][0], C)
+    np.testing.assert_array_equal(out3['grain'][0], np.minimum(G, C))
+    np.testing.assert_allclose(out3['energy'][0], np.column_stack([a, q * a]), rtol=1e-12)
+
+@pytest.mark.unit
+def test_lyc_floor_cells_go_to_zero_and_grain_stays_below_cont():
+    import galapy.internal.emulators as EMUL
+    from galapy.spectroscopy.hii_emulator import zero_lyc_floor
+    wave = np.array([100.0, 500.0, 900.0, 1000.0, 5000.0, 1e5])
+    fl = EMUL.REL_FLOOR_LYC['cont']
+    peak = 1e30
+    C = np.array([[1.0 * fl, 3.0 * fl, 1.2 * fl, 0.5 * fl, 1.0, 1e-3]]) * peak   # peak at 5000 A
+    G = np.array([[1e-3, 1e-3, 1e-3, 1e-3, 0.5, 1e-3]]) * peak
+    out = {'cont': (C, 0.1 * C), 'grain': (G, 0.1 * G)}
+    zero_lyc_floor(wave, out)
+    Cn, Gn = out['cont'][0], out['grain'][0]
+    # below 912 A: floor-level cells -> 0, the cell at 3x floor kept; above 912 A nothing changes (even below floor)
+    np.testing.assert_array_equal(Cn[0], [0.0, 3.0 * fl * peak, 0.0, 0.5 * fl * peak, peak, 1e-3 * peak])
+    assert np.all(Gn <= Cn) and Gn[0, 4] == 0.5 * peak
+    np.testing.assert_array_equal(out['cont'][1], 0.1 * C)
+
+@pytest.mark.unit
+def test_lines_at_the_ratio_floor_are_flagged():
+    import galapy.internal.emulators as EMUL
+    from galapy.spectroscopy.hii_emulator import lines_below_floor
+    prep = {'ratio': {'ref': 1, 'floor': 1e-5}}
+    hb = 1e30
+    L = np.array([[2.0, 1.0, 1.0e-5, 1.4e-5, 2.0e-5, 1e-3],
+                  [0.5, 1.0, 1.0e-3, 0.9e-5, 5.0e-5, 1e-6]]) * hb
+    f = lines_below_floor(prep, L)
+    np.testing.assert_array_equal(f, [[False, False, True, True, False, False],
+                                      [False, False, False, True, False, True]])
+    assert not lines_below_floor({'ratio': None}, L).any()
+    assert EMUL.LINE_FLOOR_FLAG_FACTOR == 1.5
+
+@pytest.mark.unit
+def test_pca_on_a_subset_keeps_the_statistics_of_every_row(monkeypatch):
+    import galapy.internal.emulators as EMUL
+    from galapy.spectroscopy.utils.hii import train_emulator_hii as T
+    monkeypatch.setattr(EMUL, 'PCA_CHUNK', 7)          # several chunks, the last one partial
+    rng = np.random.default_rng(1)
+    Y = (10.0 ** (rng.normal(size=(60, 3)) @ rng.normal(size=(3, 12)))).astype(np.float32)
+    ytil = np.log10(np.asarray(Y, np.float64))
+    fit, mu, sd, k, n_fit = T.pca_rank(Y, fit_max=0)
+    np.testing.assert_allclose(mu, ytil.mean(0), rtol=1e-12)
+    np.testing.assert_allclose(sd, np.maximum(ytil.std(0), EMUL.SD_FLOOR), rtol=1e-12)
+    assert n_fit == 60 and k <= 4
+    # all rows: the scores are those of the PCA of the whole z-scored matrix, whitened
+    Yz, prep = T.preprocess_targets(Y, True, k_granted=3, fit_max=0)
+    z = (ytil - mu) / sd
+    s = (z - z.mean(0)) @ np.asarray(prep['pca']['components']).T
+    np.testing.assert_allclose(np.abs(Yz), np.abs(s / s.std(0)), atol=1e-9)
+    # subset: mean/sd still on every row, the PCA on fit_max rows only, recorded
+    _, mu2, sd2, _, n2 = T.pca_rank(Y, fit_max=25, seed=3)
+    np.testing.assert_allclose(mu2, mu, rtol=1e-12)
+    assert n2 == 25
+    Yz2, prep2 = T.preprocess_targets(Y, True, k_granted=3, fit_max=25, seed=3)
+    assert Yz2.shape == (60, 3) and prep2['pca']['n_fit'] == 25
+    np.testing.assert_allclose(Yz2.std(0), 1.0, rtol=1e-9)
+
+
+@pytest.mark.unit
+def test_training_stops_when_the_estimated_memory_does_not_fit(tmp_path, monkeypatch, capsys):
+    from galapy.spectroscopy.utils.hii import train_emulator_hii as T
+    corpus = write_hii_corpus(tmp_path / 'c.h5')
+    need = T.estimate_train_memory(1000, 9244, 850, 100, 100)
+    assert need < T.estimate_train_memory(1000, 9244, 850, 100, 0) < T.estimate_train_memory(2000, 9244, 1700, 200, 0)
+    avail = T.available_memory()
+    assert avail is None or avail > 0
+    monkeypatch.setattr(T, 'available_memory', lambda: 2 ** 20)            # 1 MiB
+    monkeypatch.setattr(sys, 'argv', ['train', '--corpus', str(corpus), '--out', str(tmp_path / 'e.pt'),
+                                      '--meta', str(tmp_path / 'e.json'), '--epochs', '1', '--device', 'cpu'])
+    with pytest.raises(SystemExit, match='estimated peak memory'):
+        T.main()
+    assert not (tmp_path / 'e_cont.pt').exists()
