@@ -932,7 +932,7 @@ def main():
                     'the PCA of cont, grain and trans is fitted on (drawn at random with --seed; 0 = all); mean, sd '
                     f'and scores use every model (default: {EMUL.PCA_FIT_MAX})')
     ap.add_argument('--no-memory-check', action='store_true', help='train even if the estimated peak memory exceeds '
-                    f'{EMUL.MEM_SAFETY:.0%} of the memory available to the job')
+                    f'{EMUL.MEM_SAFETY:.0%}% of the memory available to the job')
     ap.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto', help='device '
                                                                                       'to use (default: auto)')
     args=ap.parse_args()
