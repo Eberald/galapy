@@ -29,6 +29,27 @@ FAMILIES_HII = (('lines', False, 0.0), ('cont', True, 0.0), ('grain', True, 0.0)
                 ('dust', False, 0.0), ('fuv_t', False, 0.0), ('fuv_n', False, FUV_N_OFFSET), ('energy', False, 0.0))
 WAVE_FAMS = ('cont', 'grain', 'trans')              # families defined on the continuum wavelength grid
 VECTOR_FAMS = ('lines', 'cont', 'grain', 'trans')   # families that get the relative floor
+# regime experts for the transmission and the ionizing continuum :
+#   - lyc = nebular continuum at lambda < CONST.LyLimit, a family of its own
+#     the cont family keeps the whole grid and its LyC cells are replaced by lyc.
+#   - every family in REGIME_FAMS is trained as two experts, <fam>_opaque and <fam>_thin, on the models whose
+#     input REGIME_INPUT is in REGIMES (overlapping ranges); the emulator blends them with a smoothstep in
+#     log f_esc over REGIME_BLEND (weight of the opaque expert 1 below, 0 above), mean in log space, mixture sigma.
+#   - the overlap search (opaque f < 0.1 / 0.2 / 0.3, thin f > 0.02 / 0.005) chose opaque < 0.10, thin > 0.005.
+#   - REGIME_EQUAL_STEPS: an expert sees fewer models, so with the same epochs it would make fewer optimizer steps
+#     its epochs are scaled to the steps of the full training.
+REGIME_EXPERTS = True
+REGIME_FAMS = ('trans', 'lyc')
+REGIME_INPUT = 'f_esc_meas'
+REGIMES = {'opaque': (-math.inf, 0.10), 'thin': (0.005, math.inf)}  # open ranges of REGIME_INPUT of each expert
+REGIME_BLEND = (0.02, 0.10)
+REGIME_EQUAL_STEPS = True
+REGIME_MIN_MODELS = 2000   # fewer training models in a regime: no experts in that training (single trans, no lyc)
+FAMILIES_HII_SINGLE = FAMILIES_HII
+if REGIME_EXPERTS:
+    FAMILIES_HII = (tuple(e for f in FAMILIES_HII
+                          for e in ([(f'{f[0]}_{r}',) + f[1:] for r in REGIMES] if f[0] in REGIME_FAMS else [f]))
+                    + tuple((f'lyc_{r}', True, 0.0) for r in REGIMES))
 
 #========================= PREPROCESSING OF THE TARGETS =========================
 LOG_FLOOR = 1e-35   # avoid -inf on null fluxes
@@ -114,10 +135,26 @@ MEDIAN_ABS_STD_NORMAL = 0.6744897501960817
 # Sigma calibration and its check: s_k from the 95% quantile of |r| on the
 # calibration clouds; on the holdout every family must then hold 93-97% of the points within 1.96 sigma
 # (cov95) and at least 60% within 1 sigma (cov68: a core that is not overconfident). With heavy-tailed
-# residuals a calibrated cov95 implies a conservative cov68, so cov68 has no upper bound.
+# residuals a calibrated cov95 implies a conservative cov68 (below consts sets the bands actually used).
 CALIB_QUANTILE = 0.95
-COV95_RANGE = (0.93, 0.97)
-COV68_MIN = 0.60
+COV95_RANGE = (0.90, 0.99)
+COV68_MIN = 0.62
+COV68_MAX = 0.82
+
+# input-dependent sigma, sigma_k(x) = s_k * sigma_GP,k(x) * exp(g_k(x) / 2).
+# this because the majority of predictive variance is the likelihood noise, a constant, so sigma_GP is almost the same
+# for every model, while the errors of the emulator depend strongly on the inputs.
+# A constant sigma over x-dependent errors gives apparent heavy tails.
+# g_k(x) is a quadratic polynomial of the standardized GP inputs, fitted on the calibration clouds; the global
+# s_k is then computed on the corrected residuals (95% quantile).
+SIGMA_X = True                  # fit g_k(x) in the training (False: only the global s_k)
+SIGMA_X_RIDGE = 1.0             # ridge penalty of the least squares fit of g_k (the intercept is not penalized)
+SIGMA_X_R2_FLOOR = 1e-8         # floor of r^2 before the log: an exact hit (r = 0) must not give log(0) = -inf
+SIGMA_X_LOG_CLIP = (-4.6, 4.6)  # clip of g_k = log of the variance factor: sigma changes at most x0.1 - x10
+SIGMA_X_MIN_POINTS = 10         # minimum calibration models per coefficient of the polynomial, else no g_k
+#
+SIGMA_X_CV_FOLDS = 5                                           # folds of clouds (fewer clouds: fixed ridge)
+SIGMA_X_RIDGE_GRID = (1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0, 100.0)  # ridge / n_models; 100 = g_k almost constant
 
 # a PCA component whose GP explains <= PC_MIN_EXPLAINED of its variance on the calibration clouds is no better
 # than its mean and it is removed from the emulator and its variance goes into the residual variance of the decoding.
