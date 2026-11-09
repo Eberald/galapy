@@ -190,6 +190,50 @@ def predictive_cache(gp, likelihood=None):
     out['Zl2'] = (out['Zl'] ** 2).sum(-1)                                              # (d, M)
     return out
 
+# features of the input-dependent sigma. The same function is used in the training
+# (fit of g_k) and in the prediction (fast_predict), so the two cannot disagree on the order of the terms.
+def sigma_x_features(x, lo, hi):
+    """
+    Compute quadratic features for an input-dependent sigma correction in a
+    Gaussian-process model.
+
+    The transformation builds a polynomial basis consisting of an intercept,
+    all first-order coordinate terms, and all second-order square and pairwise
+    product terms. Coordinates are first constrained to the calibration domain so
+    that the polynomial correction remains fixed at the boundary outside that
+    domain, leaving out-of-domain uncertainty growth to the Gaussian-process
+    variance component.
+
+    Step by step:
+    1) x is clipped to the box [lo, hi] of the calibration inputs. Outside the box the polynomial would
+       extrapolate (a quadratic grows without limit); clipped, the correction stays at its value on the
+       border, and the growth of sigma out of the domain is left to the GP variance.
+    2) phi = [1, x_1 .. x_D, x_i x_j for i <= j]: intercept, linear terms and every square and product.
+       With D = 12 inputs it is 1 + 12 + 78 = 91 terms, a negligible cost next to the M x M products of the GP
+
+
+    Parameters:
+    x : Tensor
+        Standardized input values with shape `(n, D)`.
+    lo : Tensor
+        Lower calibration bounds with shape `(D,)`, in the same standardized units.
+    hi : Tensor
+        Upper calibration bounds with shape `(D,)`, in the same standardized units.
+
+    Returns:
+    Tensor
+        Feature values with shape `(n, P)`, where
+        `P = 1 + D + D * (D + 1) / 2`.
+
+    Raises:
+    RuntimeError
+        Raised by the underlying tensor operations if shapes, devices, or dtypes
+        are incompatible.
+    """
+    xc = torch.minimum(torch.maximum(x, lo.to(x)), hi.to(x))                     # clip to the calibration box
+    i, j = torch.triu_indices(x.shape[1], x.shape[1], device=x.device)           # pairs i <= j
+    return torch.cat([torch.ones_like(xc[:, :1]), xc, xc[:, i] * xc[:, j]], 1)   # [1, x, x_i x_j]
+
 def fast_predict(cache, x, with_var=True):
     """
     Computes the mean and variance of a Gaussian Process (GP) prediction at a new input point
@@ -254,6 +298,15 @@ def fast_predict(cache, x, with_var=True):
     # (predict_batch, the validation gates), so the calibrated sigma is used consistently everywhere.
     if 'var_scale' in cache:
         var = var * cache['var_scale'][:, None]
+    # input-dependent part of the calibration, var_k(x) -> var_k(x) * exp(g_k(x)).
+    # 1) phi(x): quadratic features of the standardized inputs, (n, P)
+    # 2) g = beta phi(x): one polynomial per output, (d, P) x (P, n) -> (d, n), the log of the variance factor
+    # 3) clip g and multiply the variance by exp(g).
+    # The mean is untouched. Artifacts without var_x_coef predict normally
+    if 'var_x_coef' in cache:
+        phi = sigma_x_features(x, cache['var_x_lo'], cache['var_x_hi'])               # phi(x)
+        g = cache['var_x_coef'] @ phi.T                                               # beta * phi
+        var = var * torch.exp(g.clamp(*cache['var_x_clip']))                          # clip g and * exp(g)
     return mean, var.clamp_min(0.0)
 
 def _matmul(a, b):
