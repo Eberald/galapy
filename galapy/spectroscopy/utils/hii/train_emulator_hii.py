@@ -23,11 +23,11 @@ from galapy.spectroscopy.hii_emulator import line_log_scale
 from galapy.spectroscopy.svgp import select_outputs
 from galapy.spectroscopy.hii_emulator import augment_inputs
 from galapy.spectroscopy.svgp import target_transform
-from galapy.spectroscopy.hii_emulator import incident_tables, _node_weights
+from galapy.spectroscopy.hii_emulator import incident_tables, _node_weights, regime_of, regime_mask
 from galapy.spectroscopy.utils.validate_emulator import (holdout_split, encode_targets,
                             holdout_scores, write_holdout, log_targets,
                             build_frozen_set, calibration_scale, coverage_scores,
-                            per_output_scores)
+                            per_output_scores, latent_predict, fit_sigma_x, sigma_x_factor)
 
 trap = getattr(np, 'trapezoid', None) or np.trapz
 
@@ -181,6 +181,13 @@ def load_corpus(path, keys=None):
     X = np.asarray(X, np.float64)
     if 'sed_inc' in qh_nodes:
         Y['energy'] = energy_targets(qh_nodes, wave_grid, X, Y['trans'], Y['cont'])
+    # LyC family = nebular continuum at lambda < 912 A, floored at REL_FLOOR_LYC['cont'] times the peak of
+    # the WHOLE continuum of the model (the floor of 'cont' below 912 A): relative to its own peak an opaque cloud,
+    # all CLOUDY zeros below 912 A, would have no floor. Same floor -> zero_lyc_floor works on the spliced continuum.
+    if EMUL.REGIME_EXPERTS:
+        C = Y['cont']
+        Y['lyc'] = np.maximum(C[:, np.asarray(wave_grid) < CONST.LyLimit],
+                              EMUL.REL_FLOOR_LYC['cont'] * C.max(1, keepdims=True))
 
     return (X, Y,
             {'lines_names': line_names,
@@ -673,7 +680,7 @@ def init_inducing(Xz, n_out, M=512, seed=42):
 
 
 def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_every=10,
-                 progress=None, cost=1.0, select=None):
+                 progress=None, cost=1.0, select=None, ckpt=None):
     """
     Trains all Gaussian Processes (GPs) of a family together using a batched model composed of independent Stochastic Variational
     Gaussian Processes (SVGP). This function facilitates the simultaneous training of multiple output dimensions by leveraging
@@ -704,6 +711,10 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_
         select: (Xz_sel, Yz_sel), optional
             Calibration clouds: every eval_every epochs the rmse_z on them is computed and the model of the best
             evaluation is returned (not the last epoch). Never the holdout, which stays an independent check.
+        ckpt: str, optional
+            checkpoint file of the family, written at the end of every epoch (model, likelihood, optimizer,
+            schedule, best checkpoint, histories, RNG). If it exists when the training starts, the training continues
+            from it (a finished family is not trained again): a job killed at the walltime is resumed by a new job.
 
     Returns:
         tuple:
@@ -744,8 +755,31 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_
     ref = float(np.sqrt(np.mean(np.asarray(test[1]) ** 2))) if test is not None else None
     import time
     epoch_times = []
+    # resume from the checkpoint of the family. The fingerprint (shapes, M, epochs, sums of the targets)
+    # stops a resume on different data or settings: the checkpoint is then ignored and the family starts again
+    start = 0
+    fp = {'n': int(Xt.shape[0]), 'n_out': int(n_out), 'M': int(M), 'epochs': int(epochs), 'batch': int(batch),
+          'y_sum': float(np.sum(Yz, dtype=np.float64)), 'y_abs': float(np.sum(np.abs(Yz), dtype=np.float64))}
+    def same_fp(a):
+        return (all(a.get(k) == fp[k] for k in ('n', 'n_out', 'M', 'epochs', 'batch'))
+                and all(np.isclose(a.get(k, np.nan), fp[k], rtol=1e-4, atol=1e-3) for k in ('y_sum', 'y_abs')))
+    if ckpt is not None and os.path.isfile(ckpt):
+        c = torch.load(ckpt, map_location=device, weights_only=False)
+        if same_fp(c['fp']):
+            model.load_state_dict(c['model'])
+            likelihood.load_state_dict(c['likelihood'])
+            opt.load_state_dict(c['opt'])
+            sched.load_state_dict(c['sched'])
+            best, hist, test_hist, epoch_times = c['best'], c['hist'], c['test_hist'], c['epoch_times']
+            torch.set_rng_state(c['rng'])
+            start = c['epoch']
+            tqdm.write(f"[hii-train] resumed from {ckpt}: {start}/{epochs} epochs done")
+            if progress is not None:
+                progress.update(cost * start)
+        else:
+            tqdm.write(f"[hii-train] checkpoint {ckpt} is of another training (data or settings differ): ignored")
     # training loop
-    for epoch in range(epochs):
+    for epoch in range(start, epochs):
         _t0 = time.perf_counter()
         tot = 0.0
         for xb, yb in loader: # for each mini batch
@@ -777,6 +811,13 @@ def train_family(Xz, Yz, M, epochs, batch, lr, device, seed=42, test=None, eval_
             tqdm.write(f"[hii-train] TR epoch {epoch + 1:4d}/{epochs}  ELBO loss {hist[-1]: .4f} (must decrease)")
         if progress is not None:
             progress.update(cost)
+        # checkpoint at the end of the epoch, written to a temporary file and renamed
+        if ckpt is not None:
+            torch.save({'fp': fp, 'epoch': epoch + 1, 'model': model.state_dict(), 'likelihood': likelihood.state_dict(),
+                        'opt': opt.state_dict(), 'sched': sched.state_dict(), 'best': best, 'hist': hist,
+                        'test_hist': test_hist, 'epoch_times': epoch_times, 'rng': torch.get_rng_state()},
+                       ckpt + '.tmp')
+            os.replace(ckpt + '.tmp', ckpt)
 
     # back to the best checkpoint
     best_epoch = epochs
@@ -888,8 +929,8 @@ def main():
                     help='JSON manifest of the training (default: data/emulators/hii_meta.json)')
     ap.add_argument('--inducing', type=int, default=512, help='number of inducing points for the'
                                                               'families using PCA (default: 512)')
-    ap.add_argument('--inducing-lines', type=int, default=256, help='number of inducing points'
-                                                            'for the lines family and scalars (no PCA) (default: 256)')
+    ap.add_argument('--inducing-lines', type=int, default=512, help='number of inducing points'
+                                                            'for the lines family and scalars (no PCA) (default: 512)')
     ap.add_argument('--var-target', type=float, default=0.9999, help='target variance explained'
                                                                     ' by PCA components (default: 0.9999)')
     ap.add_argument('--max-pca-components', type=int, default=100, help="maximum number of "
@@ -910,13 +951,13 @@ def main():
                     'with --line-targets ratio (0 disables it) (default: %(default)g)')
     ap.add_argument('--size-budget-mib', type=int, default=100, help='maximum size budget in MiB'
                                                                      ' (default: 100)')
-    ap.add_argument('--epochs', type=int, default=200, help='number of epochs to train (default: 200)')
+    ap.add_argument('--epochs', type=int, default=60, help='number of epochs to train (default: 60)')
     ap.add_argument('--batch-size', type=int, default=1024, help='batch size (default: 1024)')
     ap.add_argument('--lr', type=float, default=5e-3, help='learning rate (default: 5e-3)')
     ap.add_argument('--seed', type=int, default=42, help='random seed (default: 42)')
     ap.add_argument('--holdout-frac', type=float, default=0.1, help='fraction of data to hold out for validation (default: 0.1)')
     ap.add_argument('--holdout-seed', type=int, default=42, help='random seed for holdout split (default: 42)')
-    ap.add_argument('--eval-every', type=int, default=10, help='evaluate model every n epochs (default: 10)')
+    ap.add_argument('--eval-every', type=int, default=5, help='evaluate model every n epochs (default: 5)')
     ap.add_argument('--calib-frac', type=float, default=EMUL.CALIB_FRAC, help='fraction of the clouds kept out of '
                     'training (and disjoint from the holdout) to calibrate the predictive sigma, one scale s_k '
                     'per output; 0 disables the calibration (default: %(default)g)')
@@ -925,6 +966,8 @@ def main():
     ap.add_argument('--calib-quantile', type=float, default=EMUL.CALIB_QUANTILE, help='quantile q of |r| used for the '
                     'scale, s_k = quantile_q(|r|) / Phi^-1((1+q)/2): 0.95 calibrates the tails (cov95), 0.5 is '
                     'the median estimator (cov68) (default: %(default)g)')
+    ap.add_argument('--no-sigma-x', action='store_true', help='do not fit the input-dependent sigma g_k(x) '
+                    '(quadratic in the inputs) on the calibration clouds; only the global scale s_k')
     ap.add_argument('--no-sed-inputs', action='store_true', help='do not append the SED descriptors of the node '
                     f'{EMUL.SED_INPUT_KEYS_HII} to the inputs of the GP (default: appended when the corpus has the '
                     'incident SED)')
@@ -935,10 +978,15 @@ def main():
                     f'{EMUL.MEM_SAFETY:.0%}% of the memory available to the job')
     ap.add_argument('--device', choices=('auto', 'cpu', 'cuda'), default='auto', help='device '
                                                                                       'to use (default: auto)')
+    ap.add_argument('--checkpoint-dir', default=None, help='directory of the per-family checkpoints, written at '
+                    'every epoch; if it already holds checkpoints of the same training, the training resumes from '
+                    'them (a family already finished is not trained again). Removed at the end of a complete run')
     args=ap.parse_args()
 
 
     pathlib.Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    if args.checkpoint_dir:
+        pathlib.Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
     pathlib.Path(args.meta).parent.mkdir(parents=True, exist_ok=True)
     device = (('cuda' if torch.cuda.is_available() else 'cpu') if args.device == 'auto' else args.device)
     # memory check before reading the corpus (all the grid points counted, converged or not)
@@ -1013,7 +1061,22 @@ def main():
     extras['predictive_noise'] = True
 
     # families of emulators (name, PCA, offset)
-    FAM = tuple(f for f in EMUL.FAMILIES_HII if f[0] in Y)
+    # an expert exists when the targets of its base family do
+    FAM = tuple(f for f in EMUL.FAMILIES_HII if regime_of(f[0])[0] in Y)
+    reg_rows = {fam: regime_mask(fam, EMUL.INPUT_KEYS_HII, X) for fam, _, _ in FAM}      # rows of each family
+    small = {f: int((tr & reg_rows[f]).sum()) for f, _, _ in FAM
+             if regime_of(f)[1] is not None and (tr & reg_rows[f]).sum() < EMUL.REGIME_MIN_MODELS}
+    if small:
+        print(f"[hii-train] regime experts OFF: too few training models {small} (< EMUL.REGIME_MIN_MODELS = "
+              f"{EMUL.REGIME_MIN_MODELS}), single trans and no lyc family")
+        FAM = tuple(f for f in EMUL.FAMILIES_HII_SINGLE if f[0] in Y)
+        reg_rows = {fam: np.ones(len(X), dtype=bool) for fam, _, _ in FAM}
+    # calibrated families: a base name (e.g. trans) means its experts and an expert name the base family when the
+    # experts are off; names unknown to both are kept, for the error below
+    known = {regime_of(f)[0] for f, _, _ in FAM} | set(EMUL.REGIME_FAMS)
+    cal_bases = {regime_of(f)[0] for f in cal_fams}
+    cal_fams = (tuple(f for f, _, _ in FAM if regime_of(f)[0] in cal_bases)
+                + tuple(f for f in cal_fams if regime_of(f)[0] not in known))
     cal_fams = tuple(f for f in cal_fams if f != 'energy' or 'energy' in Y)
     unknown = set(cal_fams) - {f for f, _, _ in FAM}
     if unknown:
@@ -1024,12 +1087,19 @@ def main():
     rel.update({fam: 0.0 for fam, _, _ in FAM if fam not in EMUL.VECTOR_FAMS})
     lyc = parse_rel_floor_lyc(args.rel_floor_lyc)
     # floor actually applied: a per-wavelength array for the families with an ionizing floor, rel otherwise
-    floor = {fam: (wavelength_floor(rel[fam], lyc[fam], meta['wave_grid']) if fam in EMUL.WAVE_FAMS else rel[fam])
-             for fam, _, _ in FAM}
+    # an expert gets the floor of its base family and the rank of the PCA on the rows of its regime.
+    # The PCA budget is shared within each group (single families, opaque experts, thin experts):
+    # they are separate files and are not all evaluated together
+    floor = {fam: (wavelength_floor(rel[regime_of(fam)[0]], lyc[regime_of(fam)[0]], meta['wave_grid'])
+                   if regime_of(fam)[0] in EMUL.WAVE_FAMS else rel[fam]) for fam, _, _ in FAM}
     # PCA on at most --pca-fit-max models
-    k_var = {fam: pca_rank(Y[fam][tr], args.var_target, floor[fam], fit_max=args.pca_fit_max, seed=args.seed)[3]
+    k_var = {fam: pca_rank(Y[regime_of(fam)[0]][tr & reg_rows[fam]], args.var_target, floor[fam],
+                           fit_max=args.pca_fit_max, seed=args.seed)[3]
              for fam, do_pca, _ in FAM if do_pca}
-    k_granted = allocate_pca_budget(k_var, args.max_pca_components)
+    k_granted = {}
+    for r in {regime_of(f)[1] for f in k_var}:
+        k_granted.update(allocate_pca_budget({f: k for f, k in k_var.items() if regime_of(f)[1] == r},
+                                             args.max_pca_components))
     # transform of trans (k_var above is on log10 T on purpose)
     trans_transform = ({'kind': 'tau', 'tau_min': EMUL.TRANS_TAU_RANGE[0], 'tau_max': EMUL.TRANS_TAU_RANGE[1]}
                        if EMUL.TRANS_TARGET == 'tau' else None)
@@ -1048,21 +1118,43 @@ def main():
     print(f"[hii-train] PCA components: requested {k_var}, granted {k_granted}"
           + (" (cut by --max-pca-components)" if k_granted != k_var else ""))
 
+    # epochs and evaluation period of each family; an expert (REGIME_EQUAL_STEPS) gets the optimizer steps
+    # of the full training, epochs * n_train / n_train(regime), and the progress bar the cost of its own batches
+    epochs_of, eval_of = {}, {}
+    for fam, _, _ in FAM:
+        n_f = max(int((tr & reg_rows[fam]).sum()), 1)
+        epochs_of[fam] = (max(1, int(round(args.epochs * int(tr.sum()) / n_f)))
+                          if regime_of(fam)[1] is not None and EMUL.REGIME_EQUAL_STEPS else args.epochs)
+        eval_of[fam] = max(1, int(round(args.eval_every * epochs_of[fam] / args.epochs)))
+    regs = sorted({regime_of(f)[1] for f, _, _ in FAM} - {None})
+    if regs:
+        print(f"[hii-train] regime experts on {EMUL.REGIME_INPUT}: "
+              + ", ".join(f"{f} {int((tr & reg_rows[f]).sum())} models {epochs_of[f]} epochs"
+                          for f, _, _ in FAM if regime_of(f)[1] is not None)
+              + f"; blend over {EMUL.REGIME_BLEND}; lyc = cont below {CONST.LyLimit} A spliced into cont")
     # one progress bar for the whole training
-    n_batches = -(-int(tr.sum()) // args.batch_size)
     cost = {}
     for fam, do_pca, _ in FAM:
-        d = k_granted[fam] if do_pca else Y[fam].shape[1]
+        n_batches = -(-int((tr & reg_rows[fam]).sum()) // args.batch_size)
+        d = k_granted[fam] if do_pca else Y[regime_of(fam)[0]].shape[1]
         M = args.inducing if do_pca else args.inducing_lines
         cost[fam] = float(d * (M ** 3 + args.batch_size * M ** 2) * n_batches)
-    pbar = tqdm(total=args.epochs * sum(cost.values()), desc='[hii-train] training',
+    pbar = tqdm(total=sum(epochs_of[f] * c for f, c in cost.items()), desc='[hii-train] training',
                 bar_format='{desc}: {percentage:3.0f}%|{bar:30}| {elapsed} elapsed, {remaining} left')
+    if regs:
+        extras['regimes'] = {'input': EMUL.REGIME_INPUT, 'ranges': {r: list(EMUL.REGIMES[r]) for r in regs},
+                             'blend': list(EMUL.REGIME_BLEND)}
+    tr_all, te_all, cal_all = tr, te, cal     # restored after the loop
 
     # training with k_granted
     for fam, do_pca, off in FAM:
+        # an expert trains, is checked and is calibrated on the rows of its regime only
+        tr, te, cal = tr_all & reg_rows[fam], te_all & reg_rows[fam], cal_all & reg_rows[fam]
+        Y[fam] = Y[regime_of(fam)[0]]
         lr_kw = ({'ratio_ref': ratio_ref, 'ratio_floor': args.ratio_floor, 'log_scale': log_scale[tr]}
                  if fam == 'lines' and ratio_ref is not None else {})
-        tr_kw = {'transform': trans_transform} if fam == 'trans' and trans_transform else {}
+        # the trans experts
+        tr_kw = {'transform': trans_transform} if regime_of(fam)[0] == 'trans' and trans_transform else {}
         Yz, prep = preprocess_targets(Y[fam][tr], do_pca, args.var_target, k_granted.get(fam) if do_pca else None,
                                       offset=off, rel_floor=0.0 if tr_kw else floor[fam], **lr_kw, **tr_kw,
                                       fit_max=args.pca_fit_max, seed=args.seed)
@@ -1073,10 +1165,13 @@ def main():
 
         # calibration clouds encoded before the training, to choose the best checkpoint on them
         Yz_cal = encode_targets(prep, Y[fam][cal], log_scale=log_scale[cal] if lr_kw else None) if cal.any() else None
-        m, lik, hist, ep_t, te_hist, best_epoch = train_family(Xz[tr], Yz, M_fam, args.epochs, args.batch_size, args.lr,
-                                                   device, args.seed, test=(Xz[te], Yz_te), eval_every=args.eval_every,
+        # epochs and evaluation period of the family (scaled for the experts)
+        m, lik, hist, ep_t, te_hist, best_epoch = train_family(Xz[tr], Yz, M_fam, epochs_of[fam], args.batch_size, args.lr,
+                                                   device, args.seed, test=(Xz[te], Yz_te), eval_every=eval_of[fam],
                                                    progress=pbar, cost=cost[fam],
-                                                   select=(Xz[cal], Yz_cal) if Yz_cal is not None else None)
+                                                   select=(Xz[cal], Yz_cal) if Yz_cal is not None else None,
+                                                   ckpt=(os.path.join(args.checkpoint_dir, f'{fam}.pt')
+                                                         if args.checkpoint_dir else None))
         extras[f'{fam}_best_epoch'] = best_epoch
         epoch_times.extend(ep_t)
 
@@ -1110,10 +1205,30 @@ def main():
             # s_min: latent + noise can be too wide, so the calibration may also narrow sigma
             s = calibration_scale(m, Xz[cal], Yz_cal, device, s_min=EMUL.SIGMA_SCALE_MIN_NOISE,
                                   quantile=args.calib_quantile, likelihood=lik)
+            # input-dependent sigma:
+            # 1) prediction on the calibration clouds with the uncalibrated sigma (latent + likelihood noise)
+            # 2) normalized residuals r = (y - mu) / sigma_GP
+            # 3) fit_sigma_x: log r^2 regressed on a quadratic of the inputs -> g_k(x), then the global s_k on r/exp(g/2)
+            # 4) g_k stored in the preprocessing (prep['sigma_x']);
+            sx = None
+            if EMUL.SIGMA_X and not args.no_sigma_x:
+                mu_c, var_c = latent_predict(m, Xz[cal], device, likelihood=lik)                     # 1
+                r_c = (Yz_cal - mu_c) / np.sqrt(np.maximum(var_c, 1e-30))                        # 2
+                res = fit_sigma_x(Xz[cal], r_c, quantile=args.calib_quantile,
+                                  s_min=EMUL.SIGMA_SCALE_MIN_NOISE,
+                                  groups=np.array([k.split('_')[2] for k in np.asarray(meta['keys'])[cal]]))  # 3
+                if res is not None:
+                    sx, s = res
+                    prep['sigma_x'] = sx                                                             # 4
             prep['sigma_scale'] = s
             before = coverage_scores(m, Xz[te], Yz_te, device=device, likelihood=lik)
-            after = coverage_scores(m, Xz[te], Yz_te, scale=s, device=device, likelihood=lik)
+            # the holdout coverage after the calibration includes the factor exp(g_k(x))
+            after = coverage_scores(m, Xz[te], Yz_te, scale=s, device=device, likelihood=lik,
+                                    var_factor=sigma_x_factor(sx, Xz[te]))
             extras[f'{fam}_sigma_calibration'] = {
+                'sigma_x': sx is not None,
+                'sigma_x_factor_p5_p50_p95': (np.percentile(np.sqrt(sigma_x_factor(sx, Xz[te])), [5, 50, 95]).tolist()
+                                              if sx is not None else None),
                 's_median': float(np.median(s)), 's_max': float(s.max()),
                 # clip at SIGMA_SCALE_MIN_NOISE; n_shrunk = outputs whose sigma was narrowed (s_k < 1)
                 'n_clipped': int(np.sum(s <= EMUL.SIGMA_SCALE_MIN_NOISE)), 's_min': float(np.min(s)),
@@ -1124,7 +1239,10 @@ def main():
             tqdm.write(f"[hii-train] sigma calibration {fam}: s_k median {np.median(s):.2f}, max {s.max():.2f}"
                        f" | holdout cov95 {before['cov95']:.3f} -> {after['cov95']:.3f} (target 0.95),"
                        f" cov68 {before['cov68']:.3f} -> {after['cov68']:.3f},"
-                       f" |r|>5 {before['out5']:.3f} -> {after['out5']:.3f}")
+                       f" |r|>5 {before['out5']:.3f} -> {after['out5']:.3f}"
+                       + (f" | sigma(x) factor p5/p50/p95 "
+                          + "/".join(f"{v:.2f}" for v in extras[f'{fam}_sigma_calibration']['sigma_x_factor_p5_p50_p95'])
+                          if sx is not None else " | sigma(x) not fitted"))
 
         # dictionary of state on CPU
         models[fam] = {'model': {k: v.cpu() for k, v in m.state_dict().items()},
@@ -1134,8 +1252,13 @@ def main():
         extras[f'{fam}_holdout_history'] = te_hist
         trained[fam] = (m,lik)
         Yz_by_fam[fam] = Yz
-        Yz_te_by_fam[fam] = Yz_te
+        # the frozen gate set has one row per holdout model, an expert covers only its regime
+        if regime_of(fam)[1] is None:
+            Yz_te_by_fam[fam] = Yz_te
+        else:
+            del Y[fam]
     pbar.close()
+    tr, te, cal = tr_all, te_all, cal_all
 
     # split emulators file .pt per family
     stem = str(args.out)[:-3] if str(args.out).endswith('.pt') else str(args.out)
@@ -1143,10 +1266,14 @@ def main():
              'cont': ['cont'],
              'grain': ['grain'],
              'trans': ['trans'],
-             'scalars': ['dust', 'fuv_t', 'fuv_n', 'energy']}
+             'scalars': ['dust', 'fuv_t', 'fuv_n', 'energy'],
+             # one file per trans expert (each as large as the single trans, size budget per file)
+             'trans_opaque': ['trans_opaque'], 'trans_thin': ['trans_thin'], 'lyc': ['lyc_opaque', 'lyc_thin']}
 
     # only the trained families (no energy without the incident SED)
     split = {p: [f for f in fs if f in models] for p, fs in split.items()}
+    # no empty file
+    split = {p: fs for p, fs in split.items() if fs}
     assert sorted(f for fs in split.values() for f in fs) == sorted(models), ("[hii-train] incomplete split: "
                                                                  "every trained family must finish on a file")
     out_paths = {}
@@ -1188,6 +1315,10 @@ def main():
                 'sigma_calibration': {'file': calib_path, 'frac': args.calib_frac, 'n_calib': int(cal.sum()),
                     'families': list(cal_fams), 's_min': EMUL.SIGMA_SCALE_MIN_NOISE,
                     'estimator': f"quantile_{args.calib_quantile:g}(|r|) / Phi^-1((1+q)/2)",
+                    'sigma_x': (None if (args.no_sigma_x or not EMUL.SIGMA_X) else
+                                {'model': 'sigma_k(x) = s_k sigma_GP,k(x) exp(g_k(x)/2), g_k quadratic in the '
+                                          'standardized inputs, ridge fit of log r^2 on the calibration clouds',
+                                 'ridge': EMUL.SIGMA_X_RIDGE, 'log_clip': list(EMUL.SIGMA_X_LOG_CLIP)}),
                     'quantile': args.calib_quantile,
                     'per_family': {f: extras[f'{f}_sigma_calibration'] for f in cal_fams}},
                 'input_keys': list(EMUL.INPUT_KEYS_HII),
@@ -1230,11 +1361,18 @@ def main():
                 'batch': args.batch_size, 'lr': args.lr,
                 'seed': args.seed,
                 'families': {k: (extras[f'{k}_prep']['pca']['n_components']
-                                 if extras[f'{k}_prep']['pca'] else int(Y[k].shape[1])) for k, _, _ in FAM},
+                                 if extras[f'{k}_prep']['pca'] else int(Y[regime_of(k)[0]].shape[1])) for k, _, _ in FAM},
+                'regimes': extras.get('regimes'),
+                'epochs_per_family': epochs_of,
                 'final_elbo': {k: extras[f'{k}_elbo_history'][-1] for k, _, _ in FAM},
                 }, indent = 2, default = str))
 
     print(f"[hii-train] -> {args.out} | meta -> {args.meta}")
+    # run complete, remove checkpoints
+    if args.checkpoint_dir:
+        for fam, _, _ in FAM:
+            pathlib.Path(args.checkpoint_dir, f'{fam}.pt').unlink(missing_ok=True)
+        print(f"[hii-train] checkpoints removed from {args.checkpoint_dir}")
 
 if __name__ == '__main__':
     main()
