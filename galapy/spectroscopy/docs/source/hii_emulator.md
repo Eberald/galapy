@@ -4,7 +4,9 @@ CloudIA implements the module `utils/hii/train_emulator_hii.py`, run by the cons
 train the **HII emulator**: a set of Sparse Variational Gaussian Processes (SVGPs) that replace CLOUDY inside a
 fit. Given the 9 inputs of an HII model, the emulator returns, per solar mass of SSP formed, the emergent lines,
 the nebular and grain continua, the transmission, the dust mass, the FUV terms and the energy fractions of the
-incident SED, each with its predictive uncertainty. The decoded outputs obey three physical constraints by
+incident SED, each with its predictive uncertainty, which depends on the input (see *Calibration of the sigma*).
+The transmission and the ionizing continuum are emulated by two **regime experts**, for optically thick and thin
+clouds, blended in $f_{\rm esc}$. The decoded outputs obey three physical constraints by
 construction: $0 < T \le 1$, grain emission $\le$ nebular continuum, and no flux where CLOUDY has none below the
 Lyman limit.
 
@@ -64,14 +66,18 @@ node in `tau_SSP`, linear in `Z_star`). They give the kernel the hardness of the
 `tau_SSP` and `Z_star` carry only through a table the kernel cannot see. The GP then has 12 inputs;
 `--no-sed-inputs` switches them off, and artifacts trained without them still load.
 
-The outputs are split into 8 **families**, `EMUL.FAMILIES_HII`, each trained as one batch of independent SVGPs:
+The outputs are split into **families**, `EMUL.FAMILIES_HII`, each trained as one batch of independent SVGPs. With
+the regime experts (`EMUL.REGIME_EXPERTS = True`, the default) there are 11 of them: `trans` is replaced by its two
+experts `trans_opaque` and `trans_thin`, and the ionizing continuum gets the family `lyc` with its two experts
+(see *Regime experts* below). `EMUL.FAMILIES_HII_SINGLE` is the list without experts (8 families).
 
 | Family | Corpus dataset | Outputs | Compression | Inducing points |
 | :--- | :--- | :--- | :--- | :--- |
 | `lines` | `lines_emergent/fluxes` | one per line of the list | none | `--inducing-lines` |
 | `cont` | `continuum/nebular_emission_per_Msun` | PCA components | PCA | `--inducing` |
 | `grain` | `continuum/grain_diag_per_Msun` | PCA components | PCA | `--inducing` |
-| `trans` | `continuum/transmission`, emulated as $\log_{10}\tau$, $\tau = -\ln T$ | PCA components | PCA | `--inducing` |
+| `trans_opaque`, `trans_thin` | `continuum/transmission`, emulated as $\log_{10}\tau$, $\tau = -\ln T$, on the models of each regime (`trans` without experts) | PCA components | PCA | `--inducing` |
+| `lyc_opaque`, `lyc_thin` | nebular continuum below the Lyman limit (911.76 Å), floored at $10^{-5}$ of the peak of the whole continuum, on the models of each regime | PCA components | PCA | `--inducing` |
 | `dust` | `dust_mass_per_Msun` | 1 | none | `--inducing-lines` |
 | `fuv_t` | `T_fuv_hii` | 1 | none | `--inducing-lines` |
 | `fuv_n` | `N_fuv_hii` | 1 (offset $10^{-6}$, since it can be 0) | none | `--inducing-lines` |
@@ -94,8 +100,9 @@ usage: galapy-train-hii [-h] [--corpus CORPUS] [--out OUT] [--meta META] [--indu
                         [--ratio-floor RATIO_FLOOR] [--size-budget-mib SIZE_BUDGET_MIB] [--epochs EPOCHS]
                         [--batch-size BATCH_SIZE] [--lr LR] [--seed SEED] [--holdout-frac HOLDOUT_FRAC]
                         [--holdout-seed HOLDOUT_SEED] [--eval-every EVAL_EVERY] [--calib-frac CALIB_FRAC]
-                        [--calib-families CALIB_FAMILIES] [--calib-quantile CALIB_QUANTILE]
-                        [--no-sed-inputs] [--device {auto,cpu,cuda}]
+                        [--calib-families CALIB_FAMILIES] [--calib-quantile CALIB_QUANTILE] [--no-sigma-x]
+                        [--no-sed-inputs] [--pca-fit-max PCA_FIT_MAX] [--no-memory-check]
+                        [--device {auto,cpu,cuda}] [--checkpoint-dir CHECKPOINT_DIR]
 ```
 
 ### Options
@@ -104,10 +111,10 @@ usage: galapy-train-hii [-h] [--corpus CORPUS] [--out OUT] [--meta META] [--indu
 | :--- | :--- | :--- |
 | `-h`, `--help` | None | Show help message and exit. |
 | `--corpus` | `CORPUS` | Merged HII corpus. <br> Default: `data/products/hii_grid.h5`. |
-| `--out` | `OUT` | Stem of the artifacts: writes `<stem>_{lines,cont,grain,trans,scalars}.pt` and the companion files. <br> Default: `data/emulators/hii.pt`. |
+| `--out` | `OUT` | Stem of the artifacts: writes `<stem>_{lines,cont,grain,scalars}.pt`, the transmission (`<stem>_trans.pt`, or `<stem>_trans_opaque.pt` and `<stem>_trans_thin.pt` with the experts), `<stem>_lyc.pt` with the experts, and the companion files. <br> Default: `data/emulators/hii.pt`. |
 | `--meta` | `META` | JSON manifest of the training. <br> Default: `data/emulators/hii_meta.json`. |
 | `--inducing` | `INDUCING` | Inducing points of the PCA families. <br> Default: `512`. |
-| `--inducing-lines` | `INDUCING_LINES` | Inducing points of the lines and of the scalars. <br> Default: `256`. |
+| `--inducing-lines` | `INDUCING_LINES` | Inducing points of the lines and of the scalars. <br> Default: `512` (was 256: on 45k models and 60 epochs, 512 lowered the median line error from 0.092 to 0.081 dex, at +5% prediction time with the means only and +25% with the sigma). |
 | `--var-target` | `VAR_TARGET` | Variance the PCA components must explain. <br> Default: `0.9999`. |
 | `--max-pca-components` | `MAX_PCA_COMPONENTS` | Total PCA components, shared among the PCA families. <br> Default: `100`. |
 | `--rel-floor` | `[FAM=]VALUE ...` | Floor before the $\log_{10}$, relative to the peak of each model; `FAM=VALUE` sets one family, a bare `VALUE` all of them, `0` disables it. The transmission ignores it: it is emulated as $\log_{10}\tau$, with $\tau$ clipped (`EMUL.TRANS_TAU_RANGE`). <br> Default: `lines=0 cont=1e-10 grain=1e-10 trans=1e-05` (`lines=1e-10` with `--line-targets absolute`). |
@@ -115,20 +122,22 @@ usage: galapy-train-hii [-h] [--corpus CORPUS] [--out OUT] [--meta META] [--indu
 | `--line-targets` | `{ratio,absolute}` | Targets of the lines family: ratios to H$\beta$ (see below) or $\log_{10}$ of the fluxes. <br> Default: `ratio`. |
 | `--ratio-floor` | `RATIO_FLOOR` | Minimum of $L_i/L_{{\rm H}\beta}$ with `--line-targets ratio` (`0` disables it). <br> Default: `1e-05` (`EMUL.RATIO_FLOOR`). |
 | `--size-budget-mib` | `SIZE_BUDGET_MIB` | Maximum size of every artifact file, in MiB. <br> Default: `100`. |
-| `--epochs` | `EPOCHS` | Training epochs of every family. <br> Default: `200`. |
+| `--epochs` | `EPOCHS` | Training epochs of every family (the regime experts get more, see *Regime experts*). <br> Default: `60`. |
 | `--batch-size` | `BATCH_SIZE` | Mini-batch size. <br> Default: `1024`. |
-| `--lr` | `LR` | Learning rate of AdamW. <br> Default: `5e-3`. |
+| `--lr` | `LR` | Learning rate of Adam. <br> Default: `5e-3`. |
 | `--seed` | `SEED` | Seed of the training (inducing points, mini-batches). <br> Default: `42`. |
 | `--holdout-frac` | `HOLDOUT_FRAC` | Fraction of the **clouds** kept out as holdout. <br> Default: `0.1`. |
 | `--holdout-seed` | `HOLDOUT_SEED` | Seed of the holdout split (the calibration split uses `HOLDOUT_SEED + 1`). <br> Default: `42`. |
-| `--eval-every` | `EVAL_EVERY` | Epochs between two evaluations on the holdout. <br> Default: `10`. |
+| `--eval-every` | `EVAL_EVERY` | Epochs between two evaluations on the holdout and on the calibration clouds. <br> Default: `5`. |
 | `--calib-frac` | `CALIB_FRAC` | Fraction of **all** the clouds kept out of training, disjoint from the holdout, to calibrate the sigma; `0` disables the calibration. <br> Default: `0.05`. |
-| `--calib-families` | `CALIB_FAMILIES` | Comma-separated families whose sigma is calibrated. <br> Default: `lines,cont,grain,trans,dust,fuv_t,fuv_n,energy`. |
+| `--calib-families` | `CALIB_FAMILIES` | Comma-separated families whose sigma is calibrated; a base name (`trans`, `lyc`) means both its experts. <br> Default: all the families, `lines,cont,grain,trans_opaque,trans_thin,dust,fuv_t,fuv_n,energy,lyc_opaque,lyc_thin`. |
 | `--calib-quantile` | `CALIB_QUANTILE` | Quantile $q$ of $\lvert r\rvert$ of the calibration estimator (`0.5` is the median estimator). <br> Default: `0.95`. |
+| `--no-sigma-x` | None | Do not fit the input-dependent sigma $g_k(x)$ on the calibration clouds: only the global scale $s_k$. <br> Default: fitted (`EMUL.SIGMA_X = True`). |
 | `--no-sed-inputs` | None | Do not append the SED descriptors of the node to the inputs of the GP. <br> Default: appended when the corpus has the incident SED. |
 | `--pca-fit-max` | `PCA_FIT_MAX` | Maximum number of training models the PCA of `cont`, `grain` and `trans` is fitted on, drawn at random with `--seed` (`0` = all). Mean, sd and PC scores use every training model. <br> Default: `100000` (`EMUL.PCA_FIT_MAX`). |
 | `--no-memory-check` | None | Train even if the estimated peak memory exceeds 85% of the memory available to the job (see *Memory* below). |
 | `--device` | `{auto,cpu,cuda}` | Device of the training; `auto` takes the GPU when available. <br> Default: `auto`. |
+| `--checkpoint-dir` | `CHECKPOINT_DIR` | Directory of the per-family checkpoints, written at every epoch. If it already holds checkpoints of the same training, the training resumes from them (see *Checkpoints* below); they are removed at the end of a complete run. <br> Default: none (no checkpoints). |
 
 **Memory.** `cont`, `grain` and `trans` (9244 wavelengths each) are kept in the dtype of the corpus (float32); their mean, sd and PC scores are computed by chunks of `EMUL.PCA_CHUNK` rows, and the PCA is fitted on at most `--pca-fit-max` models. Before reading the corpus the training estimates its peak memory (`estimate_train_memory`: the float32 families, plus the training rows of one family and `EMUL.MEM_PCA_COPIES` float64 copies of the rows of its PCA, plus `EMUL.MEM_OVERHEAD`) and stops with an error if it exceeds `EMUL.MEM_SAFETY` (85%) of the memory of the job (`available_memory`: the smallest of MemAvailable, the cgroup limit and `SLURM_MEM_PER_NODE`). On 430k models with the PCA on 100k the estimate requires a 160 GB node.
 
@@ -141,12 +150,21 @@ galapy-train-hii
 ```
 
 Train a variant with more inducing points for the lines and scalars, in its own files, raising the size budget
-(the lines file grows as $M^2$):
+(the lines file grows as $M^2$: 30 MiB at $M = 256$, 75 MiB at 512):
 
 ```bash
 galapy-train-hii --inducing-lines 1024 --size-budget-mib 1000 \
     --out data/emulators/hii_L1024.pt --meta data/emulators/hii_L1024_meta.json
 ```
+
+A long training split over several jobs (walltime): every job runs the same command; the second one redoes the
+preprocessing, skips the families already finished and continues the current one from its last epoch:
+
+```bash
+galapy-train-hii --checkpoint-dir data/emulators/hii_ckpt
+```
+
+On SLURM, `cloudia_train.slurm` does this with two chained jobs (`sbatch --dependency=afternotok:$JOB`).
 
 ---
 
@@ -249,7 +267,54 @@ of the cells instead of 0.17%) and the optical continuum 2–3 times worse: a si
 error that has a shape. The transmission as $\tau$ alone already brought the holdout models within 1% of the
 budget from 58% to 76%.
 
-### 5. The SVGPs
+### 5. Regime experts
+
+Radiation-bounded (opaque) and density-bounded (thin) HII regions differ in their ionization structure and in the
+escape of the Lyman continuum (Pellegrini et al. 2012; Jaskot & Oey 2013): the transmission and the nebular
+continuum below 912 Å change regime between them, the other outputs do not. One stationary kernel over both
+regimes smooths the transition, and the Lyman break of the emergent spectrum came out wrong for the opaque clouds.
+With `EMUL.REGIME_EXPERTS = True`:
+
+- the nebular continuum below the Lyman limit is also a family of its own, `lyc`, so that its PCA is not dominated
+  by the optical/IR continuum; it is floored at `EMUL.REL_FLOOR_LYC['cont']` ($10^{-5}$) of the peak of the
+  **whole** continuum of the model (an opaque cloud has no flux below 912 Å, so a floor relative to its own peak
+  would not exist). `cont` keeps the whole grid;
+- every family of `EMUL.REGIME_FAMS` (`trans`, `lyc`) is trained as two experts, on the models whose input
+  `EMUL.REGIME_INPUT` ($f_{\rm esc}$) is in the overlapping ranges of `EMUL.REGIMES`: `opaque` for
+  $f_{\rm esc} < 0.10$, `thin` for $f_{\rm esc} > 0.005$. A wider opaque range spreads its inducing points on thin
+  clouds and loses accuracy (searched: opaque $< 0.1, 0.2, 0.3$, thin $> 0.02, 0.005$);
+- an expert sees fewer models, so with the same epochs it would make fewer optimizer steps: with
+  `EMUL.REGIME_EQUAL_STEPS` its epochs are $\text{epochs} \times N_{\rm train} / N_{\rm train, regime}$, and its
+  evaluation period scales in the same way (`epochs_per_family` in the manifest);
+- each expert has its own PCA, its own best checkpoint, and its own calibration, on the models of its regime;
+- with fewer than `EMUL.REGIME_MIN_MODELS` (2000) training models in a regime, the experts are switched off for that
+  training (single `trans`, no `lyc`).
+
+At prediction time the weight of the opaque expert is a smoothstep in $\log f_{\rm esc}$ over `EMUL.REGIME_BLEND`
+$= (0.02, 0.10)$, continuous with its first derivative:
+
+$$
+w = 1 - (3t^2 - 2t^3), \qquad t = {\rm clip}\Big(\frac{\ln f_{\rm esc} - \ln 0.02}{\ln 0.10 - \ln 0.02},\ 0,\ 1\Big),
+$$
+
+and `blend_regimes` combines the decoded experts: the mean is the weighted geometric mean (log space), and the sigma
+is that of the mixture $w\,\mathcal N(m_O, s_O) + (1-w)\,\mathcal N(m_T, s_T)$, which also contains the
+disagreement of the experts,
+
+$$
+s^2 = w\, s_O^2 + (1-w)\, s_T^2 + w(1-w)(m_O - m_T)^2 .
+$$
+
+The `lyc` result then replaces the cells of `cont` below 912 Å. An expert with weight zero on the whole batch is not
+evaluated, and in a mixed batch each expert is evaluated only on its rows (`fill_expert_rows`).
+
+On a 45k-model test (same holdout clouds, 60 epochs) the experts left lines, continuum above 912 Å and dust
+unchanged, and improved the transmission (cells with $|\Delta T| > 0.1$ from 0.37% to 0.17%, in the opaque clouds from
+1.4% to 0.5%), the Lyman break of the emergent spectrum in the transition band (median error from 0.85 to 0.12 dex) and
+the energy budget (99th percentile of the deviation from 0.37 to 0.24). One single GP for all the outputs remains
+better for lines, continuum and dust: the data shared by the regimes matter more there than the non-stationarity.
+
+### 6. The SVGPs
 
 Every output is an independent SVGP (`svgp.BatchedSVGPS`) on the 12 standardized inputs (9 physical inputs and the
 3 SED descriptors), with a linear mean, $m(x) = c + w\cdot x$, and a scaled Matérn-5/2 kernel with one
@@ -298,15 +363,23 @@ while they carry almost none of the spectrum:
 [hii-train] cont: explained 73.3% (equal weight per PC), 99.59% (weighted by the variance of each PC)
 ```
 
+**Checkpoints.** With `--checkpoint-dir`, every family writes at the end of each epoch a checkpoint
+`<dir>/<family>.pt` (model, likelihood, optimizer, schedule, best state, histories, random state), to a temporary file
+then renamed, so that a kill during the write leaves the previous checkpoint intact. A training started again with
+the same settings recomputes the preprocessing (deterministic), skips the families already finished and continues the
+current one from its last epoch, with the same result as an uninterrupted run. A fingerprint (number of models and
+outputs, $M$, epochs, batch, sums of the targets) stops a resume on other data or settings: the checkpoint is then
+ignored. The checkpoints are removed at the end of a complete training.
+
 Every `--eval-every` epochs the training also scores the family on the calibration clouds and keeps a copy of the
 best state; at the end the family goes back to it (`best checkpoint on the calibration clouds: epoch ...`). Then,
 in the PCA families, the components that the GP does not predict better than their mean on the calibration clouds
 (explained $\le 0$, `EMUL.PC_MIN_EXPLAINED`) are removed (`drop_pcs`): their variance, with the variance of the
 components the PCA left out, becomes a residual variance per wavelength that the decoding adds to the sigma. In the
-final training this removed 11 of the 45 components of the transmission, the noisy last ones, and none of the
-continua.
+training on 430k models (without experts) this removed 13 of the 44 components of the transmission, the noisy last
+ones, and none of the continua.
 
-### 6. Calibration of the sigma
+### 7. Calibration of the sigma
 
 The SVGP sigma is not guaranteed to be honest, and it enters the likelihood of a fit as model error at every
 evaluation. After each family, the training computes one scale factor $s_k$ per output from the normalized
@@ -333,20 +406,52 @@ on the holdout:
 [hii-train] sigma calibration cont: s_k median 0.93, max 1.10 | holdout cov95 0.966 -> 0.956 (target 0.95), cov68 0.827 -> 0.795, |r|>5 0.001 -> 0.001
 ```
 
-The factor corrects the average over the input space, not regions where the GP is locally worse, and it makes the
-tails rarer without removing them.
+**Input-dependent sigma.** A global $s_k$ corrects the average over the input space, not regions where the
+emulator is locally worse. In the trained families 77–90% of the predictive variance is the likelihood noise, a
+constant, so $\sigma_{\rm GP}$ is almost the same for every model, while the errors depend strongly on the inputs
+(transmission: rms of $r$ from 0.4 at low $\log U$ to 2.4 at high $\log U$). A constant sigma over input-dependent
+errors gives the apparent heavy tails: calibrated on `cov95`, `cov68` stays at 0.80–0.92. The training therefore
+fits, after each family (`fit_sigma_x`, `EMUL.SIGMA_X`),
+
+$$
+\sigma_k(x) = s_k\, \sigma_{{\rm GP},k}(x)\, e^{g_k(x)/2}, \qquad
+g_k(x) = \beta_k \cdot \phi(x), \qquad \phi = [1,\ x_d,\ x_d x_{d'}]_{d \le d'} ,
+$$
+
+a quadratic polynomial of the 12 standardized inputs (91 terms, `svgp.sigma_x_features`). If the residual is
+Gaussian with the true sigma, $\log r^2 = \log(\sigma_k^2/\sigma_{\rm GP}^2) + \log\chi^2_1$, so $g_k$ is a ridge
+regression of $\log r^2 + 1.27$ on $\phi(x)$ (1.27 removes the mean of $\log\chi^2_1$). The inputs are clipped to
+the box of the calibration inputs, so the polynomial never extrapolates (out of the domain the growth of the sigma is
+left to the GP), and $g_k$ is clipped to $\pm 4.6$ (`EMUL.SIGMA_X_LOG_CLIP`: the sigma changes at most by a factor
+10). The global $s_k$ is then computed as above on the corrected residuals $r\,e^{-g/2}$.
+
+The models of one cloud are correlated, so ~1000 calibration models of ~40 clouds are ~40 independent points for 91
+coefficients: with a fixed small ridge $g_k$ fits the calibration clouds and narrows the sigma too much on new ones
+(holdout `cov95` 0.82 instead of 0.95 on a small expert). The ridge of every output is therefore chosen by
+cross-validation over clouds (`EMUL.SIGMA_X_CV_FOLDS` = 5 folds, grid `EMUL.SIGMA_X_RIDGE_GRID` $\times N$), and
+$s_k$ is computed on the out-of-fold $g_k$, so the 95% target holds on clouds the fit has not seen. With fewer than
+`EMUL.SIGMA_X_MIN_POINTS` (10) models per coefficient no $g_k$ is fitted and only $s_k$ is kept; `--no-sigma-x`
+switches it off. $g_k$ is stored in the preprocessing (`prep['sigma_x']`), and artifacts without it predict as
+before. The log line of the calibration adds the spread of the factor $e^{g/2}$ on the holdout:
+
+```text
+[hii-train] sigma calibration lines: s_k median 1.17, max 1.50 | holdout cov95 0.982 -> 0.951 (target 0.95), cov68 0.921 -> 0.749, |r|>5 0.002 -> 0.001 | sigma(x) factor p5/p50/p95 0.10/0.38/1.00
+```
+
+The calibration makes the tails rarer without removing them.
 
 ---
 
 ## Inference: `HIIEmulator`
 
-`HIIEmulator().load(stem)` reads the five artifact files, rebuilds the SVGPs and precomputes, for every family,
+`HIIEmulator().load(stem)` reads the artifact files (with the experts: lines, cont, grain, scalars, the two trans
+experts and lyc; without them the single trans), rebuilds the SVGPs and precomputes, for every family,
 the quantities that do not depend on the input (`svgp.predictive_cache`): with $L$ the Cholesky factor of
 $K_{ZZ}$, $m$ and $S$ the variational mean and covariance,
 
 $$
 \mu(x) = k_{xZ}\, L^{-T} m + c + w\cdot x, \qquad
-\sigma^2(x) = \big[\sigma_f^2 + k_{xZ}\, L^{-T}(S - I)\,L^{-1} k_{Zx} + \sigma_n^2\big]\, s_k^2 ,
+\sigma^2(x) = \big[\sigma_f^2 + k_{xZ}\, L^{-T}(S - I)\,L^{-1} k_{Zx} + \sigma_n^2\big]\, s_k^2\, e^{g_k(x)} ,
 $$
 
 so a prediction (`svgp.fast_predict`) costs two products with cached matrices instead of a pass through gpytorch.
@@ -358,7 +463,8 @@ components are cached once at load; `fast_predict(..., with_var=False)` skips th
 
 ### Constraints of the decoding
 
-After the decoding, `predict_batch` applies the physical constraints on the outputs in physical units:
+After the decoding, `predict_batch` blends the regime experts into `trans` and `cont` (`blend_regimes`) and applies
+the physical constraints on the outputs in physical units:
 
 | Constraint | Where | What it does |
 | :--- | :--- | :--- |
@@ -406,8 +512,11 @@ wavelengths are attributes of the instance (`wave_grid`, `line_names`, `line_wav
     products run in torch, not numpy: two thread pools (torch OpenMP and numpy OpenBLAS) alternating on the same
     cores oversubscribe them, and made a batch of 8 at 8 threads 8 times slower than with a single pool. The
     variance cost grows as $M^2$: a larger $M$ is paid at every evaluation of a fit. With 8 threads on an
-    8-core laptop CPU (AMD Ryzen 7 8845HS), one galaxy (batch 8) takes about 11 ms with sigma and 4 ms with
-    `with_sigma=False`.
+    8-core laptop CPU (AMD Ryzen 7 8845HS), one galaxy (batch 8) takes about 12 ms with sigma and 5 ms with
+    `with_sigma=False` (emulator trained on 430k models, without experts, lines at $M = 256$). The experts add
+    about 50% on batches that mix the regimes (both experts evaluated, on their rows only), and lines and scalars
+    at $M = 512$ add 5% with the means only and 25% with the sigma (45k-model test). The sigma is the dominant
+    cost: `with_sigma=False` is 3–4 times faster, while $M$ changes the time by tens of percent.
 
 ---
 
@@ -466,22 +575,28 @@ full JSON of the details.
 | Check | Blocking | Property tested | Criterion |
 | :--- | :---: | :--- | :--- |
 | `crit_l` | | Accuracy of the critical lines (H$\alpha$, H$\beta$, [O III] 5007, [N II] 6584, [O II] 3726, 3729, C III] 1909) | worst RMSE of $\log_{10}$, on the holdout lines above $10^{-3}\,{\rm H}\beta$, $< \log_{10}1.05 = 0.0212$ dex |
-| `OIII r` | | [O III] 4959/5007 at its atomic value, which the independent GPs do not impose | every graded point within 2% of 0.346 |
+| `OIII r` | | [O III] 4959/5007 of the emulator equals that of CLOUDY for the same model, which the independent GPs do not impose | every point with [O III] 5007 $\ge 10^{-3}\,{\rm H}\beta$ within 2% of the CLOUDY ratio of the model |
 | `Balmer` | | H$\alpha$/H$\beta$ follows Case B | median within 5% of 2.86, for $\log U = -3 \pm 0.25$, $z_{\rm CMB} \le 1$ |
-| `Calibr.` | yes | The calibrated sigma is honest | in every family `cov95` in $[0.93, 0.97]$ and `cov68` $\ge 0.60$ |
+| `Calibr.` | yes | The calibrated sigma is honest | in every family `cov95` in $[0.90, 0.99]$ (`EMUL.COV95_RANGE`) and `cov68` in $[0.62, 0.82]$ (`EMUL.COV68_MIN`, `EMUL.COV68_MAX`); a regime expert on the holdout models of its regime |
 | `Energy` | | The emulated transmission and continuum close the energy budget of the incident SED as the grid does | $\ge 95\%$ of (up to 2048) points within 1% of the grid, and $-10^{-3} \le T \le 1 + 10^{-3}$ |
 | `Dust` | | Accuracy of the dust mass and its Strömgren scaling $M_d \propto (1 - f_{\rm esc})\,\xi_d\, m_Z\, Q_H / n_H$ | RMSE $< \log_{10}1.10 = 0.0414$ dex and $\ge 90\%$ of points within 0.2 dex of the scaling |
 | `OOD` | | The sigma grows out of the domain | the median sigma grows monotonically at 0.25, 0.5, 1, 2 domain widths beyond the upper edge of each non-node axis, and $\ge 95\%$ of the probes exceed the in-domain sigma at the farthest step |
 | `Th.put` | | Speed on CPU | $\ge 100$ galaxies/s (batch of 8 rows) at 8 threads; the grid threads × batch is reported |
 | `Size` | | Size of the artifacts and memory at runtime | every file within the size budget of the training, and peak RSS $\le 1.5$ GiB to load the emulator and predict 20 batches of 8 |
-| `ARD` | | The lengthscales and the response to the inputs are physical | $\ell_{F_*}$ / median $\ell$ of `logU`, `lognH_HII`, `log_zeta_O` $\le 10$ for the sulfur lines; in $\ge 90\%$ of the scans S II/H$\alpha$ and S III/H$\alpha$ decrease with $F_*$, O32 increases and S II/H$\alpha$, O I/H$\alpha$ decrease with $f_{\rm esc}$ ($\xi_d$ reported) |
+| `ARD` | | The lengthscales and the response to the inputs are physical | $\ell_{F_*}$ / median $\ell$ of `logU`, `lognH_HII`, `log_zeta_O` $\le 10$ for the sulfur lines; in $\ge 90\%$ of the scans (200 holdout points) S II/H$\alpha$ and S III/H$\alpha$ decrease with $F_*$, O32 increases and S II/H$\alpha$, O I/H$\alpha$ decrease with $f_{\rm esc}$ ($\xi_d$ reported) |
 | `Bins` | | Accuracy and calibration in every age node | `crit_l` and `Calibr.` pass in every `tau_SSP` node |
 | `Midnodes` | | Interpolation in `Z_star` between the nodes | KS $p > 0.05$ of the line residuals and RMSE $\le 1.5\times$ that of the holdout (needs `--midnode-corpus`) |
 | `GPU` | | Same predictions on GPU and CPU | maximum relative difference $\le 10^{-4}$ on 64 points (`SKIP` without a GPU) |
 
 The checks decode the transmission, the continua and the energy fractions together, with the constraints of
 `predict_batch` (`HIIEmulator.physical_constrained`). The criterion of `Calibr.` matches the estimator of the training: with heavy-tailed residuals a calibrated `cov95`
-comes with a conservative `cov68`, so `cov68` has only a lower bound. A Kolmogorov-Smirnov test of the residuals
+comes with a conservative `cov68` (about 0.79–0.80 with a global $s_k$ only), so `cov68` has a band, with an upper
+bound that a too conservative core fails. The ARD scans use 200 holdout points: with 20, one non-monotone trace moved
+the fraction by 0.05 and the check flipped between holdouts of the same emulator. In CLOUDY the emergent
+[O III] 4959/5007 is not exactly the atomic one (escape probability and continuous absorption at each line), so
+`OIII r` compares with the CLOUDY ratio of the same model (median 0.346, scatter 0.16% in the corpus); the worst
+emulated models are those with weak [O III] ($10^{-3}$–$10^{-2}\,{\rm H}\beta$), where the error comes from the single
+lines and not from their ratio. A Kolmogorov-Smirnov test of the residuals
 against $\mathcal N(0,1)$ per output is still reported, as information: with thousands of heavy-tailed residuals it
 rejects gaussianity for any sigma.
 
@@ -513,7 +628,9 @@ From the stem `<stem>` of `--out`:
 
 | File | Content |
 | :--- | :--- |
-| `<stem>_lines.pt`, `<stem>_cont.pt`, `<stem>_grain.pt`, `<stem>_trans.pt` | State of the SVGPs and of the likelihood of one family, plus the shared `extras`. |
+| `<stem>_lines.pt`, `<stem>_cont.pt`, `<stem>_grain.pt`, `<stem>_trans.pt` | State of the SVGPs and of the likelihood of one family, plus the shared `extras`. With the experts there is no `<stem>_trans.pt`. |
+| `<stem>_trans_opaque.pt`, `<stem>_trans_thin.pt` | The two experts of the transmission, one per file (each about as large as the single `trans`). |
+| `<stem>_lyc.pt` | The two experts of the ionizing continuum, `lyc_opaque` and `lyc_thin`. |
 | `<stem>_scalars.pt` | The same for `dust`, `fuv_t`, `fuv_n` and `energy`. |
 | `<stem>_holdout.json` | Keys of the holdout models, number of models and clouds, fraction, seed, stratification axes, corpus. |
 | `<stem>_calib.json` | Keys of the calibration models, in the same format (absent with `--calib-frac 0`). |
@@ -522,7 +639,9 @@ From the stem `<stem>` of `--out`:
 The `extras` carry everything inference needs: input standardization, input keys and $\log_{10}$ inputs, node
 table of $Q_{H,\rm unit}$, line names and vacuum wavelengths, wavelength grid, and per family the preprocessing
 (`<fam>_prep`: means, standard deviations, floors, PCA components and score deviations, ratio form, calibration
-scales `sigma_scale`), the ELBO and holdout histories and, for the PCA families, the per-component holdout scores.
+scales `sigma_scale` and the input-dependent sigma `sigma_x`), the ELBO and holdout histories and, for the PCA
+families, the per-component holdout scores; with the experts, `regimes` (input, ranges and blend window used by the
+emulator).
 Every file is checked against `--size-budget-mib`.
 
 ### 2. The manifest `--meta`
@@ -530,8 +649,9 @@ Every file is checked against `--size-budget-mib`.
 The JSON manifest records the configuration and the outcome of the training: number of models; holdout (file,
 frozen set, fraction, seed, number of training and holdout models, final holdout score of every family with the
 raw sigma, weighted explained variance of the PCA families); sigma calibration (file, fraction, number of models,
-families, estimator and quantile, and per family the median and maximum $s_k$ with the holdout `cov68`, `cov95`
-and fraction beyond $5\sigma$ before and after); input keys and their training range (`x_min`, `x_max`, used by
+families, estimator and quantile, the input-dependent sigma, and per family the median and maximum $s_k$ with the
+holdout `cov68`, `cov95` and fraction beyond $5\sigma$ before and after); the regime experts (`regimes`) and the
+epochs of every family (`epochs_per_family`); input keys and their training range (`x_min`, `x_max`, used by
 `OOD` and `ARD`); inducing points; artifact paths and the $\Delta M$ each file could still take within the budget;
 floors, line targets and ratio floor, PCA settings and removed components (`dropped_pcs`); the constraints of the
 decoding (`constraints`: target of the transmission and $\tau$ range, energy family, $k$ range, grain $\le$
@@ -551,7 +671,7 @@ The messages are prefixed with `[hii-train]`, `[hii-emulator]` or `[emul-val]`:
 | `ValueError: [hii-train] node (...): Q_H values are not consistent` | The models of an SSP node disagree on $Q_{H,\rm unit}$: the grid mixes SED extractions. |
 | `ValueError: [hii-train] reference line ('h 1', 4862.7) not found once in the line list` | H$\beta$ is missing from the line list (or repeated): use another list, or `--line-targets absolute`. |
 | `ValueError: [hii-train] --calib-frac ... too large with --holdout-frac ...` | Holdout and calibration together leave no clouds for training. |
-| `ValueError: [hii-train] --calib-families: unknown families` / `--rel-floor...: unknown family` | A family name is not one of the 7 families. |
+| `ValueError: [hii-train] --calib-families: unknown families` / `--rel-floor...: unknown family` | A family name is not one of `EMUL.FAMILIES_HII` (or a base name of the experts, `trans`, `lyc`). |
 | `SystemExit: [hii-train] Files exceeding the size budget` | An artifact is larger than `--size-budget-mib` (e.g. a larger $M$): raise the budget. |
 | `FileNotFoundError: [hii-emulator] None of the files ... exist` | The stem does not point to a complete set of artifacts. |
 | `ValueError: [hii-emulator] log10 tau_SSP ... out of nodes range` | An input age is not a node of the grid. |
@@ -612,6 +732,21 @@ The messages are prefixed with `[hii-train]`, `[hii-emulator]` or `[emul-val]`:
       show_root_heading: true
       show_source: false
 
+::: galapy.spectroscopy.hii_emulator.regime_weight
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.hii_emulator.blend_regimes
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.hii_emulator.fill_expert_rows
+    options:
+      show_root_heading: true
+      show_source: false
+
 ::: galapy.spectroscopy.hii_emulator.sed_features
     options:
       show_root_heading: true
@@ -628,6 +763,11 @@ The messages are prefixed with `[hii-train]`, `[hii-emulator]` or `[emul-val]`:
       show_source: false
 
 ::: galapy.spectroscopy.svgp.fast_predict
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.svgp.sigma_x_features
     options:
       show_root_heading: true
       show_source: false
@@ -658,6 +798,16 @@ The messages are prefixed with `[hii-train]`, `[hii-emulator]` or `[emul-val]`:
       show_source: false
 
 ::: galapy.spectroscopy.utils.validate_emulator.calibration_scale
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.validate_emulator.fit_sigma_x
+    options:
+      show_root_heading: true
+      show_source: false
+
+::: galapy.spectroscopy.utils.validate_emulator.sigma_x_factor
     options:
       show_root_heading: true
       show_source: false
@@ -701,7 +851,7 @@ L_neb, sig_neb = out['continuum_nebular']       # (8, n_wave), on emu.wave_grid
 T, sig_T = out['transmission']                  # 0 < T <= 1
 a, c = out['energy_fractions'][0].T             # absorbed and re-emitted fractions of the incident energy
 L_lines = np.where(out['lines_below_floor'], np.nan, L_lines)   # lines at the ratio floor: not reliable
-fast = emu.predict_batch(theta, with_sigma=False)                # means only, sigma None, ~3x faster
+fast = emu.predict_batch(theta, with_sigma=False)                # means only, sigma None, 3-4x faster
 names = [' '.join(str(n).split()) for n in emu.line_names]
 j = [i for i, (n, w) in enumerate(zip(names, emu.line_wavelengths_rest)) if n == 'H 1' and abs(w - 4862.7) < 1][0]
 print('H-beta per Msun:', L_lines[:, j], '+-', sig_lines[:, j])
