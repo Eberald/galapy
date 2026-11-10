@@ -17,8 +17,7 @@ CLIGHT = 2.99792458e10
 def qh_true(tau, Z):
     return 1e47 * (tau / 1e6) ** -2.0 * (1.0 + 10.0 * Z)
 
-
-def write_hii_corpus(path, pumped=True, drop_flag=False):
+def write_hii_corpus(path, pumped=True, drop_flag=False, reps=1, opaque_frac=0.0):
     import galapy.internal.cloudy as CLOUDY
     rng = np.random.default_rng(0)
     wave = np.geomspace(100.0, 1e6, 60)
@@ -31,13 +30,14 @@ def write_hii_corpus(path, pumped=True, drop_flag=False):
         f.create_dataset('lines_emergent/wavelengths_rest_vacuum', data=[6564.6, 4862.7, 5008.2, 6585.3])
         f.create_dataset('continuum/wave_grid', data=wave)
         j = 0
-        for tau in TAUS:
-            for Z in ZS:
+        for tau, Z in [(t, z) for _ in range(reps) for t in TAUS for z in ZS]:
+            if True:
                 logU, lognH = rng.uniform(-4, -1), rng.uniform(0, 4)
                 g = f.create_group(f'grid_point_{j:05d}')
                 g.attrs.update({'logU': logU, 'lognH_HII': lognH, 'log_zeta_O': rng.uniform(-2, 0.5),
                                 'z_CMB': rng.uniform(0, 12), 'xi_d': rng.uniform(0.1, 1),
-                                'f_esc_meas': rng.uniform(0, 0.9), 'F_star': rng.uniform(0, 1),
+                                'f_esc_meas': (rng.uniform(0, 0.05) if opaque_frac and rng.uniform() < opaque_frac
+                                               else rng.uniform(0, 0.9)), 'F_star': rng.uniform(0, 1),
                                 'tau_SSP': tau, 'Z_star': Z, 'not_converged': False})
                 if not drop_flag:
                     g.attrs['pumping_removed'] = pumped if j else True
@@ -119,14 +119,11 @@ def test_predict_standardises_the_input_and_matches_gpytorch(hii_artifact):
         ref = e.line_gp(x)
         mean, var = fast_predict(e.cache['lines'], x)
     np.testing.assert_allclose(mean.numpy(), ref.mean.numpy(), rtol=1e-4, atol=1e-6)
-    #====== FIX
-    # fix 2: fast_predict returns the variance of y = latent + likelihood noise, times the calibration scale s_k^2
+    # fast_predict returns the variance of y = latent + likelihood noise, times the calibration scale s_k^2
     c = e.cache['lines']
     ref_var = ref.variance + (c['noise'][:, None] if 'noise' in c else 0.0)
     ref_var = ref_var * (c['var_scale'][:, None] if 'var_scale' in c else 1.0)
     np.testing.assert_allclose(var.numpy(), ref_var.numpy(), rtol=2e-4)
-    #======= END FIX
-
 
 @pytest.mark.unit
 def test_qh_unit_is_read_from_the_corpus_and_linear_in_Z(hii_artifact):
@@ -338,3 +335,201 @@ def test_training_stops_when_the_estimated_memory_does_not_fit(tmp_path, monkeyp
     with pytest.raises(SystemExit, match='estimated peak memory'):
         T.main()
     assert not (tmp_path / 'e_cont.pt').exists()
+
+
+@pytest.mark.unit
+def test_sigma_x_fit_recovers_an_input_dependent_noise():
+    from galapy.spectroscopy.utils.validate_emulator import fit_sigma_x, sigma_x_factor
+    rng = np.random.default_rng(0)
+    X = rng.uniform(-1.5, 1.5, (20000, 3))
+    true_sd = np.exp(0.8 * X[:, :1] - 0.5 * X[:, 1:2] ** 2) * np.ones((1, 2))   # (n, 2), up to x10 in sigma
+    r = rng.standard_normal((20000, 2)) * true_sd                                 # residuals over sigma_GP = 1
+    sx, s = fit_sigma_x(X[:10000], r[:10000], s_min=0.1)
+    sd = s * np.sqrt(sigma_x_factor(sx, X[10000:]))
+    rt = np.abs(r[10000:]) / sd
+    assert abs(np.mean(rt <= 1) - 0.68) < 0.03 and abs(np.mean(rt <= 1.96) - 0.95) < 0.015
+    assert np.median(np.abs(np.log(sd / true_sd[10000:]))) < 0.15                 # sigma within ~15%
+    rc = np.abs(r[10000:]) / (np.quantile(np.abs(r[:10000]), 0.95, axis=0) / 1.96)  # constant sigma
+    assert np.mean(rc <= 1) > 0.75                                                # the core is too wide
+
+
+@pytest.mark.unit
+def test_fast_predict_applies_the_sigma_x_factor_only_to_the_variance(hii_artifact):
+    from galapy.spectroscopy.hii_emulator import HIIEmulator
+    from galapy.spectroscopy.svgp import fast_predict, sigma_x_features
+    e = HIIEmulator().load(hii_artifact[0])
+    c = dict(e.cache['lines'])
+    for k in ('var_x_coef', 'var_x_lo', 'var_x_hi', 'var_x_clip'):
+        c.pop(k, None)
+    x = torch.randn(5, e.x_mean.shape[0])
+    m0, v0 = fast_predict(c, x)
+    D = x.shape[1]
+    P = sigma_x_features(x, -torch.ones(D), torch.ones(D)).shape[1]
+    assert P == 1 + D + D * (D + 1) // 2
+    coef = torch.zeros(v0.shape[0], P)
+    coef[:, 0], coef[:, 1] = 0.5, 1.0                                             # g = 0.5 + x_1 (clipped to +-1)
+    c.update({'var_x_coef': coef, 'var_x_lo': -torch.ones(D), 'var_x_hi': torch.ones(D), 'var_x_clip': (-4.6, 4.6)})
+    m1, v1 = fast_predict(c, x)
+    g = 0.5 + x[:, 0].clamp(-1, 1)
+    torch.testing.assert_close(m1, m0)
+    torch.testing.assert_close(v1, v0 * torch.exp(g)[None, :], rtol=1e-5, atol=0)
+
+@pytest.mark.unit
+def test_sigma_x_cross_validation_over_clouds_keeps_cov95_on_new_clouds():
+    from galapy.spectroscopy.utils.validate_emulator import fit_sigma_x, sigma_x_factor
+    rng = np.random.default_rng(1)
+    D, d = 12, 4
+
+    def clouds(nc, per):                                                          # clusters in x + cloud effect
+        X = np.repeat(rng.normal(size=(nc, D)), per, 0) + 0.3 * rng.normal(size=(nc * per, D))
+        lv = 0.8 * X[:, :1] + np.repeat(rng.normal(0, 1.0, (nc, d)), per, 0)
+        return X, np.exp(0.5 * lv) * rng.normal(size=(nc * per, d)), np.repeat(np.arange(nc), per)
+
+    Xc, rc, gc = clouds(40, 27)                                                   # 1080 models, 40 clouds
+    Xh, rh, _ = clouds(300, 15)
+    cov95 = {}
+    for name, gr in (('fixed', None), ('cv', gc)):
+        sx, s = fit_sigma_x(Xc, rc, quantile=0.95, s_min=0.0, groups=gr)
+        cov95[name] = np.mean(np.abs(rh / (s * np.sqrt(sigma_x_factor(sx, Xh)))) <= 1.96)
+    assert cov95['fixed'] < 0.88                                                  # the failure of the fixed ridge
+    assert abs(cov95['cv'] - 0.95) < 0.025
+    assert sx['ridge_over_n'].shape == (d,)
+
+@pytest.mark.unit
+def test_regime_blend_weights_mixture_sigma_and_lyc_splice():
+    from galapy.spectroscopy.hii_emulator import regime_weight, blend_regimes, regime_of
+    import galapy.internal.constants as CONST
+    w = regime_weight(np.array([0.0, 0.02, 0.1, 0.5, np.sqrt(0.02 * 0.1)]), (0.02, 0.1))[:, 0]
+    assert np.allclose(w[:4], [1, 1, 0, 0]) and abs(w[4] - 0.5) < 1e-12           # smoothstep, half at the log middle
+    assert regime_of('trans_thin') == ('trans', 'thin') and regime_of('fuv_t') == ('fuv_t', None)
+    wave = np.array([500.0, 800.0, 1200.0, 5000.0])
+    lyc = wave < CONST.LyLimit
+    W = np.array([[1.0], [0.0], [0.5]])
+    mO, sO, mT, sT = np.full((3, 4), 0.2), np.full((3, 4), 0.01), np.full((3, 4), 0.8), np.full((3, 4), 0.02)
+    dec = {'trans_opaque': (mO, sO), 'trans_thin': (mT, sT), 'cont': (np.ones((3, 4)), np.ones((3, 4))),
+           'lyc_opaque': (np.full((3, 2), 3.0), np.full((3, 2), 0.1)),
+           'lyc_thin': (np.full((3, 2), 3.0), np.full((3, 2), 0.1))}
+    blend_regimes(dec, W, wave)
+    assert set(dec) == {'trans', 'cont'}
+    m, s = dec['trans']
+    assert np.allclose(m[0], 0.2) and np.allclose(m[1], 0.8) and np.allclose(m[2], np.sqrt(0.2 * 0.8))
+    assert np.allclose(s[2], np.sqrt(0.5 * 0.01 ** 2 + 0.5 * 0.02 ** 2 + 0.25 * 0.6 ** 2))   # includes the disagreement
+    assert np.allclose(dec['cont'][0][:, lyc], 3.0) and np.allclose(dec['cont'][0][:, ~lyc], 1.0)
+    assert np.allclose(dec['cont'][1][:, lyc], 0.1)
+    one = {'trans_thin': (mT, sT)}                                                  # opaque skipped on the batch
+    blend_regimes(one, W, wave)
+    assert one['trans'][0] is mT
+
+
+@pytest.fixture(scope='module')
+def hii_artifact_regimes(tmp_path_factory):
+    from galapy.spectroscopy.utils.hii import train_emulator_hii as T
+    import galapy.internal.emulators as EMUL
+    d = tmp_path_factory.mktemp('hii_reg')
+    corpus = write_hii_corpus(d / 'hii_grid.h5', reps=3, opaque_frac=0.4)
+    argv = ['train', '--corpus', str(corpus), '--out', str(d / 'emu.pt'), '--meta', str(d / 'emu.json'),
+            '--inducing', '8', '--inducing-lines', '8', '--epochs', '2', '--batch', '48', '--device', 'cpu',
+            '--checkpoint-dir', str(d / 'ckpt')]
+    old, sys.argv, old_min = sys.argv, argv, EMUL.REGIME_MIN_MODELS
+    EMUL.REGIME_MIN_MODELS = 10
+    try:
+        T.main()
+    finally:
+        sys.argv, EMUL.REGIME_MIN_MODELS = old, old_min
+    return d / 'emu', corpus
+
+
+@pytest.mark.unit
+def test_regime_experts_train_save_and_predict(hii_artifact_regimes):
+    import json
+    import galapy.internal.constants as CONST
+    from galapy.spectroscopy.hii_emulator import HIIEmulator, regime_weight
+    from galapy.spectroscopy.svgp import fast_predict, decode
+    stem, corpus = hii_artifact_regimes
+    files = {p: (stem.parent / f'emu_{p}.pt').is_file() for p in ('trans', 'trans_opaque', 'trans_thin', 'lyc')}
+    assert files == {'trans': False, 'trans_opaque': True, 'trans_thin': True, 'lyc': True}
+    assert (stem.parent / 'ckpt').is_dir() and not list((stem.parent / 'ckpt').iterdir())
+    meta = json.loads((stem.parent / 'emu.json').read_text())
+    assert meta['regimes']['blend'] == [0.02, 0.1]
+    assert meta['epochs_per_family']['trans_opaque'] > meta['epochs_per_family']['trans_thin']   # equal steps
+    e = HIIEmulator().load(stem)
+    assert {'trans_opaque', 'trans_thin', 'lyc_opaque', 'lyc_thin'} <= set(e.cache) and 'trans' not in e.cache
+    th = np.tile(np.array([-2.5, 2.0, -0.5, 3.0, 0.5, 0.0, 0.5, np.log10(2e6), np.log10(4e-3)]), (3, 1))
+    th[:, 5] = [0.01, 0.045, 0.6]                                                  # opaque, band, thin
+    out = e.predict_batch(th)
+    T, sT = out['transmission']
+    assert T.shape == (3, 60) and np.all((T > 0) & (T <= 1)) and np.all(sT >= 0)
+    # the blend of the experts decoded one by one
+    x = e.standardize(th)
+    with torch.no_grad():
+        dO = decode(e.prep['trans_opaque'], *fast_predict(e.cache['trans_opaque'], x))[0]
+        dT = decode(e.prep['trans_thin'], *fast_predict(e.cache['trans_thin'], x))[0]
+        dC = decode(e.prep['cont'], *fast_predict(e.cache['cont'], x))[0]
+    w = regime_weight(th[:, 5], (0.02, 0.1))
+    assert np.allclose(T[0], dO[0], rtol=1e-6) and np.allclose(T[2], dT[2], rtol=1e-6)
+    assert np.allclose(T[1], np.exp(w[1] * np.log(dO[1]) + (1 - w[1]) * np.log(dT[1])), rtol=1e-6)
+    # continuum above 912 A from the single cont family (grain <= cont does not touch it)
+    lyc = np.asarray(e.wave_grid) < CONST.LyLimit
+    assert np.allclose(out['continuum_nebular'][0][:, ~lyc], dC[:, ~lyc], rtol=1e-6)
+    # a batch fully thin does not evaluate the opaque experts and gives the same thin rows
+    out_t = e.predict_batch(th[2:])
+    assert np.allclose(out_t['transmission'][0], T[2:], rtol=1e-6)
+    assert list(e._expert_rows('trans_thin', w)) == [1, 2] and e._expert_rows('cont', w) is None
+    e._expert_rows = lambda name, w: None
+    out_all = e.predict_batch(th)
+    for k in ('transmission', 'continuum_nebular'):
+        for u, v in zip(out[k], out_all[k]):
+            assert np.allclose(u, v, rtol=1e-5)
+
+
+@pytest.mark.unit
+def test_regime_experts_validate_context(hii_artifact_regimes):
+    import argparse
+    from galapy.spectroscopy.utils import validate_emulator as V
+    stem, corpus = hii_artifact_regimes
+    hold = V.read_holdout(f'{stem}_holdout.json')
+    ns = argparse.Namespace(sector='hii', emulator=str(stem), meta=f'{stem.parent}/emu.json',
+                            holdout=f'{stem}_holdout.json', corpus=str(corpus), max_points=0, seed=0, n_ks=200,
+                            noise_diagnostic=False, midnode_corpus=None)
+    ctx = V.Context(ns)
+    assert len(ctx.keys) == len(hold['keys'])
+    T, sT = ctx.phys('trans')
+    C, _ = ctx.phys('cont')
+    assert T.shape == ctx.Y['trans'].shape and C.shape == ctx.Y['cont'].shape
+    for f in ('trans_opaque', 'trans_thin', 'lyc_opaque', 'lyc_thin'):                # targets of the base family
+        assert ctx.Yz[f].shape == ctx.mu[f].shape
+    st, _ = V.calibration(ctx)                                                      # rows of each regime only
+    assert st in (V.PASS, V.FAIL, V.SKIP)
+
+@pytest.mark.unit
+def test_train_family_checkpoint_resume(tmp_path):
+    from galapy.spectroscopy.utils.hii.train_emulator_hii import train_family
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(200, 3)).astype(np.float32)
+    Y = np.stack([np.sin(X[:, 0]), X[:, 1] * X[:, 2]], 1).astype(np.float32)
+    kw = dict(M=16, epochs=4, batch=50, lr=1e-2, device='cpu', seed=1, eval_every=2, select=(X[:40], Y[:40]))
+    ref = train_family(X, Y, **kw)[0].state_dict()
+
+    class Kill:                      # the job dies at the walltime during epoch 3 (after 2 checkpoints)
+        n = 0
+        def update(self, c):
+            self.n += 1
+            if self.n == 3:
+                raise KeyboardInterrupt
+    ck = str(tmp_path / 'lines.pt')
+    with pytest.raises(KeyboardInterrupt):
+        train_family(X, Y, progress=Kill(), ckpt=ck, **kw)
+    assert torch.load(ck, weights_only=False)['epoch'] == 2
+    m, lik, hist, ep_t, te_hist, best = train_family(X, Y, ckpt=ck, **kw)
+    assert len(hist) == 4 and torch.load(ck, weights_only=False)['epoch'] == 4
+    for k, v in ref.items():
+        assert torch.allclose(v, m.state_dict()[k], rtol=1e-5, atol=1e-6), k
+    # finished: nothing trained again (no progress update), same model
+    class NoUpdate:
+        def update(self, c):
+            assert c == 0 or c == 4.0 * 1.0, c
+    m2 = train_family(X, Y, ckpt=ck, progress=NoUpdate(), **kw)[0]
+    assert all(torch.equal(v, m2.state_dict()[k]) for k, v in m.state_dict().items())
+    # other targets: checkpoint ignored, trained from the start
+    m3, _, hist3, *_ = train_family(X, 2 * Y, ckpt=ck, **kw)
+    assert len(hist3) == 4
