@@ -292,6 +292,229 @@ def zero_lyc_floor(wave_grid, out):
         out['grain'] = (np.minimum(out['grain'][0], out['cont'][0]), out['grain'][1])
     return out
 
+def regime_of(name):
+    """
+    Determines whether a family name contains a recognized regime suffix (opaque/trasp) and
+    separates it into its base family and regime components.
+
+    Parameters:
+        name (str): Family name to inspect.
+
+    Returns:
+        tuple[str, str | None]: Pair containing the base family name and the
+        recognized regime name, or None as the regime when no recognized regime
+        suffix is present.
+
+    Raises:
+        AttributeError: If the provided name does not support string partitioning
+        or required configuration values are unavailable.
+        NameError: If the required configuration object is not defined.
+        TypeError: If membership checks cannot be performed against the configured
+        family or regime collections.
+    """
+    base, _, r = name.rpartition('_')
+    return (base, r) if base in EMUL.REGIME_FAMS and r in EMUL.REGIMES else (name, None)
+
+
+def regime_mask(name, input_keys, X, ranges=None):
+    """
+    Builds a boolean row-selection mask for physical input data according to the
+    regime associated with a family name. Families without an associated expert
+    regime are treated as unrestricted and produce a mask that selects every row.
+    Families with an associated regime are selected by applying an open-interval
+    comparison to the configured regime input column.
+
+    Parameters:
+        name (str): Family name used to resolve the associated regime.
+        input_keys (Iterable[str]): Ordered input names corresponding to the
+            columns in the physical input data.
+        X (array-like): Physical input values. One-dimensional input is treated as
+            a single row.
+        ranges (Mapping[str, tuple[float, float]] | None): Optional mapping from
+            regime names to lower and upper open interval bounds. If omitted, the
+            default emulator regime ranges are used.
+
+    Returns:
+        numpy.ndarray: Boolean mask with one value per input row.
+
+    Raises:
+        ValueError: If the input data cannot be converted to floating-point values,
+            or if the configured regime input is not present in the ordered input
+            names.
+        KeyError: If the resolved regime is not present in the selected regime
+            range mapping.
+        IndexError: If the resolved regime input column cannot be selected from the
+            input data.
+    """
+    X = np.atleast_2d(np.asarray(X, dtype=float))
+    r = regime_of(name)[1]
+    if r is None:
+        return np.ones(len(X), dtype=bool)
+    lo, hi = (ranges or EMUL.REGIMES)[r]
+    f = X[:, list(input_keys).index(EMUL.REGIME_INPUT)]
+    return (f > lo) & (f < hi)
+
+
+def regime_weight(f_esc, blend):
+    """
+    Implements a logarithmic smoothstep transition between opaque and transparent
+    regimes.
+
+    The transition is clipped at the lower and upper blend boundaries and is
+    continuous in both value and first derivative. This makes the weighting vary
+    smoothly across the blend interval while remaining fixed outside it.
+
+    Args:
+        f_esc (array-like): Escape-fraction values to evaluate. Expected to be
+            one-dimensional or otherwise indexable after NumPy conversion.
+        blend (sequence of float): Two positive blend boundaries, ordered as lower
+            and upper limits for the logarithmic transition.
+
+    Returns:
+        numpy.ndarray: Opaque-regime weights with an added trailing singleton
+            dimension.
+
+    Raises:
+        ValueError: If blend cannot be unpacked into exactly two values.
+        IndexError: If f_esc is scalar and cannot be expanded with a trailing
+            singleton dimension.
+    """
+    lo, hi = blend
+    t = (np.log(np.maximum(np.asarray(f_esc, dtype=float), 1e-12)) - np.log(lo)) / (np.log(hi) - np.log(lo))
+    t = np.clip(t, 0.0, 1.0)
+    return (1.0 - (3.0 * t ** 2 - 2.0 * t ** 3))[:, None]
+
+
+def blend_regimes(dec, w, wave_grid):
+    """
+    Blend decoded regime families and merge Lyman-continuum predictions into the
+    continuum family.
+
+    This mutates the supplied decoded-family mapping by replacing opaque and thin
+    regime-family entries with a single base-family entry. When both experts are
+    available, their means are combined with a weighted geometric mean where both
+    means are positive and with a weighted arithmetic mean elsewhere. Their
+    standard deviations are combined as the standard deviation of a two-component
+    Gaussian mixture, including both within-expert variance and expert
+    disagreement. When only one expert is available, that expert is retained as the
+    base family. If a Lyman-continuum family is present together with the continuum
+    family, continuum cells below the Lyman limit are replaced by the corresponding
+    Lyman-continuum cells.
+
+    1) mean: weighted geometric mean (log space) where both are > 0, arithmetic mean elsewhere;
+    2) sigma: of the mixture w N(mO, sO) + (1 - w) N(mT, sT), so it also includes the disagreement of the experts:
+       s^2 = w sO^2 + (1 - w) sT^2 + w (1 - w) (mO - mT)^2;
+    3) one expert only (the other skipped because its weight is 0 on the whole batch): taken as it is;
+    4) lyc into the columns lambda < LyLimit of cont (same order of the grid as the training targets).
+
+    Parameters:
+        dec (dict): Mapping of decoded family names to pairs containing mean arrays
+            and optional standard-deviation arrays. Regime entries are expected to
+            use opaque and thin suffixes, and continuum entries are expected to
+            contain batch-major arrays.
+        w (float or array-like): Weight assigned to the opaque expert. The
+            complementary weight is assigned to the thin expert. The value must be
+            broadcast-compatible with the decoded mean and standard-deviation
+            arrays.
+        wave_grid (array-like): Wavelength grid aligned with the decoded continuum
+            target columns.
+
+    Returns:
+        dict: The same decoded-family mapping after in-place regime blending and
+            optional Lyman-continuum insertion.
+
+    Raises:
+        ImportError: If the constants module required to determine the Lyman limit
+            cannot be imported.
+        AttributeError: If required module-level regime metadata or constants are
+            unavailable.
+        TypeError: If decoded values, weights, or the wavelength grid cannot be used
+            in the required numeric array operations.
+        ValueError: If decoded arrays, weights, or wavelength-grid masks have
+            incompatible shapes for broadcasting or indexed assignment.
+    """
+    import galapy.internal.constants as CONST
+    for base in EMUL.REGIME_FAMS:
+        o, t = dec.pop(f'{base}_opaque', None), dec.pop(f'{base}_thin', None)
+        if o is None and t is None:
+            continue
+        if o is None or t is None:                                                          # 3)
+            dec[base] = o if o is not None else t
+            continue
+        (mO, sO), (mT, sT) = o, t
+        pos = (mO > 0) & (mT > 0)                                                           # 1)
+        m = np.where(pos, np.exp(w * np.log(np.where(pos, mO, 1.0)) + (1.0 - w) * np.log(np.where(pos, mT, 1.0))),
+                     w * mO + (1.0 - w) * mT)
+        s = (None if sO is None or sT is None else                                          # 2)
+             np.sqrt(w * sO ** 2 + (1.0 - w) * sT ** 2 + w * (1.0 - w) * (mO - mT) ** 2))
+        dec[base] = (m, s)
+    if 'lyc' in dec and 'cont' in dec:                                                      # 4)
+        lyc = np.asarray(wave_grid, dtype=float) < CONST.LyLimit
+        (mC, sC), (mL, sL) = dec['cont'], dec.pop('lyc')
+        mC = np.array(mC, copy=True)
+        mC[:, lyc] = mL
+        if sC is not None and sL is not None:
+            sC = np.array(sC, copy=True)
+            sC[:, lyc] = sL
+        dec['cont'] = (mC, sC)
+    return dec
+
+
+def fill_expert_rows(dec, rows, n):
+    """
+    Normalizes partially evaluated regime-family expert outputs to full batch
+    coverage.
+
+    For each configured regime family, the available per-regime expert outputs are
+    expanded to the batch length. Outputs that were computed only for selected row
+    indices are placed into full-sized arrays, with uncomputed positions initialized
+    as missing values. For paired experts in the same family, skipped positions are
+    filled from the complementary expert so that each expert tuple covers the full
+    batch consistently. The operation updates the decision mapping in place and also
+    returns it.
+
+    Args:
+        dec (dict): Mapping of expert names to tuples containing per-expert output
+            arrays or None values.
+        rows (dict): Mapping of expert names to row indices indicating which batch
+            rows were evaluated by each expert. A missing entry indicates that the
+            expert is not restricted by row selection.
+        n (int): Total number of rows in the batch.
+
+    Returns:
+        dict: The updated decision mapping with applicable regime-family expert
+            outputs expanded to full batch length.
+
+    Raises:
+        IndexError: If row indices are outside the valid batch range.
+        ValueError: If an expanded output cannot be assigned because its shape is
+            incompatible with the selected rows.
+    """
+    for base in EMUL.REGIME_FAMS:
+        names = [f'{base}_{r}' for r in EMUL.REGIMES]
+        if not any(k in rows for k in names) or not all(k in dec for k in names):
+            continue
+        full = {}
+        for k in names:
+            idx = rows.get(k)
+            full[k] = [None if v is None else (np.asarray(v) if idx is None else
+                                               np.full((n,) + np.shape(v)[1:], np.nan, dtype=np.asarray(v).dtype))
+                       for v in dec[k]]
+            if idx is not None:
+                for j, v in enumerate(dec[k]):
+                    if v is not None:
+                        full[k][j][idx] = v
+        a, b = names
+        for k, other in ((a, b), (b, a)):
+            if k in rows:
+                miss = np.setdiff1d(np.arange(n), rows[k])
+                for j in range(len(full[k])):
+                    if full[k][j] is not None and full[other][j] is not None:
+                        full[k][j][miss] = full[other][j][miss]
+        for k in names:
+            dec[k] = tuple(full[k])
+    return dec
+
 def lines_below_floor(prep, L):
     """
     Flag lines below the floor threshold based on the training ratio factor.
@@ -364,6 +587,28 @@ class HIIEmulator:
         self.sed_inputs = False         # True when the GP was trained with the SED descriptors appended to the inputs
         self.energy_tabs = None         # weights of the energy integrals on the continuum grid (None for artifacts without the incident SED)
         self.energy_gp = None
+        self.regimes = None             # regime experts of the artifact {'input', 'ranges', 'blend'}, None without experts
+
+    # weight of the opaque expert for each row (None without experts) and experts not needed by the batch
+    def regime_w(self, theta_batch):
+        if not self.regimes:
+            return None
+        th = np.atleast_2d(np.asarray(theta_batch, dtype=float))
+        return regime_weight(th[:, self.input_keys.index(self.regimes['input'])], self.regimes['blend'])
+
+    @staticmethod
+    def _skip_expert(name, w):
+        r = regime_of(name)[1]
+        return w is not None and ((r == 'opaque' and not np.any(w > 0)) or (r == 'thin' and not np.any(w < 1)))
+
+    # rows of the batch where an expert has non-zero weight (None = all rows, or not an expert)
+    @staticmethod
+    def _expert_rows(name, w):
+        r = regime_of(name)[1]
+        if w is None or r is None:
+            return None
+        m = (w[:, 0] > 0) if r == 'opaque' else (w[:, 0] < 1)
+        return None if m.all() else np.flatnonzero(m)
 
     def load(self, artifact_stem, device = None):
         """
@@ -385,6 +630,12 @@ class HIIEmulator:
         stem = str(artifact_stem)                                                           # path without suffix
         stem = stem[:-3] if stem.endswith('.pt') else stem                                  # remove suffix in case
         parts = [f"{stem}_{p}.pt" for p in ('lines', 'cont', 'grain', 'trans', 'scalars')]  # names of all pt
+        # with the regime experts the transmission is in the files of its two experts (no _trans.pt) and
+        # the LyC continuum in _lyc.pt; the set is complete with the single trans OR both trans experts
+        reg = [f"{stem}_{p}.pt" for p in ('trans_opaque', 'trans_thin', 'lyc')]
+        if not _pl.Path(parts[3]).is_file() and all(_pl.Path(f).is_file() for f in reg[:2]):
+            parts = parts[:3] + parts[4:]
+        parts += [f for f in reg if _pl.Path(f).is_file()]
 
         #uncomplete set never loaded
         if not all(_pl.Path(f).is_file() for f in parts):
@@ -397,8 +648,12 @@ class HIIEmulator:
         fam, ex = load_artifacts(parts)
         self.device = torch.device(device or 'cpu')
         ard = ex['ard_num_dims']
+        # the experts are families of the artifact without a WIRING entry (no attribute, only the cache);
+        # regime ranges and blend window are those of the training (artifact), or None without experts
+        self.regimes = ex.get('regimes')
+        wiring = dict(self.WIRING, **{n: (None, None) for n in fam if regime_of(n)[1] is not None})
         # cycle on all the families of the emulator
-        for name, (attr, _key) in self.WIRING.items():
+        for name, (attr, _key) in wiring.items():
             if name not in fam:
                 continue
             sd = fam[name]['model']                                 # state dict of SVGP (name -> tensor)
@@ -407,7 +662,9 @@ class HIIEmulator:
             mean = 'linear' if 'mean_module.weights' in sd else 'constant'
             gp = BatchedSVGPS(torch.zeros_like(Z), Z.shape[0], ard, mean=mean) # empty SVGP
             gp.load_state_dict(sd)                                  # load it with emulator data
-            setattr(self, attr, gp.eval())                          # model in inference mode
+            # experts have no attribute
+            if attr is not None:
+                setattr(self, attr, gp.eval())                      # model in inference mode
             # likelihood noise in the predictive variance
             lik = None
             if ex.get('predictive_noise', False):
@@ -427,6 +684,13 @@ class HIIEmulator:
             if s is not None:
                 self.cache[name]['var_scale'] = torch.as_tensor(np.asarray(s) ** 2, dtype=torch.float32,
                                                                 device=self.device)
+            # input-dependent sigma of the training (prep['sigma_x']), into the cache as tensor on the device
+            sx = self.prep[name].get('sigma_x')
+            if sx is not None:
+                as_t = lambda a: torch.as_tensor(np.asarray(a), dtype=torch.float32, device=self.device)
+                self.cache[name].update({'var_x_coef': as_t(sx['coef']), 'var_x_lo': as_t(sx['lo']),
+                                         'var_x_hi': as_t(sx['hi']),
+                                         'var_x_clip': tuple(float(v) for v in sx['log_clip'])})
 
         # GP trained on (X - x_mean) / x_std, so needed for the correct rescale
         self.x_mean = torch.as_tensor(ex['x_mean'], dtype=torch.float32, device=self.device)
@@ -520,10 +784,28 @@ class HIIEmulator:
         """
         x = self.standardize(theta_batch)
         dec = {}
-        with torch.no_grad():                                                               # eval mode on families
+        # weight of the opaque expert; an expert with zero weight on the whole batch is not evaluated
+        w = self.regime_w(theta_batch)
+        rows = {}                                   # rows evaluated by each expert, when not all
+        with torch.no_grad():                       # eval mode on families
             for name in self.cache:
+                if self._skip_expert(name, w):
+                    continue
+                # an expert only on the rows where its weight is not zero (mixed batches)
+                sel = self._expert_rows(name, w)
+                if sel is not None:
+                    rows[name] = sel
+                    th = np.atleast_2d(np.asarray(theta_batch, dtype=float))[sel]
+                    dec[name] = decode(self.prep[name], *fast_predict(self.cache[name], x[torch.as_tensor(sel)],
+                                                                      with_var=with_sigma),
+                                       log_scale=self.log_scale(name, th))
+                    continue
                 dec[name] = decode(self.prep[name], *fast_predict(self.cache[name], x, with_var=with_sigma),
                                    log_scale=self.log_scale(name, theta_batch))
+        # experts -> trans and lyc, lyc -> cont below 912 A, before the constraints (which act on cont/trans)
+        if w is not None:
+            fill_expert_rows(dec, rows, len(w))
+            blend_regimes(dec, w, self.wave_grid)
         apply_constraints(self.energy_tabs, self.qh_nodes, self.input_keys, theta_batch, dec)
         # continuum below 912 A at the training floor
         zero_lyc_floor(self.wave_grid, dec)
@@ -566,8 +848,19 @@ class HIIEmulator:
         """
         need = ([f for f in self.CONSTRAINED if f in mu] if fam in self.CONSTRAINED and self.energy_tabs is not None
                 else [fam])
+        # a base family made by experts (trans) is decoded from them, the continuum also needs the LyC
+        # experts; an expert asked by name is returned alone (decoded, without blend)
+        if regime_of(fam)[1] is None and self.regimes:
+            base = set(self.CONSTRAINED) if fam in self.CONSTRAINED and self.energy_tabs is not None else {fam}
+            base |= {'lyc'} if 'cont' in base else set()
+            need = [f for f in mu if f in base or regime_of(f)[0] in base]
         dec = {f: decode(self.prep[f], torch.as_tensor(mu[f].T), torch.as_tensor(var[f].T),
                          log_scale=self.log_scale(f, theta_batch)) for f in need}
+
+        if regime_of(fam)[1] is not None:
+            return dec[fam]
+        if self.regimes:
+            blend_regimes(dec, self.regime_w(theta_batch), self.wave_grid)
         apply_constraints(self.energy_tabs, self.qh_nodes, self.input_keys, theta_batch, dec)
         # continuum below 912 A at the training floor set to zero
         zero_lyc_floor(self.wave_grid, dec)
