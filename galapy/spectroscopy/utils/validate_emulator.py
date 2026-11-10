@@ -355,7 +355,166 @@ def calibration_scale(model, Xz, Yz, device='cpu', s_min=1.0, chunk=1024, quanti
     return np.maximum(s, s_min)                                         # clip, with s_min=1 never narrowed sigma
 
 
-def coverage_scores(model, Xz, Yz, scale=None, device='cpu', chunk=1024, likelihood=None):
+def fit_sigma_x(Xz, r, quantile=None, s_min=1.0, ridge=None, groups=None):
+    """
+    Fit the input-dependent sigma, sigma_k(x) = s_k * sigma_GP,k(x) * exp(g_k(x) / 2), on calibration models.
+
+    The idea: if the residual of output k at x is e = y - mu ~ N(0, sigma_k(x)^2), the normalized residual
+    r = e / sigma_GP has r^2 = (sigma_k(x) / sigma_GP)^2 * chi^2_1, so
+        log r^2 = log of the variance factor at x + log chi^2_1.
+    A regression of log r^2 on the inputs therefore estimates how much the GP sigma must be widened (where the
+    emulator is bad) or narrowed (where it is good). log chi^2_1 has mean -gamma - log 2 = -1.27, not 0: it is
+    added back to the targets (step 3), so g = 0 means "sigma_GP is right" and the clip of step 5 is symmetric.
+    Any remaining constant offset (non-Gaussian residuals) is absorbed by the global s_k of step 6, which is why
+    s_k is computed after the correction.
+
+    Steps:
+    1) box of the calibration inputs [lo, hi]: the polynomial is never evaluated outside it (clipped);
+    2) features phi(x) = [1, x, x_i x_j] (svgp.sigma_x_features, the same function used in the prediction);
+       with too few models per coefficient the fit is skipped and None is returned (the caller keeps s_k only);
+    3) targets t = log(max(r^2, floor)) + 1.27: the floor stops an exact hit (r = 0) from giving -inf, the
+       +1.27 removes the mean of log chi^2_1, so that E[t] = log of the variance factor;
+    4) ridge least squares, all outputs at once: beta = (phi^T phi + ridge I)^-1 phi^T t, with the
+       intercept not penalized (the penalty only shrinks the x-dependence towards a constant);
+    5) g = clip(phi beta): the variance factor exp(g) is bounded to EMUL.SIGMA_X_LOG_CLIP;
+    6) global scale on the corrected residuals r / exp(g / 2), exactly as calibration_scale:
+       s_k = quantile_q(|r_corr|) / Phi^-1((1 + q) / 2), so the 95% coverage on these clouds is the target.
+
+    Parameters:
+    Xz : (n, D) standardized GP inputs of the calibration models.
+    r : (n, d) residuals normalized by the uncalibrated predictive sigma (latent + likelihood noise).
+    quantile : quantile q of the global scale (default EMUL.CALIB_QUANTILE).
+    s_min : lower clip of s_k (as in calibration_scale).
+    ridge : ridge penalty (default EMUL.SIGMA_X_RIDGE).
+    groups : (n,) cloud of each model (fix 20). With at least EMUL.SIGMA_X_CV_FOLDS clouds, steps 4-5 become
+        _sigma_x_cv: ridge per output chosen by cross-validation over clouds, and the g of step 6 is the
+        out-of-fold one. None: fixed ridge, as before.
+
+    Returns:
+    None if there are too few models, else (sigma_x, s): sigma_x is the dict stored in the preprocessing
+    {'coef' (d, P) float32, 'lo' (D,), 'hi' (D,), 'log_clip' (2,)}; s (d,) the global scale s_k.
+    """
+    import torch
+    from statistics import NormalDist
+    from galapy.spectroscopy.svgp import sigma_x_features
+    q = EMUL.CALIB_QUANTILE if quantile is None else float(quantile)
+    ridge = EMUL.SIGMA_X_RIDGE if ridge is None else float(ridge)
+    Xz, r = np.asarray(Xz, dtype=np.float64), np.asarray(r, dtype=np.float64)
+    # 1) box of the calibration inputs
+    lo, hi = Xz.min(0), Xz.max(0)
+    # 2) features, the same function as the prediction (computed in float64 for the least squares)
+    phi = sigma_x_features(torch.as_tensor(Xz), torch.as_tensor(lo), torch.as_tensor(hi)).numpy()
+    n, P = phi.shape
+    if n < EMUL.SIGMA_X_MIN_POINTS * P:
+        return None
+    # 3) log of the squared residuals, the noisy estimate of the log variance factor, without the mean of
+    #    log chi^2_1 (Euler gamma + log 2 = 1.2704)
+    t = np.log(np.maximum(r ** 2, EMUL.SIGMA_X_R2_FLOOR)) + (np.euler_gamma + np.log(2.0))
+    # with the clouds, ridge by cross-validation over clouds and out-of-fold g (see function _sigma_x_cv)
+    ridge_n = None
+    if groups is not None and len(np.unique(groups)) >= EMUL.SIGMA_X_CV_FOLDS:
+        beta, g, ridge_n = _sigma_x_cv(phi, t, np.asarray(groups))
+    else:
+        # 4) ridge least squares, one solve for every output (same features, d right-hand sides)
+        pen = ridge * np.eye(P)
+        pen[0, 0] = 0.0                                                     # intercept not penalized
+        beta = np.linalg.solve(phi.T @ phi + pen, phi.T @ t).T              # (d, P)
+        # 5) log variance factor at the calibration models, clipped
+        g = np.clip(phi @ beta.T, *EMUL.SIGMA_X_LOG_CLIP)                   # (n, d)
+    # 6) global scale on the corrected residuals
+    r_corr = r / np.exp(0.5 * g)
+    s = np.quantile(np.abs(r_corr), q, axis=0) / NormalDist().inv_cdf(0.5 * (1.0 + q))
+    sigma_x = {'coef': beta.astype(np.float32), 'lo': lo.astype(np.float32), 'hi': hi.astype(np.float32),
+               'log_clip': np.asarray(EMUL.SIGMA_X_LOG_CLIP, dtype=np.float32)}
+    # chosen ridge / n per output, for the diagnostics (not used by the prediction)
+    if ridge_n is not None:
+        sigma_x['ridge_over_n'] = ridge_n.astype(np.float32)
+    return sigma_x, np.maximum(s, s_min)
+
+
+def _sigma_x_cv(phi, t, groups):
+    """
+    Steps 4-5 of fit_sigma_x with the ridge chosen by cross-validation over clouds.
+
+    1) the clouds are split at random (fixed seed) in EMUL.SIGMA_X_CV_FOLDS folds: all the models of one cloud
+       are in the same fold, so the held-out fold is made of clouds that the fit has not seen;
+    2) for every fold and every ridge of the grid (EMUL.SIGMA_X_RIDGE_GRID times n): fit on the other folds,
+       clipped g on the held-out fold -> out-of-fold g for every model and ridge;
+    3) out-of-fold error of each output and ridge: mean of (t - g)^2, the same loss as the fit;
+    4) each output takes the ridge with the smallest error; final coefficients from the fit on all the models
+       with that ridge (used by the prediction);
+    5) returned g = the out-of-fold g at the chosen ridge: s_k is computed on it in fit_sigma_x, so the
+       95% target holds on unseen clouds and not only on the clouds used for g_k.
+
+    Returns beta (d, P), g (n, d), ridge / n (d,).
+    """
+    n, P = phi.shape
+    d = t.shape[1]
+    lams = n * np.asarray(EMUL.SIGMA_X_RIDGE_GRID, dtype=np.float64)
+    I0 = np.eye(P)
+    I0[0, 0] = 0.0                                                          # intercept not penalized
+    # 1) folds of clouds
+    _, gi = np.unique(groups, return_inverse=True)
+    fold = (np.random.default_rng(0).permutation(gi.max() + 1) % EMUL.SIGMA_X_CV_FOLDS)[gi]
+    # 2) out-of-fold g for every ridge
+    g_oof = np.zeros((len(lams), n, d))
+    for k in range(EMUL.SIGMA_X_CV_FOLDS):
+        a, b = fold != k, fold == k
+        A, c = phi[a].T @ phi[a], phi[a].T @ t[a]
+        for j, lam in enumerate(lams):
+            g_oof[j, b] = np.clip(phi[b] @ np.linalg.solve(A + lam * I0, c), *EMUL.SIGMA_X_LOG_CLIP)
+    # 3) - 4) ridge per output and final fit on all the models
+    best = ((g_oof - t[None]) ** 2).mean(1).argmin(0)                       # (d,)
+    A, c = phi.T @ phi, phi.T @ t
+    beta = np.empty((d, P))
+    for j, lam in enumerate(lams):
+        sel = best == j
+        if sel.any():
+            beta[sel] = np.linalg.solve(A + lam * I0, c[:, sel]).T
+    # 5) out-of-fold g at the chosen ridge
+    g = g_oof[best, :, np.arange(d)].T                                      # (n, d)
+    return beta, g, lams[best] / n
+
+
+def sigma_x_factor(sigma_x, Xz):
+    """
+    Compute the input-dependent variance scaling for a calibrated sigma model.
+
+    This evaluates clipped calibration features, applies the learned linear
+    log-variance model, clips the resulting log factors to configured bounds, and
+    exponentiates the clipped values. If no sigma model is supplied, no scaling is
+    computed.
+
+    Parameters:
+        sigma_x (dict or None): Sigma calibration data. Expected to contain the
+            feature clipping lower bounds, feature clipping upper bounds, model
+            coefficients, and log-factor clipping bounds.
+        Xz (array-like): Standardized input locations with shape ``(n, d)``.
+
+    Returns:
+        numpy.ndarray or None: Variance factors for the provided standardized
+            inputs, or ``None`` when no sigma model is supplied.
+
+    Raises:
+        ImportError: If the required torch or spectroscopy dependencies cannot be
+            imported.
+        KeyError: If required sigma calibration entries are missing.
+        TypeError: If the inputs cannot be converted to the required numeric array
+            representations.
+        ValueError: If the input shapes or clipping bounds are incompatible with
+            the feature computation or matrix multiplication.
+    """
+    if sigma_x is None:
+        return None
+    import torch
+    from galapy.spectroscopy.svgp import sigma_x_features
+    phi = sigma_x_features(torch.as_tensor(np.asarray(Xz, dtype=np.float64)),
+                           torch.as_tensor(sigma_x['lo'], dtype=torch.float64),
+                           torch.as_tensor(sigma_x['hi'], dtype=torch.float64)).numpy()
+    return np.exp(np.clip(phi @ np.asarray(sigma_x['coef'], dtype=np.float64).T, *sigma_x['log_clip']))
+
+def coverage_scores(model, Xz, Yz, scale=None, device='cpu', chunk=1024,
+                    likelihood=None, var_factor=None):
     """
     Calculates statistical coverage scores based on model predictions and residuals.
 
@@ -391,6 +550,9 @@ def coverage_scores(model, Xz, Yz, scale=None, device='cpu', chunk=1024, likelih
     # application of calibration (optional)
     if scale is not None:
         r = r / np.asarray(scale)
+    # input-dependent part, sigma -> sigma * sqrt(exp(g(x)))
+    if var_factor is not None:
+        r = r / np.sqrt(var_factor)
     return {'cov68': float(np.mean(np.abs(r) <= 1.0)), 'cov95': float(np.mean(np.abs(r) <= 1.96)),
             'out5': float(np.mean(np.abs(r) > 5.0))}
 
@@ -508,7 +670,7 @@ SECTORS = {
     'hii': {'train': 'galapy.spectroscopy.utils.hii.train_emulator_hii',
             'emulator': ('galapy.spectroscopy.hii_emulator', 'HIIEmulator'),
             'predict': 'predict_batch',
-            'parts': ('lines', 'cont', 'grain', 'trans', 'scalars'),
+            'parts': ('lines', 'cont', 'grain', 'trans', 'scalars', 'trans_opaque', 'trans_thin', 'lyc'),
             'lines': 'lines'},
 }
 
@@ -564,7 +726,9 @@ class Context:
         # predictions
         self.mu, self.var = predict_gp(self.emu, self.X)
         # targets (observations true) on GP space
-        self.Yz = {f: encode_targets(self.emu.prep[f], self.Y[f], log_scale_of(self.emu, f, self.X))
+        # a regime expert is encoded from the targets of its base family
+        from galapy.spectroscopy.hii_emulator import regime_of
+        self.Yz = {f: encode_targets(self.emu.prep[f], self.Y[regime_of(f)[0]], log_scale_of(self.emu, f, self.X))
                    for f in self.mu}
         # eventually noise
         self._noise = None
@@ -754,7 +918,7 @@ def likelihood_noise(stem, parts):
     import gpytorch
     import torch
     from galapy.spectroscopy.svgp import load_artifacts
-    fam, _ = load_artifacts([f"{stem}_{p}.pt" for p in parts])
+    fam, _ = load_artifacts([f"{stem}_{p}.pt" for p in parts if pathlib.Path(f"{stem}_{p}.pt").is_file()])
     out = {}
     for name, f in fam.items():
         d = f['model']['variational_strategy.inducing_points'].shape[0]
@@ -850,7 +1014,8 @@ def calibration(ctx, rows=None, families=None, alpha=0.05):
     Checks that the (calibrated) sigma of the emulator is honest on the holdout, family by family.
 
     Criterion: in every family the fraction of normalized residuals |r| = |y - mu| / sigma within
-    1.96 is in EMUL.COV95_RANGE (0.93-0.97), and the fraction within 1 is at least EMUL.COV68_MIN (0.60).
+    1.96 is in EMUL.COV95_RANGE (0.90-0.99), and the fraction within 1 is in [EMUL.COV68_MIN, EMUL.COV68_MAX]
+    (0.62-0.82).
     It matches the calibration of the training (s_k from the 95% quantile, see calibration_scale):
     the residuals have heavy tails, so a calibrated cov95 comes with a conservative cov68 and no
     single scale can give both 0.68 and 0.95.
@@ -875,7 +1040,13 @@ def calibration(ctx, rows=None, families=None, alpha=0.05):
     per, n_out, p_all, bad = {}, 0, [], []
     noise = ctx.noise() if getattr(ctx.args, 'noise_diagnostic', False) else {}
     lo, hi = EMUL.COV95_RANGE
+    # a regime expert is checked on the rows of its regime only (it is not used outside it)
+    from galapy.spectroscopy.hii_emulator import regime_mask
+    rows_all = rows
     for f in fams:
+        inr = regime_mask(f, ctx.emu.input_keys, ctx.X, (getattr(ctx.emu, 'regimes', None) or {}).get('ranges'))
+        rows = (np.flatnonzero(inr) if isinstance(rows_all, slice) else
+                np.asarray(rows_all)[inr[np.asarray(rows_all)]])
         y, m, v = ctx.Yz[f][rows], ctx.mu[f][rows], ctx.var[f][rows]  # targets, mean and variance
         r = (y - m) / np.sqrt(np.maximum(v, 1e-30))                    # normalised residuals
         if r.shape[0] < 20:
@@ -884,7 +1055,8 @@ def calibration(ctx, rows=None, families=None, alpha=0.05):
         n_out += r.shape[1]
         p_all.append(p)
         c68, c95 = float(np.mean(np.abs(r) <= 1)), float(np.mean(np.abs(r) <= 1.96))
-        ok = lo <= c95 <= hi and c68 >= EMUL.COV68_MIN
+        # cov68 upper bound (a too conservative core fails)
+        ok = lo <= c95 <= hi and EMUL.COV68_MIN <= c68 <= EMUL.COV68_MAX
         det = {'cov68': round(c68, 4), 'cov95': round(c95, 4), 'out5': round(float(np.mean(np.abs(r) > 5)), 4),
                'ks_min_p': float(np.nanmin(p)) if np.isfinite(p).any() else None, 'pass': ok}
 
@@ -899,12 +1071,12 @@ def calibration(ctx, rows=None, families=None, alpha=0.05):
     p_all = np.concatenate(p_all)
     thr = alpha / n_out
     return (FAIL if bad else PASS), {
-        'criterion': f"cov95 in [{lo}, {hi}] and cov68 >= {EMUL.COV68_MIN} in every family",
+        'criterion': f"cov95 in [{lo}, {hi}] and cov68 in [{EMUL.COV68_MIN}, {EMUL.COV68_MAX}] in every family",
         'families': per, 'failing_families': bad, 'n_outputs': n_out,
         'ks_info': {'threshold_p': thr, 'min_p': float(np.nanmin(p_all)),
                     'n_outputs_below': int(np.sum(p_all <= thr))},
         'summary': (f"cov95 {min(d['cov95'] for d in per.values()):.3f}-{max(d['cov95'] for d in per.values()):.3f} "
-                    f"(need {lo}-{hi}), cov68 min {min(d['cov68'] for d in per.values()):.3f} (need >= {EMUL.COV68_MIN})"
+                    f"(need {lo}-{hi}), cov68 {min(d['cov68'] for d in per.values()):.3f}-{max(d['cov68'] for d in per.values()):.3f} (need {EMUL.COV68_MIN}-{EMUL.COV68_MAX})"
                     + (f"; failing: {', '.join(bad)}" if bad else ''))}
 
 
@@ -1146,7 +1318,9 @@ def footprint(ctx, budget_rss_gib=1.5):
                     file size budget per individual file, measured peak memory in GiB, and the RAM budget.
     """
     stem, parts = ctx.stem, ctx.sector['parts']
-    sizes = {p: pathlib.Path(f"{stem}_{p}.pt").stat().st_size / 2 ** 20 for p in parts} # size in MiB
+    # only the files of the artifact (the expert files are optional)
+    sizes = {p: pathlib.Path(f"{stem}_{p}.pt").stat().st_size / 2 ** 20 for p in parts
+             if pathlib.Path(f"{stem}_{p}.pt").is_file()} # size in MiB
     mod, cls = ctx.sector['emulator']
     # script to load emulator and predict 20 batches of 8 spectra, print peak memory usage
     # 8 holdout inputs, as in throughput: the mean input is not valid (tau_SSP must sit on a grid node)
@@ -1236,9 +1410,6 @@ def gpu_matches_cpu(ctx, rtol=1e-4):
         of the comparison. The second element is a dictionary with additional details
         including the reason for skipping (if relevant), the worst relative difference, and
         the tolerance value.
-    """
-    """
-    check the results form gpu and cpu are the same
     """
     import torch
     if not torch.cuda.is_available():
@@ -1375,21 +1546,25 @@ def critical_lines(ctx, rows=None):
         'threshold_dex': round(EMUL.FRAC_5PCT_DEX, 5), 'worst_dex': round(worst, 5), 'lines': out}
 
 
-@check('OIII r', 'hii', title='[O III] 4959/5007 emulate')
+@check('OIII r', 'hii', title='[O III] 4959/5007 emulated vs CLOUDY (same model)')
 def oiii(ctx):
     from galapy.spectroscopy.utils.validate_grid import T as TG
     j5, j4 = _line_index(ctx, 'OIII_5007'), ctx.lines().find('O 3', 4958.9)
     if j5 is None or j4 is None or _line_index(ctx, 'H_beta') is None:
         return SKIP, {'reason': '[O III] not in the master list'}
     pred, true = ctx.phys('lines')[0], ctx.Y['lines']
-    g = (true[:, j5] >= _hbeta_graded(ctx, slice(None))) & (pred[:, j4] > 0) & (pred[:, j5] > 0)
-    r_emu = pred[g, j4] / pred[g, j5]
-    dev = np.abs(r_emu / TG['oiii.reference'] - 1.0)
-    vs_true = np.abs(r_emu / (true[g, j4] / true[g, j5]) - 1.0)
+    # the emulated ratio is compared with the CLOUDY ratio of the same model
+    g = ((true[:, j5] >= _hbeta_graded(ctx, slice(None))) & (true[:, j4] > 0)
+         & (pred[:, j4] > 0) & (pred[:, j5] > 0))
+    r_emu, r_cl = pred[g, j4] / pred[g, j5], true[g, j4] / true[g, j5]
+    dev = np.abs(r_emu / r_cl - 1.0)
     return (PASS if dev.max() < TG['oiii.max_rel_dev'] else FAIL), {
-        'n': int(g.sum()), 'worst_rel_dev_from_reference': round(float(dev.max()), 5),
-        'reference': TG['oiii.reference'], 'tolerance': TG['oiii.max_rel_dev'],
-        'median_rel_dev_from_grid': round(float(np.median(vs_true)), 5)}
+        'n': int(g.sum()), 'worst_rel_dev_from_cloudy': round(float(dev.max()), 5),
+        'p95_rel_dev_from_cloudy': round(float(np.percentile(dev, 95)), 5),
+        'median_rel_dev_from_cloudy': round(float(np.median(dev)), 5), 'tolerance': TG['oiii.max_rel_dev'],
+        'cloudy_ratio_median_p1_p99': [round(float(v), 5) for v in np.percentile(r_cl, [50, 1, 99])],
+        'summary': f"emulated / CLOUDY ratio: median {np.median(dev):.2%}, worst {dev.max():.2%} "
+                   f"(need < {TG['oiii.max_rel_dev']:.0%})"}
 
 @check('Balmer', 'hii', title='balmer decrement emulation')
 def balmer(ctx):
@@ -1494,11 +1669,10 @@ def c_throughput(ctx):
 def c_footprint(ctx):
     return footprint(ctx)
 
-
-def _scan(ctx, axis, n_points=20, n_steps=5):
+def _scan(ctx, axis, n_points=200, n_steps=5):
     """
     Scan the emulator along a specified input parameter axis. For each axis, the function evaluates
-    20 points sampled from the holdout data. It calculates 4 diagnostic line ratios (in log10) along
+    200 points sampled from the holdout data. It calculates 4 diagnostic line ratios (in log10) along
     scan lines, including their respective uncertainties.
 
     Parameters:
@@ -1507,7 +1681,7 @@ def _scan(ctx, axis, n_points=20, n_steps=5):
     axis: str
         The input parameter axis along which to perform the scan. Must match one of the emulator input keys.
     n_points: int, optional
-        Number of holdout points to sample. Default is 20.
+        Number of holdout points to sample. Default is 200.
     n_steps: int, optional
         Number of sampling steps along the axis. Default is 5.
 
