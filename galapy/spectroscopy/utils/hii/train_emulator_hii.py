@@ -17,6 +17,7 @@ import copy
 import galapy.internal.constants as CONST
 import galapy.internal.cloudy as CLOUDY
 import galapy.internal.emulators as EMUL
+import galapy.spectroscopy.utils.validate_grid as VG
 
 from galapy.spectroscopy.svgp import BatchedSVGPS, lines_to_ratio
 from galapy.spectroscopy.hii_emulator import line_log_scale
@@ -68,6 +69,45 @@ def sed_hardness(wave, sed):
     qh = q(CONST.LyLimit)
     return tuple(max(q(e) / qh, EMUL.SED_HARDNESS_FLOOR) if qh > 0 else EMUL.SED_HARDNESS_FLOOR
                  for e in EMUL.SED_EDGES_A)
+
+def tilt_map_from_corpus(wave_grid, trans, t_fuv):
+    """
+    Builds a quadratic tilt map from a spectral corpus for FUV-illuminated
+    photodissociation-region models.
+    tilt = a L + b L^2 (L = -log10 T_FUV) fitted on the models of the corpus that illuminate a PDR
+
+    The function selects wavelengths in the configured FUV band, filters corpus
+    models whose FUV transmittance is finite and above the configured illumination
+    threshold, computes the FUV-band tilt for the selected spectra, and fits that
+    tilt as a quadratic function of the transformed FUV transmittance. The fitted
+    mapping is intended for use by downstream PDR processing to derive the
+    corresponding beta correction.
+
+    Parameters:
+        wave_grid (array-like): Wavelength grid used by the corpus spectra.
+        trans (array-like): Transmittance spectra for the corpus models.
+        t_fuv (array-like): FUV transmittance values associated with the corpus
+            models.
+
+    Returns:
+        object: Fitted quadratic tilt mapping produced from the selected FUV
+            transmittance values and computed band tilts.
+
+    Raises:
+        ValueError: Raised by underlying array conversion, masking, tilt
+            computation, or fitting operations when inputs are incompatible.
+        KeyError: Raised if the required FUV region transmittance threshold is not
+            available in the validation-grid configuration.
+        IndexError: Raised if corpus dimensions are incompatible with the
+            wavelength mask or selected model mask.
+    """
+    w = np.asarray(wave_grid, dtype=float)
+    band = (w >= CONST.FUV_Lo_A) & (w <= CONST.FUV_Hi_A)
+    t = np.ravel(t_fuv)
+    region = np.isfinite(t) & (t > VG.T['fuv.region_min_transmittance'])
+    tilt = VG.fuv_band_tilt(w[band], np.asarray(trans)[region][:, band])
+    return VG.fit_tilt_from_tfuv(t[region], tilt)
+
 
 def load_corpus(path, keys=None):
     """
@@ -1059,6 +1099,8 @@ def main():
     # SED descriptors in the inputs; predictive variance = latent + likelihood noise
     extras['sed_inputs'] = list(EMUL.SED_INPUT_KEYS_HII) if sed_inputs else []
     extras['predictive_noise'] = True
+    # map T_FUV -> FUV tilt of the PDR field. fitted on corpus, it travels with the T_FUV GP
+    extras['tilt_from_tfuv'] = tilt_map_from_corpus(meta['wave_grid'], Y['trans'], Y['fuv_t'])
 
     # families of emulators (name, PCA, offset)
     # an expert exists when the targets of its base family do
@@ -1324,6 +1366,7 @@ def main():
                 'input_keys': list(EMUL.INPUT_KEYS_HII),
                 'sed_inputs': extras['sed_inputs'],
                 'predictive_noise': extras['predictive_noise'],
+                'tilt_from_tfuv': extras['tilt_from_tfuv'],
                 'best_epoch': {k: extras[f'{k}_best_epoch'] for k, _, _ in FAM},
                 'dropped_pcs': {k: extras[f'{k}_prep']['pca'].get('dropped_pcs', [])
                                 for k, do_pca, _ in FAM if do_pca},
