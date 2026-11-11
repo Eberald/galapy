@@ -655,7 +655,10 @@ epochs of every family (`epochs_per_family`); input keys and their training rang
 `OOD` and `ARD`); inducing points; artifact paths and the $\Delta M$ each file could still take within the budget;
 floors, line targets and ratio floor, PCA settings and removed components (`dropped_pcs`); the constraints of the
 decoding (`constraints`: target of the transmission and $\tau$ range, energy family, $k$ range, grain $\le$
-continuum, energy rescaling); epochs, batch, learning rate, seed, timing and device; and the
+continuum, energy rescaling); the map $T_{\rm FUV} \to$ FUV tilt fitted on the corpus (`tilt_from_tfuv`:
+$\Delta_{\rm tilt} = a\,L + b\,L^2$ with $L = -\log_{10} T_{\rm FUV}$, its rms and number of models; the same
+dictionary is in the artifact and in `HIIEmulator.tilt_from_tfuv`, and the PDR derives its $\beta$ from it);
+epochs, batch, learning rate, seed, timing and device; and the
 outputs of every family.
 
 ### 3. Failure modes
