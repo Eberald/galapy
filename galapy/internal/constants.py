@@ -1,5 +1,7 @@
 """ Definitions of physical and mathematical constants
 """
+import numpy as np
+
 
 # Solar luminosity [ erg / s ]
 Lsun = 3.828e+33
@@ -62,3 +64,9 @@ SOLAR_REFERENCES = {
     'Caffau11': 0.015300,   # used in Ronconi+24
     'PARSEC':   0.015240,   # PARSEC ssp scales
 }
+
+## FUV FIELD CONST
+u_Habing = 5.29e-14                                         # erg cm^3, energy density of Habing FUV field
+HABING_FLUX_ONE_SIDED = clight["cm/s"] * u_Habing / 2.0     # erg cm^2 s^-1: G0=1, one-sided slab (normalis.)
+kB = 1.380649e-16                                           # erg K^-1, for thermal pressure Pth = nH kB Te (diagn.)
+FUV_LOG_WIDTH = np.log10(FUV_Hi_A / FUV_Lo_A)               # used for computation of tilt[dex] = -beta x FUV_LOG_WIDTH
