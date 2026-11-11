@@ -533,3 +533,30 @@ def test_train_family_checkpoint_resume(tmp_path):
     # other targets: checkpoint ignored, trained from the start
     m3, _, hist3, *_ = train_family(X, 2 * Y, ckpt=ck, **kw)
     assert len(hist3) == 4
+
+
+@pytest.mark.unit
+def test_fuv_tilt_and_its_map_recover_known_values():
+    import galapy.internal.constants as CONST
+    import galapy.spectroscopy.utils.validate_grid as VG
+    w = np.geomspace(CONST.FUV_Lo_A, CONST.FUV_Hi_A, 200)
+    s = np.array([0.0, 0.5, 2.0])
+    T = 0.3 * (w[None, :] / w[0]) ** s[:, None]
+    np.testing.assert_allclose(VG.fuv_band_tilt(w, T), s * np.log10(CONST.FUV_Hi_A / CONST.FUV_Lo_A), atol=1e-10)
+    t_fuv = np.geomspace(1e-2, 1.0, 50)
+    L = -np.log10(t_fuv)
+    fit = VG.fit_tilt_from_tfuv(t_fuv, 0.95 * L + 0.05 * L ** 2)
+    assert fit['a'] == pytest.approx(0.95) and fit['b'] == pytest.approx(0.05)
+    assert fit['rms_dex'] < 1e-10 and fit['n'] == 50
+
+
+def test_artifact_carries_the_tilt_map_of_its_corpus(hii_artifact):
+    import json
+    from galapy.spectroscopy.hii_emulator import HIIEmulator
+    from galapy.spectroscopy.utils.hii.train_emulator_hii import load_corpus, tilt_map_from_corpus
+    stem, corpus = hii_artifact
+    _X, Y, meta = load_corpus(corpus)
+    ref = tilt_map_from_corpus(meta['wave_grid'], Y['trans'], Y['fuv_t'])
+    assert set(ref) == {'a', 'b', 'rms_dex', 'n'} and ref['n'] > 0
+    assert HIIEmulator().load(stem).tilt_from_tfuv == ref
+    assert json.loads(stem.with_suffix('.json').read_text())['tilt_from_tfuv'] == ref
