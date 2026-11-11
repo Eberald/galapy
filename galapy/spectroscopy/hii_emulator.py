@@ -585,6 +585,7 @@ class HIIEmulator:
         self.line_wavelengths_rest = None
         self.wave_grid = None
         self.sed_inputs = False         # True when the GP was trained with the SED descriptors appended to the inputs
+        self.tilt_from_tfuv = None      # {'a', 'b', 'rms_dex', 'n'}: FUV tilt of the PDR field vs T_FUV
         self.energy_tabs = None         # weights of the energy integrals on the continuum grid (None for artifacts without the incident SED)
         self.energy_gp = None
         self.regimes = None             # regime experts of the artifact {'input', 'ranges', 'blend'}, None without experts
@@ -703,6 +704,7 @@ class HIIEmulator:
         self.line_wavelengths_rest = ex.get('lines_vacuum')
         self.wave_grid = ex.get('wave_grid')
         self.sed_inputs = bool(ex.get('sed_inputs'))
+        self.tilt_from_tfuv = ex.get('tilt_from_tfuv')
         self.energy_tabs = incident_tables(self.qh_nodes, self.wave_grid) if 'energy' in self.cache else None
         return self
 
