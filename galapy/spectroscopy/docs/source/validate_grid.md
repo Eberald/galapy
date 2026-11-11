@@ -575,11 +575,15 @@ $-2.5\,\log_{10}(2066/911.76) = 0.888$ dex between the band edges. The check ver
   reddens the field it transmits.
 
 The tilt grows with the attenuation of the band: on the 50000-model HII grid
-$\Delta_{\rm tilt} \simeq 0.945\,L + 0.055\,L^2$, with $L = -\log_{10} T_{\rm FUV}$ (scatter 0.01 dex), so
-every model with $T_{\rm FUV} < 0.78$ has a tilt above 0.1 dex. The check verifies that the $\beta$ axis of the
-PDR grid covers the tilt of the HII prior; the few models beyond the axis are clamped at $\beta = -2.5$.
+$\Delta_{\rm tilt} \simeq 0.956\,L + 0.049\,L^2$, with $L = -\log_{10} T_{\rm FUV}$ (scatter 0.011 dex), and
+it exceeds 0.1 dex where $T_{\rm FUV} \lesssim 0.8$. The check verifies that the $\beta$ axis of the PDR grid
+covers the tilt of the HII prior (the few models beyond the axis are clamped at $\beta = -2.5$), and fits the map
+$\Delta_{\rm tilt} = a\,L + b\,L^2$ (`fit_tilt_from_tfuv`, reported as `tilt_from_tfuv`). Its scatter must stay
+small, because at runtime the PDR $\beta$ is derived from $T_{\rm FUV}$ alone. The map used at runtime is not this
+one: the HII training fits the same map on its own corpus and stores it in the artifact (`tilt_from_tfuv`).
 
-- *Pass*: (a) for every model, and the 99th percentile of $|\Delta_{\rm tilt}|$ $< 0.888$ dex.
+- *Pass*: (a) for every model, the 99th percentile of $|\Delta_{\rm tilt}|$ $< 0.888$ dex, and the rms of the
+  tilt around the fitted map $< 0.03$ dex.
 
 ---
 
@@ -612,7 +616,7 @@ verdict can always be traced back to the numbers that produced it.
 | `old_node_ionizing_output` | Ages, maximum $Q_H$ ratio to the youngest node | $70$, $100$ Myr, $0.01$ |
 | `escape_fraction_coverage` | Range, maximum gap, measured value of a cloud cut at its face | $[0, 0.9]$, $0.1$, $0.99$ |
 | `depletion(jk)_axis_coverage` | Minimum KS $p$-value | $0.01$ |
-| `fuv_terms` | Minimum $T_{\rm FUV}$ for the tilt, maximum tilt (99th percentile) | $10^{-2}$, $0.888$ dex |
+| `fuv_terms` | Minimum $T_{\rm FUV}$ for the tilt, maximum tilt (99th percentile), maximum rms around the map | $10^{-2}$, $0.888$ dex, $0.03$ dex |
 | `transparency_outside_sed_support` | Tolerance on $T$ | $10^{-3}$ |
 | `rw|abundance_echo` | Elements, print step, He/H tolerance, pattern tolerance | $30$, $10^{-4}$ dex, $0.01$ dex, $10^{-3}$ dex |
 | `rw|incident_continuum_matches_sed` | Tolerance on the two shape numbers | $0.05$ |

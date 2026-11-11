@@ -157,6 +157,8 @@ THRESHOLDS = {
     'fuv.region_min_transmittance': 1e-2,
 # Maximum spectral tilt (dex) across Habing band covered by the PDR beta axis: -BETA_MIN x log10(2066/911.76)
     'fuv.max_tilt': 0.888,
+# Maximum rms (dex) of the tilt around a L + b L^2 (L = -log10 T_FUV): the PDR beta is derived from T_FUV alone
+    'fuv.max_tilt_fit_rms': 0.03,
 # Tolerance on transmission: print precision of the .con (4 significant digits, ~1e-3 on a ratio); T = 1
 # outside the SED support and in [0, 1] inside
     'transparency.tolerance': 1e-3,
@@ -1794,6 +1796,64 @@ def check_depletion_coverage(ctx):
               'summary': f'KS p-value {p_value:.3g} on {n_distinct} distinct draws'}
     return (PASS if p_value > T['fstar.min_p_value'] else FAIL), detail
 
+def fuv_band_tilt(band_wavelength_A, band_transmission):
+    """
+    Compute the far-ultraviolet transmission tilt across the Habing band.
+
+    The tilt is determined as the least-squares slope of base-10 logarithmic
+    transmission with respect to base-10 logarithmic wavelength after excluding
+    Lyman-series wavelengths. The slope is scaled by the logarithmic width of the
+    far-ultraviolet band. Positive values indicate a transmission profile that is
+    redder across the band.
+
+    Parameters:
+        band_wavelength_A (array-like): Wavelength grid in angstroms. Values may be
+            provided in any order.
+        band_transmission (array-like): Transmission values sampled on
+            band_wavelength_A with shape (n_models, n_band).
+
+    Returns:
+        numpy.ndarray: Tilt value in dex for each model.
+    """
+    keep = ~_lyman_series_mask(band_wavelength_A)
+    x = np.log10(band_wavelength_A[keep])
+    x = x - x.mean()
+    y = np.log10(np.clip(np.asarray(band_transmission)[:, keep], 1e-30, None))
+    return (y - y.mean(axis=1, keepdims=True)) @ x / np.dot(x, x) * np.log10(CONST.FUV_Hi_A / CONST.FUV_Lo_A)
+
+def fit_tilt_from_tfuv(t_fuv, tilt):
+    """
+    Fit a quadratic least-squares relation between far-ultraviolet transmission
+    and tilt using valid input samples.
+
+    The input values are flattened and converted to floating-point arrays before
+    fitting. Only samples with finite transmission, finite tilt, and positive
+    transmission are included. The fitted model uses L and L squared as predictors,
+    where L is the negative base-10 logarithm of the transmission. The result
+    contains the fitted coefficients, the residual scatter, and the number of
+    samples used in the fit.
+
+    Parameters:
+        t_fuv (array_like): Far-ultraviolet transmission values.
+        tilt (array_like): Tilt values corresponding to the transmission values.
+
+    Returns:
+        dict: Mapping containing the fitted linear coefficient, fitted quadratic
+        coefficient, root-mean-square residual scatter in dex, and count of valid
+        samples used in the fit.
+
+    Raises:
+        IndexError: If the flattened inputs cannot be indexed together because
+        their lengths are incompatible.
+        LinAlgError: If the least-squares solver fails to converge.
+    """
+    t_fuv, tilt = np.ravel(t_fuv).astype(float), np.ravel(tilt).astype(float)
+    ok = np.isfinite(t_fuv) & np.isfinite(tilt) & (t_fuv > 0)
+    L = -np.log10(t_fuv[ok])
+    A = np.column_stack([L, L ** 2])
+    (a, b), *_ = np.linalg.lstsq(A, tilt[ok], rcond=None)
+    return {'a': float(a), 'b': float(b), 'rms_dex': float(np.std(tilt[ok] - A @ (a, b))), 'n': int(ok.sum())}
+
 @check('fuv_terms')
 def check_fuv_terms(ctx):
     """
@@ -1838,17 +1898,16 @@ def check_fuv_terms(ctx):
         detail['tilt'] = 'skipped: no continuum/transmission in the band or no model with T_FUV > 1e-2'
         statuses.append(SKIP)
     else:
-        keep = ~_lyman_series_mask(table.band_wavelength)
-        x = np.log10(table.band_wavelength[keep])
-        x = x - x.mean()
-        y = np.log10(np.clip(table.band_transmission[region][:, keep].astype(float), 1e-30, None))
-        finite = np.all(np.isfinite(y), axis=1)
-        tilt = ((y[finite] - y[finite].mean(axis=1, keepdims=True)) @ x / np.dot(x, x)
-                * np.log10(CONST.FUV_Hi_A / CONST.FUV_Lo_A))
+        tilt = fuv_band_tilt(table.band_wavelength, table.band_transmission[region].astype(float))
+        finite = np.isfinite(tilt)
+        fit = fit_tilt_from_tfuv(t_fuv[region][finite], tilt[finite])
+        tilt = tilt[finite]
         worst = float(np.max(np.abs(tilt)))
         detail.update({'n_region': int(tilt.size), 'max_abs_tilt_dex': _round(worst),
-                       'tilt': _percentiles(tilt, (1, 50, 99))})
+                       'tilt': _percentiles(tilt, (1, 50, 99)),
+                       'tilt_from_tfuv': {k: _round(v) for k, v in fit.items()}})
         statuses.append(PASS if np.percentile(np.abs(tilt), 99) < T['fuv.max_tilt'] else FAIL)
+        statuses.append(PASS if fit['rms_dex'] < T['fuv.max_tilt_fit_rms'] else FAIL)
     status = _combine(statuses)
     detail['summary'] = (f"{detail.get('positivity_violations', 'n/a')} sign violations, "
                          f"max |tilt| {detail.get('max_abs_tilt_dex', 'n/a')} dex")
