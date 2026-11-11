@@ -93,7 +93,7 @@ def render_one(tmpl, job):
             - The "grains" keyword is not properly configured in the output.
     """
     ctx = dict(job)
-    for k in CLOUDY.EXP_FIELDS: #in case of exponential fields
+    for k in CLOUDY.EXP_FIELDS_HII: #in case of exponential fields
         ctx[k] = format_cloudy_float(ctx[k])
 
     deck = tmpl.render(**ctx)
