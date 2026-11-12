@@ -14,7 +14,7 @@ set of stellar ages ($\tau$) and metallicities ($Z$).
 ### Usage
 
 ```text
-usage: galapy-sed-cloudy-extract [-h] [-s SSP_LIB] [-o OUT] [-l TRUNCATE_LYMAN]
+usage: galapy-sed-cloudy-extract [-h] [-s SSP_LIB] (--hii | --pdr) [-o OUT]
                                  [-r TRUNCATE_RED] [-t TAU [TAU ...]]
                                  [--Z Z [Z ...]] [-e]
 ```
@@ -25,8 +25,9 @@ usage: galapy-sed-cloudy-extract [-h] [-s SSP_LIB] [-o OUT] [-l TRUNCATE_LYMAN]
 | :--- | :--- |:-----------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `-h`, `--help` | None | Show help message and exit.                                                                                                                                |
 | `-s`, `--ssp-lib` | `SSP_LIB` | Name of the SSP spectral library. Default: `parsec22.NT`.                                                                                                  |
-| `-o`, `--out` | `OUT` | Directory path where output files and metadata will be saved. <br> Default: `data/cloudy_seds/`.                                                          |
-| `-l`, `--truncate-lyman` | `TRUNCATE_LYMAN` | Minimum wavelength threshold in Angstroms. If provided, wavelengths below this value are truncated. Default: `None` (untruncated).                         |
+| `--hii` | None | HII sector: complete SEDs, plus the `ssp_metadata.json` catalog. One of `--hii`/`--pdr` is required. |
+| `--pdr` | None | PDR sector: SEDs truncated at the Lyman limit, $\lambda \geq$ `CONST.LyLimit` (911.76 Å), that illuminate the PDR slab, plus the same `ssp_metadata.json` of `--hii` (`Qh_unit` is the one of the complete SED). |
+| `-o`, `--out` | `OUT` | Directory path where output files and metadata will be saved. <br> Default: `data/cloudy_seds/` (`--hii`), `data/cloudy_seds_trunc/` (`--pdr`). |
 | `-r`, `--truncate-red` | `TRUNCATE_RED` | Maximum wavelength (red-side) cutoff in Angstroms. Wavelengths above this value are truncated. Default: `CLOUDY.SED_cut` (`1e6` Å).                         |
 | `-t`, `--tau` | `TAU [TAU ...]` | List of target SSP ages in years (e.g., `--tau 1e6 2e6 5e6`). <br> Default: `CLOUDY.SSP_TAUS` (`[1e6, 2e6, 5e6, 1e7, 2e7, 5e7, 7e7, 1e8]`).                                    |
 | `--Z` | `Z [Z ...]` | List of target SSP metallicities (e.g., `--Z 0.0001 0.0005 0.0010`). <br> Default: `CLOUDY.SSP_Z` (`[0.0001, 0.0005, 0.0010, 0.0040, 0.0080, 0.0200]`).                     |
@@ -37,7 +38,13 @@ usage: galapy-sed-cloudy-extract [-h] [-s SSP_LIB] [-o OUT] [-l TRUNCATE_LYMAN]
 To extract complete SED files for younger stars at low metallicity with extrapolation enabled:
 
 ```bash
-galapy-sed-cloudy-extract -o ./ssp_seds -t 1e6 5e6 --Z 0.0001 0.0010 -e
+galapy-sed-cloudy-extract --hii -o ./ssp_seds -t 1e6 5e6 --Z 0.0001 0.0010 -e
+```
+
+To extract the SEDs truncated at the Lyman limit for the PDR, on the default nodes, into `data/cloudy_seds_trunc/`:
+
+```bash
+galapy-sed-cloudy-extract --pdr
 ```
 
 ---
@@ -47,7 +54,7 @@ galapy-sed-cloudy-extract -o ./ssp_seds -t 1e6 5e6 --Z 0.0001 0.0010 -e
 When running the batch extraction, the output directory will contain:
 
 - An individual `.sed` file for each stellar age and metallicity node.
-- A `ssp_metadata.json` summary catalog (only generated if `truncate_lyman` is `None`).
+- A `ssp_metadata.json` summary catalog, the same for `--hii` and `--pdr`: `Qh_unit` is always computed on the complete SED of the node.
 
 ### 1. The CLOUDY `.sed` File Format
 

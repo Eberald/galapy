@@ -80,7 +80,7 @@ galapy-download-database = "galapy.internal.data:_entrypoint_download_database"
 #========== CLOUDIA ==========# WIP tools, placeholder
 galapy-translate-filter   = "galapy.cloudia.cli.translate_filter:main" #WIP
 galapy-agent              = "galapy.cloudia.cli.agent:main" #WIP
-galapy-train-pdr          = "galapy.spectroscopy.utils.pdr.train_emulator_pdr:main" #WIP
+galapy-train-pdr          = "galapy.spectroscopy.uticls.pdr.train_emulator_pdr:main" #WIP
 galapy-train-hii          = "galapy.spectroscopy.utils.hii.train_emulator_hii:main"
 galapy-validate-emul      = "galapy.spectroscopy.utils.validate_emulator:main"
 galapy-validate-grid      = "galapy.spectroscopy.utils.validate_grid:main"

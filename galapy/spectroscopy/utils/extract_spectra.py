@@ -9,6 +9,7 @@
 import argparse
 import os
 import json
+import tempfile
 import numpy as np
 from tqdm import tqdm
 from galapy.CompositeStellarPopulation import (CSP, load_SSP_table, reshape_SSP_table)
@@ -351,7 +352,8 @@ def extract_ssp_seds(outdir, target_taus = CLOUDY.SSP_TAUS,
     Extracts SSP (Simple Stellar Population) SEDs (Spectral Energy Distributions) for given target
     values of stellar ages and metallicities from a specified SSP library. The extracted data is saved
     to files in the output directory in table sed CLOUDY format.
-    Metadata for the extracted SEDs is optionally created in JSON format.
+    Metadata for the extracted SEDs is created in JSON format (ssp_metadata.json), the same with or
+    without truncation: Qh_unit is always the one of the complete SED of the node.
 
     Parameters:
         outdir (str): Path to the output directory where the SED files and metadata will be saved.
@@ -371,14 +373,14 @@ def extract_ssp_seds(outdir, target_taus = CLOUDY.SSP_TAUS,
     Returns:
         tuple: A tuple containing:
             - int: Number of SED files generated.
-            - list[dict]: Metadata for each extracted SED if `truncate_lyman` is None. The metadata includes:
+            - list[dict]: Metadata for each extracted SED (the same with or without truncation). The metadata includes:
                 - tau_SSP (float): Stellar age value in years.
                 - Z_star (float): Stellar metallicity (mass fraction).
                 - sed_file (str): File name of the corresponding SED.
                 - it (int): Index of the stellar age in the SSP cube.
                 - iz (int): Index of the metallicity in the SSP cube.
-                - Qh_unit (float): Hydrogen ionizing photon rate of the written SED, in photons s^-1 per
-                  Msun of SSP formed (cloudy_sed_QH).
+                - Qh_unit (float): Hydrogen ionizing photon rate of the complete (not truncated) SED, in
+                  photons s^-1 per Msun of SSP formed (cloudy_sed_QH).
     """
     cube = load_ssp_cube(ssp_lib)
     _l, t, Z, _L = cube
@@ -388,7 +390,8 @@ def extract_ssp_seds(outdir, target_taus = CLOUDY.SSP_TAUS,
 
     os.makedirs(outdir, exist_ok=True)
     metadata, n = [], 0
-    with tqdm(total=len(selected_it) * len(selected_iz), desc='[extract_ssp]', unit='SED') as pbar:
+    tmp = tempfile.TemporaryDirectory()  # complete SEDs of a truncated run, read only for Qh_unit
+    with tmp, tqdm(total=len(selected_it) * len(selected_iz), desc='[extract_ssp]', unit='SED') as pbar:
         for it in selected_it:
             for iz in selected_iz:
                 file_name = f"ssp_tau{t[it]:.3e}_Z{Z[iz]:.4f}.sed"
@@ -396,22 +399,25 @@ def extract_ssp_seds(outdir, target_taus = CLOUDY.SSP_TAUS,
                 to_cloudy_sed(path, cube = cube, it=it, iz=iz, lambda_min_A=truncate_lyman,
                               lambda_max_A=truncate_red,extrapolate = extrapolate)
                 n += 1
-                if truncate_lyman is None:
-                    metadata.append(
-                        {
-                            'tau_SSP' : float(t[it]),
-                            'Z_star' : float(Z[iz]),
-                            'sed_file' : file_name,
-                            'it' : it,
-                            'iz' : iz,
-                            'Qh_unit' : cloudy_sed_QH(path),
-                        }
-                    )
+                full = path  # Qh_unit from the complete SED, so that the metadata is the same of the HII one
+                if truncate_lyman is not None:
+                    full = os.path.join(tmp.name, file_name)
+                    to_cloudy_sed(full, cube = cube, it=it, iz=iz, lambda_min_A=None,
+                                  lambda_max_A=truncate_red,extrapolate = extrapolate)
+                metadata.append(
+                    {
+                        'tau_SSP' : float(t[it]),
+                        'Z_star' : float(Z[iz]),
+                        'sed_file' : file_name,
+                        'it' : it,
+                        'iz' : iz,
+                        'Qh_unit' : cloudy_sed_QH(full),
+                    }
+                )
                 pbar.update(1)
 
-    if truncate_lyman is None:
-        with open(os.path.join(outdir, "ssp_metadata.json"), "w") as f:
-            json.dump(metadata, f, indent=2)
+    with open(os.path.join(outdir, "ssp_metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
 
     return n, metadata
 
@@ -427,10 +433,11 @@ def main():
 
     Arguments:
         --ssp-lib (str): The library identifier for SSP extraction (galapy doc). Default is "parsec22.NT".
-        --out (str): The output directory for the generated .sed files. Required.
-        --truncate-lyman (Optional[float]): Truncates the wavelengths to lambda >= the provided 
-                                            value in Angstroms. If not specified, wavelengths 
-                                            are untruncated. Default is None.
+        --out (str): The output directory for the generated .sed files. Default is
+                     data/cloudy_seds (--hii) or data/cloudy_seds_trunc (--pdr).
+        --hii / --pdr (required): sector. --hii writes the complete SEDs, --pdr the SEDs truncated at
+                                  the Lyman limit (lambda >= CONST.LyLimit) that illuminate the PDR slab;
+                                  both write ssp_metadata.json, the same for the two sectors.
         --truncate-red (Optional[float]):  Truncates the wavelengths to lambda <= the provided
                                             value in Angstroms. If not specified, wavelengths
                                             are truncated at 1e6 A. Default is 1e6 A.
@@ -444,9 +451,14 @@ def main():
     ap = argparse.ArgumentParser(prog = "galapy-sed-cloudy-extract",description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('-s','--ssp-lib', default='parsec22.NT', help='library SSP')
-    ap.add_argument('-o','--out', default='data/cloudy_seds/', help='output directory .sed (default data/cloudy_seds)')
-    ap.add_argument('-l','--truncate-lyman', type=float, default=None,
-                    help='cut lambda')
+    sector = ap.add_mutually_exclusive_group(required=True)
+    sector.add_argument('--hii', dest='sector', action='store_const', const='hii',
+                        help='complete SEDs + ssp_metadata.json (default out data/cloudy_seds)')
+    sector.add_argument('--pdr', dest='sector', action='store_const', const='pdr',
+                        help=f'SEDs truncated at the Lyman limit, lambda >= {CONST.LyLimit} A, '
+                             f'+ ssp_metadata.json (default out data/cloudy_seds_trunc)')
+    ap.add_argument('-o','--out', default=None,
+                    help='output directory .sed (default data/cloudy_seds for --hii, data/cloudy_seds_trunc for --pdr)')
     ap.add_argument('-r','--truncate-red', type=float, default=CLOUDY.SED_cut,
                     help=f'cut synchrotron: lambda <= value (A). Default {CLOUDY.SED_cut:.3e}')
     ap.add_argument('-t','--tau', type=float, nargs='+', default=None,
@@ -457,14 +469,17 @@ def main():
                     help='put extrapolate flag for make CLOUDY extrapolate low energy regime')
     args = ap.parse_args()
     
+    # sector -> blue cut and default output directory
+    truncate_lyman = CONST.LyLimit if args.sector == 'pdr' else None
+    out = args.out or ('data/cloudy_seds_trunc/' if args.sector == 'pdr' else 'data/cloudy_seds/')
     target_taus = np.array(args.tau) if args.tau is not None else CLOUDY.SSP_TAUS
     target_Z = np.array(args.Z) if args.Z is not None else CLOUDY.SSP_Z
-    n, _meta = extract_ssp_seds(args.out, target_taus=target_taus, target_Z=target_Z,
-                                ssp_lib=args.ssp_lib, truncate_lyman=args.truncate_lyman,
+    n, _meta = extract_ssp_seds(out, target_taus=target_taus, target_Z=target_Z,
+                                ssp_lib=args.ssp_lib, truncate_lyman=truncate_lyman,
                                 truncate_red=args.truncate_red,extrapolate=args.extrapolate)
 
-    tag = 'truncated' if args.truncate_lyman is not None else 'complete'
-    print(f"[extract_ssp] {n} nodes {tag} -> {args.out}, the SED is {tag}")
+    tag = 'truncated' if truncate_lyman is not None else 'complete'
+    print(f"[extract_ssp] {n} nodes {tag} -> {out}, the SED is {tag}")
 
 
 if __name__ == '__main__':

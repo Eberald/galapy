@@ -155,7 +155,7 @@ Root_Units_PDR['line_names'] = ( None, 'CLOUDY labels of the lines (internal spa
                                        'in the order of pdr_lines.dat', {})
 Root_Units_PDR['incident/wave_grid'] = ( 'Angstrom', 'wavelength of the incident stellar SED, the table SED file '
                                                      'read by CLOUDY, truncated the Lyman limit '
-                                                     '(galapy-sed-cloudy-extract -l 911.76), increasing',
+                                                     '(galapy-sed-cloudy-extract --pdr), increasing',
                                          {'wavelength_medium': 'vacuum'})
 Root_Units_PDR['continuum/pah_wave_grid'] = ( 'Angstrom', 'wavelengths of the continuum mesh inside the PAH '
                                                           'windows (PAH_WINDOWS_UM), decreasing',

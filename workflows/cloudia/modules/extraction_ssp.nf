@@ -34,6 +34,6 @@ process EXTRACT_SSP_SEDS{
 
     script:
     """
-    galapy-sed-cloudy-extract -o .
+    galapy-sed-cloudy-extract --hii -o .
     """
 }
