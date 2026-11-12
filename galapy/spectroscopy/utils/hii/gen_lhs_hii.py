@@ -1,6 +1,5 @@
 # Author: Enrico Veraldi
 # Generation of LHS grid for HII regions
-# NOTE: implement also the python script for creating a grid via CLI command
 
 import argparse
 import pathlib
@@ -106,7 +105,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('-c', '--config', required=None, default=default_config, help='charter grid_hii.yaml, default galapy-dataset')
     ap.add_argument('-s', '--ssp-meta', required=None, default="data/cloudy_seds/ssp_metadata.json",
-                    help='ssp_metadata.json ssp, default: data/cloudy_seds/ssp_metadata.json (galapy-sed-cloudy-extract)' )
+                    help='ssp_metadata.json ssp, default: data/cloudy_seds/ssp_metadata.json (galapy-sed-cloudy-extract --hii)' )
     ap.add_argument('-o', '--output', required=None, default="data/grids/hii",
                     help='output directory, default: data/grids/hii')
     args = ap.parse_args()
